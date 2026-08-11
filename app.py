@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import webbrowser
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,21 +28,31 @@ TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 UPDATE_API_URL = "https://api.github.com/repos/ybpan34-prog/WWBS/releases/latest"
 UPDATE_ASSET_NAME = "wwbs-exe.zip"
-UPDATE_NOTICE = """v1.3.3 更新内容
-1. 图像识别点击会在模板方框内部随机选择安全落点。
-2. 保留每个模板原有的点击偏移，并避开方框边缘。
-3. 每次点击后的间隔会在原固定值上下 0.2 秒内随机。
-4. 保留 v1.3.2 的稳定游戏截图与坐标映射逻辑。
+ABOUT_BILIBILI_URL = "https://www.bilibili.com/video/BV1aPuo6uE9r/"
+ABOUT_GITHUB_URL = "https://github.com/ybpan34-prog/WWBS"
+UPDATE_NOTICE = """v1.3.4 更新内容
+1. 恢复更新公告记录中的 v1.3.1。
+2. 更新公告历史改为按版本追加，旧公告不再被覆盖。
+3. 新增“关于”功能，可查看版本号并跳转至作者的 B 站视频和 GitHub 仓库。
+4. 保留随机点击、随机间隔和稳定游戏截图逻辑。
 
 使用前请确认
 1. 请以管理员身份运行。
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
-    ("v1.3.3", UPDATE_NOTICE.split("\n使用前请确认", 1)[0]),
+    ("v1.3.4", UPDATE_NOTICE.split("\n使用前请确认", 1)[0]),
+    (
+        "v1.3.3",
+        """v1.3.3 更新内容
+1. 图像识别点击会在模板方框内部随机选择安全落点。
+2. 保留每个模板原有的点击偏移，并避开方框边缘。
+3. 每次点击后的间隔会在原固定值上下 0.2 秒内随机。
+4. 保留 v1.3.2 的稳定游戏截图与坐标映射逻辑。""",
+    ),
     (
         "v1.3.2",
         """v1.3.2 更新内容
@@ -49,6 +60,14 @@ UPDATE_HISTORY = [
 2. DirectX 窗口不支持离屏捕获时，自动置前游戏并截取完整客户区。
 3. 检测游戏窗口、制作模板和执行识别统一使用同一套稳定截图逻辑。
 4. 保留原有截图坐标到游戏客户区、屏幕坐标的映射方式。""",
+    ),
+    (
+        "v1.3.1",
+        """v1.3.1 更新内容
+1. 新增抽取概率计算，可以分别填写角色水位和武器水位。
+2. 新增“现在是否拥有大保底”选项，角色概率可按当前保底状态计算。
+3. 优化小概率显示，不再把极低概率显示成 0.00%。
+4. 保留原有自动周历、模板识别和循环点击功能。""",
     ),
 ]
 LOCAL_TZ = timezone(timedelta(hours=8))
@@ -596,6 +615,7 @@ class App:
         header.pack(side=TOP, fill=X)
         Label(header, text="wwbs", font=(FONT_FAMILY, 22, "bold"), fg=COLORS["text"], bg=COLORS["app_bg"]).pack(side=LEFT)
         Button(header, text="检查更新", command=self._check_for_updates).pack(side=RIGHT, padx=(0, 8))
+        Button(header, text="关于", command=self._show_about).pack(side=RIGHT, padx=(0, 8))
         Button(header, text="更新公告", command=self._show_update_history).pack(side=RIGHT, padx=(0, 14))
         Label(header, textvariable=self.status, font=(FONT_FAMILY, 10), fg=COLORS["muted"], bg=COLORS["app_bg"]).pack(side=RIGHT)
 
@@ -931,6 +951,52 @@ class App:
 
     def _show_update_notice(self) -> None:
         messagebox.showinfo(f"wwbs {APP_VERSION} 更新公告", UPDATE_NOTICE, parent=self.root)
+
+    def _show_about(self) -> None:
+        window = Toplevel(self.root)
+        window.title("关于 wwbs")
+        window.geometry("500x300")
+        window.resizable(False, False)
+        window.transient(self.root)
+        window.grab_set()
+        if APP_ICON.exists():
+            window.iconbitmap(str(APP_ICON))
+
+        container = Frame(window, padx=28, pady=24, bg=COLORS["panel"])
+        container.pack(fill=BOTH, expand=True)
+        Label(
+            container,
+            text="wwbs",
+            font=(FONT_FAMILY, 22, "bold"),
+            fg=COLORS["text"],
+            bg=COLORS["panel"],
+        ).pack(anchor="w")
+        Label(
+            container,
+            text=f"版本号：{APP_VERSION}",
+            font=(FONT_FAMILY, 11),
+            fg=COLORS["muted"],
+            bg=COLORS["panel"],
+        ).pack(anchor="w", pady=(4, 20))
+
+        Button(
+            container,
+            text="打开 B 站视频",
+            command=lambda: self._open_external_link(ABOUT_BILIBILI_URL),
+        ).pack(fill=X, pady=(0, 10))
+        Button(
+            container,
+            text="打开 GitHub",
+            command=lambda: self._open_external_link(ABOUT_GITHUB_URL),
+        ).pack(fill=X)
+        Button(container, text="关闭", command=window.destroy).pack(anchor="e", pady=(20, 0))
+
+    def _open_external_link(self, url: str) -> None:
+        try:
+            if not webbrowser.open(url, new=2):
+                raise RuntimeError("系统没有返回可用的浏览器。")
+        except Exception as exc:
+            messagebox.showerror("无法打开链接", f"请检查默认浏览器设置。\n\n{exc}", parent=self.root)
 
     def _show_update_history(self) -> None:
         window = Toplevel(self.root)
