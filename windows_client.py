@@ -6,7 +6,7 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-from PIL import ImageGrab
+from PIL import Image, ImageChops, ImageGrab, ImageStat
 
 
 user32 = ctypes.windll.user32
@@ -76,6 +76,7 @@ class ClientWindowController:
         self.scale = 1.0
         self.last_capture_size: tuple[int, int] | None = None
         self.last_screen_bbox: tuple[int, int, int, int] | None = None
+        self.last_capture_method = ""
 
     def connect(self) -> str:
         self.hwnd = self._find_window()
@@ -98,17 +99,135 @@ class ClientWindowController:
     def template_scales(self) -> list[float]:
         return [self.scale, self.scale * 0.97, self.scale * 1.03, self.scale * 0.94, self.scale * 1.06]
 
-    def screencap(self, target: Path, bring_to_front: bool = False) -> None:
+    def screencap(self, target: Path, bring_to_front: bool = False) -> str:
         self._ensure_window()
-        if bring_to_front:
+        if user32.IsIconic(self.hwnd):
             user32.ShowWindow(self.hwnd, SW_RESTORE)
-            user32.SetForegroundWindow(self.hwnd)
             time.sleep(0.18)
         bbox = self._client_bbox()
         self.last_screen_bbox = bbox
-        image = ImageGrab.grab(bbox=bbox, all_screens=True)
+
+        # Pillow's window capture uses PrintWindow on Windows.  Unlike a desktop
+        # crop it is not contaminated by wwbs (or any other window) covering the
+        # game.  Some DirectX windows reject PrintWindow or return an empty frame,
+        # so validate the result and fall back to a foreground desktop capture.
+        image = None if self._requires_foreground_capture() else self._capture_window_client(bbox)
+        method = "window"
+        if (
+            image is None
+            or not self._capture_has_content(image)
+            or self._capture_is_desktop_copy(image, bbox)
+        ):
+            image, bbox = self._capture_foreground_client()
+            self.last_screen_bbox = bbox
+            method = "foreground"
+
+        expected_size = (bbox[2] - bbox[0], bbox[3] - bbox[1])
+        if image.size != expected_size:
+            image = image.resize(expected_size, Image.Resampling.BILINEAR)
         self.last_capture_size = image.size
+        self.last_capture_method = method
         image.save(target)
+        return method
+
+    def _requires_foreground_capture(self) -> bool:
+        # Unreal/DirectX windows can make PrintWindow report success while it
+        # returns a composed desktop (including wwbs) or an unrendered surface.
+        # For these windows the dependable path is to focus the game first.
+        return self._window_class_name() == "UnrealWindow"
+
+    def _window_class_name(self) -> str:
+        buffer = ctypes.create_unicode_buffer(256)
+        if not user32.GetClassNameW(self.hwnd, buffer, len(buffer)):
+            return ""
+        return buffer.value
+
+    def _capture_window_client(self, bbox: tuple[int, int, int, int]) -> Image.Image | None:
+        try:
+            window_image = ImageGrab.grab(window=self.hwnd).convert("RGB")
+            client_width = bbox[2] - bbox[0]
+            client_height = bbox[3] - bbox[1]
+            if client_width <= 0 or client_height <= 0:
+                return None
+
+            # Current Pillow versions return the PrintWindow client image.  Its
+            # pixel size can still be DPI-virtualized by the target process, so
+            # normalize it to the physical client size used by our mapping.
+            image_aspect = window_image.width / window_image.height
+            client_aspect = client_width / client_height
+            if abs(image_aspect / client_aspect - 1.0) <= 0.015:
+                return window_image.resize((client_width, client_height), Image.Resampling.BILINEAR)
+
+            # Keep compatibility with Pillow builds that return the full window.
+            window_rect = RECT()
+            if not user32.GetWindowRect(self.hwnd, ctypes.byref(window_rect)):
+                return None
+            client_left, client_top, client_right, client_bottom = bbox
+            window_width = window_rect.right - window_rect.left
+            window_height = window_rect.bottom - window_rect.top
+            if window_width <= 0 or window_height <= 0:
+                return None
+            scale_x = window_image.width / window_width
+            scale_y = window_image.height / window_height
+            crop_box = (
+                int(round((client_left - window_rect.left) * scale_x)),
+                int(round((client_top - window_rect.top) * scale_y)),
+                int(round((client_right - window_rect.left) * scale_x)),
+                int(round((client_bottom - window_rect.top) * scale_y)),
+            )
+            if (
+                crop_box[0] < 0
+                or crop_box[1] < 0
+                or crop_box[2] > window_image.width
+                or crop_box[3] > window_image.height
+            ):
+                return None
+            return window_image.crop(crop_box).resize((client_width, client_height), Image.Resampling.BILINEAR)
+        except (OSError, TypeError, ValueError):
+            return None
+
+    def _capture_foreground_client(self) -> tuple[Image.Image, tuple[int, int, int, int]]:
+        self._focus_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            # A second attempt helps when Windows' foreground-lock timeout races
+            # with the worker thread that requested the capture.
+            time.sleep(0.12)
+            self._focus_window()
+        for _attempt in range(4):
+            time.sleep(0.35)
+            bbox = self._client_bbox()
+            image = ImageGrab.grab(bbox=bbox, all_screens=True).convert("RGB")
+            if self._capture_has_content(image):
+                return image, bbox
+        raise RuntimeError("游戏窗口已置前，但连续获取到空白画面。请确认游戏未最小化后重试。")
+
+    @staticmethod
+    def _capture_has_content(image: Image.Image) -> bool:
+        if image.width < 2 or image.height < 2:
+            return False
+        sample = image.convert("RGB")
+        sample.thumbnail((160, 90), Image.Resampling.BILINEAR)
+        extrema = sample.getextrema()
+        dynamic_channels = sum(high - low >= 8 for low, high in extrema)
+        deviation = sum(ImageStat.Stat(sample).stddev)
+        return dynamic_channels >= 2 and deviation >= 6.0
+
+    def _capture_is_desktop_copy(
+        self,
+        image: Image.Image,
+        bbox: tuple[int, int, int, int],
+    ) -> bool:
+        try:
+            desktop = ImageGrab.grab(bbox=bbox, all_screens=True).convert("RGB")
+            if desktop.size != image.size:
+                desktop = desktop.resize(image.size, Image.Resampling.BILINEAR)
+            sample_size = (160, 90)
+            first = image.resize(sample_size, Image.Resampling.BILINEAR)
+            second = desktop.resize(sample_size, Image.Resampling.BILINEAR)
+            mean_difference = sum(ImageStat.Stat(ImageChops.difference(first, second)).mean) / 3
+            return mean_difference < 1.5
+        except OSError:
+            return False
 
     def tap(self, x: int, y: int) -> dict[str, tuple[int, int] | bool]:
         self._ensure_window()

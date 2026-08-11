@@ -1,6 +1,7 @@
 import json
 import os
 import queue
+import random
 import re
 import shutil
 import subprocess
@@ -26,21 +27,29 @@ TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.3"
 UPDATE_API_URL = "https://api.github.com/repos/ybpan34-prog/WWBS/releases/latest"
 UPDATE_ASSET_NAME = "wwbs-exe.zip"
-UPDATE_NOTICE = """v1.3.1 更新内容
-1. 新增抽取概率计算，可以分别填写角色水位和武器水位。
-2. 新增“现在是否拥有大保底”选项，角色概率可按当前保底状态计算。
-3. 优化小概率显示，不再把极低概率显示成 0.00%。
-4. 保留原有自动周历、模板识别和循环点击功能。
+UPDATE_NOTICE = """v1.3.3 更新内容
+1. 图像识别点击会在模板方框内部随机选择安全落点。
+2. 保留每个模板原有的点击偏移，并避开方框边缘。
+3. 每次点击后的间隔会在原固定值上下 0.2 秒内随机。
+4. 保留 v1.3.2 的稳定游戏截图与坐标映射逻辑。
 
 使用前请确认
 1. 请以管理员身份运行。
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
-    ("v1.3.1", UPDATE_NOTICE.split("\n使用前请确认", 1)[0]),
+    ("v1.3.3", UPDATE_NOTICE.split("\n使用前请确认", 1)[0]),
+    (
+        "v1.3.2",
+        """v1.3.2 更新内容
+1. PC 客户端优先使用不受其他窗口遮挡的窗口捕获。
+2. DirectX 窗口不支持离屏捕获时，自动置前游戏并截取完整客户区。
+3. 检测游戏窗口、制作模板和执行识别统一使用同一套稳定截图逻辑。
+4. 保留原有截图坐标到游戏客户区、屏幕坐标的映射方式。""",
+    ),
 ]
 LOCAL_TZ = timezone(timedelta(hours=8))
 PREVIEW_ASPECT = 16 / 9
@@ -48,6 +57,9 @@ PREVIEW_MAX_HEIGHT = 520
 PREVIEW_MIN_HEIGHT = 320
 START_CONTENT_SIDE_PADDING = 28
 ACTION_PANEL_WIDTH = 360
+CLICK_EDGE_MARGIN_RATIO = 0.10
+CLICK_JITTER_RATIO = 0.25
+CLICK_DELAY_JITTER_SECONDS = 0.20
 FONT_FAMILY = "Microsoft YaHei UI"
 MONO_FONT = "Consolas"
 COLORS = {
@@ -226,7 +238,7 @@ class TaskRunner:
                 return
             self._require_xy(step)
             self.controller.tap(step.x, step.y)
-            time.sleep(step.seconds)
+            self._sleep_click_interval(step.seconds)
         elif step.action == "tap_image":
             x, y, score = self._find_image(step)
             self.log(f"    找到模板 {step.template}: ({x}, {y}) 相似度 {score:.3f}")
@@ -252,7 +264,7 @@ class TaskRunner:
                         self.log("    鼠标没有移动成功：请尝试右键桌面快捷方式，以管理员身份运行。")
                 elif result:
                     self.log(f"    已发送点击，屏幕坐标: {result}")
-            time.sleep(step.seconds)
+            self._sleep_click_interval(step.seconds)
         elif step.action == "tap_image_cycle":
             self._run_image_cycle(step)
         elif step.action == "swipe":
@@ -321,7 +333,7 @@ class TaskRunner:
                         )
                         if not result.get("set_cursor_ok"):
                             self.log("    鼠标没有移动成功：请尝试右键桌面快捷方式，以管理员身份运行。")
-                self._sleep_interruptible(step.seconds)
+                self._sleep_click_interval(step.seconds)
             if not step.loop:
                 return
             round_index += 1
@@ -346,6 +358,11 @@ class TaskRunner:
             if self.stop_event.is_set():
                 return
             time.sleep(min(0.1, deadline - time.time()))
+
+    def _sleep_click_interval(self, base_seconds: float) -> None:
+        minimum = max(0.0, base_seconds - CLICK_DELAY_JITTER_SECONDS)
+        maximum = max(minimum, base_seconds + CLICK_DELAY_JITTER_SECONDS)
+        self._sleep_interruptible(random.uniform(minimum, maximum))
 
     def _numbered_templates(self, prefix: str, start: int, end: int) -> list[str]:
         names = []
@@ -379,9 +396,7 @@ class TaskRunner:
             try:
                 scales = self._fast_scales()
                 match = self.matcher.find(screenshot, step.template, step.threshold, scales)
-                center_x, center_y = match.center
-                image_x = center_x + step.offset_x
-                image_y = center_y + step.offset_y
+                image_x, image_y = self._random_click_point(match, step.offset_x, step.offset_y)
                 if self.debug_matches:
                     self._save_match_debug(screenshot, step.template, match, image_x, image_y)
                 if hasattr(self.controller, "screenshot_to_screen"):
@@ -397,6 +412,26 @@ class TaskRunner:
                 last_error = exc
                 time.sleep(0.6)
         raise RuntimeError(str(last_error) if last_error else f"识别超时: {step.template}")
+
+    @staticmethod
+    def _random_click_point(match, offset_x: int, offset_y: int) -> tuple[int, int]:
+        margin_x = min(max(1, int(round(match.width * CLICK_EDGE_MARGIN_RATIO))), max(1, (match.width - 1) // 2))
+        margin_y = min(max(1, int(round(match.height * CLICK_EDGE_MARGIN_RATIO))), max(1, (match.height - 1) // 2))
+        safe_left = match.x + margin_x
+        safe_right = match.x + match.width - 1 - margin_x
+        safe_top = match.y + margin_y
+        safe_bottom = match.y + match.height - 1 - margin_y
+
+        anchor_x = min(max(match.center[0] + offset_x, safe_left), safe_right)
+        anchor_y = min(max(match.center[1] + offset_y, safe_top), safe_bottom)
+        jitter_x = max(1, int(round(match.width * CLICK_JITTER_RATIO)))
+        jitter_y = max(1, int(round(match.height * CLICK_JITTER_RATIO)))
+
+        left = max(safe_left, anchor_x - jitter_x)
+        right = min(safe_right, anchor_x + jitter_x)
+        top = max(safe_top, anchor_y - jitter_y)
+        bottom = min(safe_bottom, anchor_y + jitter_y)
+        return random.randint(left, right), random.randint(top, bottom)
 
     def _fast_scales(self) -> list[float]:
         return [1.0]
@@ -1380,9 +1415,10 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
                     controller = ClientWindowController(self.window_title.get(), self._parse_resolution())
                     message = controller.connect()
                     preview = APP_DIR / "_target_preview.png"
-                    controller.screencap(preview)
+                    capture_method = controller.screencap(preview)
                     self.device_status.set("已找到 PC 窗口")
                     self._log(message)
+                    self._log(f"PC 截图方式: {capture_method}")
                     self.root.after(0, lambda: self._show_preview(preview, "PC 客户端画面"))
             except Exception as exc:
                 self.device_status.set("检测失败")
@@ -1397,7 +1433,9 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
                 controller = self._make_controller()
                 if hasattr(controller, "connect"):
                     self._log(controller.connect())
-                controller.screencap(target)
+                capture_method = controller.screencap(target)
+                if capture_method:
+                    self._log(f"PC 截图方式: {capture_method}")
                 self._log(f"截图已保存: {target}")
             except Exception as exc:
                 self._log(f"截图失败: {exc}")
@@ -1412,7 +1450,9 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
                 controller = self._make_controller()
                 if hasattr(controller, "connect"):
                     self._log(controller.connect())
-                controller.screencap(target)
+                capture_method = controller.screencap(target)
+                if capture_method:
+                    self._log(f"模板来源截图方式: {capture_method}")
                 group_dir = self._template_group_dir(self.template_group.get())
                 group_dir.mkdir(parents=True, exist_ok=True)
                 self.root.after(0, lambda: TemplateCropper(self.root, target, group_dir, self._after_template_saved))
