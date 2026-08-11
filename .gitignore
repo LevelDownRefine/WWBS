@@ -15,6 +15,7 @@ release/
 wwbs-exe/
 wwbs-release.zip
 wwbs-exe.zip
+wwbs-[0-9]*.zip
 vendor/
 vendor2/
 vendor_wheels/

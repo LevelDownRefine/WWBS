@@ -11,7 +11,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, TOP, X, BooleanVar, Button, Canvas, Checkbutton, Entry, Frame, Label, Listbox, StringVar, Text, Tk, Toplevel, filedialog, messagebox, simpledialog, ttk
@@ -28,23 +28,31 @@ TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.3.5"
 UPDATE_API_URL = "https://api.github.com/repos/ybpan34-prog/WWBS/releases/latest"
 UPDATE_ASSET_NAME = "wwbs-exe.zip"
 ABOUT_BILIBILI_URL = "https://www.bilibili.com/video/BV1aPuo6uE9r/"
 ABOUT_GITHUB_URL = "https://github.com/ybpan34-prog/WWBS"
-UPDATE_NOTICE = """v1.3.4 更新内容
-1. 恢复更新公告记录中的 v1.3.1。
-2. 更新公告历史改为按版本追加，旧公告不再被覆盖。
-3. 新增“关于”功能，可查看版本号并跳转至作者的 B 站视频和 GitHub 仓库。
-4. 保留随机点击、随机间隔和稳定游戏截图逻辑。
+UPDATE_NOTICE = """v1.3.5 更新内容
+1. 新增循环点击回退验证，下一张模板多次未出现时会检查上一张是否仍在画面。
+2. 若上一张仍存在，程序会自动补点；最后一轮也会确认末模板消失后再停止。
+3. 回退验证最多执行 2 次，累计 5 次仍未找到下一张时自动停止。
+4. 保留原有循环次数、随机点击和随机间隔逻辑。
 
 使用前请确认
 1. 请以管理员身份运行。
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
-    ("v1.3.4", UPDATE_NOTICE.split("\n使用前请确认", 1)[0]),
+    ("v1.3.5", UPDATE_NOTICE.split("\n使用前请确认", 1)[0]),
+    (
+        "v1.3.4",
+        """v1.3.4 更新内容
+1. 恢复更新公告记录中的 v1.3.1。
+2. 更新公告历史改为按版本追加，旧公告不再被覆盖。
+3. 新增“关于”功能，可查看版本号并跳转至作者的 B 站视频和 GitHub 仓库。
+4. 保留随机点击、随机间隔和稳定游戏截图逻辑。""",
+    ),
     (
         "v1.3.3",
         """v1.3.3 更新内容
@@ -79,6 +87,9 @@ ACTION_PANEL_WIDTH = 360
 CLICK_EDGE_MARGIN_RATIO = 0.10
 CLICK_JITTER_RATIO = 0.25
 CLICK_DELAY_JITTER_SECONDS = 0.20
+CYCLE_MAX_MISSES = 5
+CYCLE_FALLBACK_MISS_COUNTS = (2, 4)
+CYCLE_FINAL_MAX_RETRIES = 2
 FONT_FAMILY = "Microsoft YaHei UI"
 MONO_FONT = "Consolas"
 COLORS = {
@@ -231,6 +242,7 @@ class TaskRunner:
         self.matcher = TemplateMatcher(TEMPLATES_DIR)
         self.template_root = TEMPLATES_DIR
         self.debug_matches = False
+        self.last_clicked_image_step: Step | None = None
 
     def run_task(self, task: WeeklyTask) -> None:
         group_dir = TEMPLATES_DIR / task.template_group if task.template_group != "default" else TEMPLATES_DIR
@@ -283,6 +295,7 @@ class TaskRunner:
                         self.log("    鼠标没有移动成功：请尝试右键桌面快捷方式，以管理员身份运行。")
                 elif result:
                     self.log(f"    已发送点击，屏幕坐标: {result}")
+                self.last_clicked_image_step = step
             self._sleep_click_interval(step.seconds)
         elif step.action == "tap_image_cycle":
             self._run_image_cycle(step)
@@ -311,6 +324,7 @@ class TaskRunner:
         templates = step.templates or self._numbered_templates("menu", 2, 99)
         if not templates:
             raise RuntimeError("循环模板列表为空。")
+        previous_step = self.last_clicked_image_step
         round_index = 1
         while not self.stop_event.is_set():
             if self.max_cycles is not None and round_index > self.max_cycles:
@@ -336,40 +350,109 @@ class TaskRunner:
                     offset_y=self._template_offset(step, template_name, "y"),
                     seconds=step.seconds,
                 )
-                x, y, score = self._wait_for_cycle_template(current)
+                x, y, score = self._wait_for_cycle_template(current, previous_step)
                 self.log(f"    找到 {template_name}: ({x}, {y}) 相似度 {score:.3f}")
                 if self.dry_run:
                     self.log("    干运行：已识别位置，但不点击。")
                 else:
-                    self.log(f"    正在点击识别坐标: ({x}, {y})")
-                    result = self.controller.tap(x, y)
-                    if isinstance(result, dict):
-                        self.log(
-                            "    鼠标移动结果: "
-                            f"目标{result.get('target')}，"
-                            f"移动后{result.get('after_move')}，"
-                            f"SetCursorPos={result.get('set_cursor_ok')}"
-                        )
-                        if not result.get("set_cursor_ok"):
-                            self.log("    鼠标没有移动成功：请尝试右键桌面快捷方式，以管理员身份运行。")
+                    self._click_cycle_template(current, x, y)
+                previous_step = current
                 self._sleep_click_interval(step.seconds)
             if not step.loop:
                 return
+            if self.max_cycles is not None and round_index >= self.max_cycles:
+                if previous_step is not None and not self.dry_run:
+                    self._verify_final_cycle_click(previous_step)
+                self.log(f"    已完成 {self.max_cycles} 轮循环，自动停止。")
+                self.stop_event.set()
+                return
             round_index += 1
 
-    def _wait_for_cycle_template(self, step: Step) -> tuple[int, int, float]:
+    def _wait_for_cycle_template(
+        self,
+        step: Step,
+        previous_step: Step | None = None,
+    ) -> tuple[int, int, float]:
         misses = 0
         while not self.stop_event.is_set():
             try:
                 return self._find_image(step)
             except Exception as exc:
                 misses += 1
-                if misses >= 5:
+                if (
+                    previous_step is not None
+                    and not self.dry_run
+                    and misses in CYCLE_FALLBACK_MISS_COUNTS
+                ):
+                    self._retry_previous_cycle_click(previous_step, step.template, misses)
+                if misses >= CYCLE_MAX_MISSES:
                     self.stop_event.set()
-                    raise RuntimeError(f"连续 5 次未找到 {step.template}，已自动停止。最后错误: {exc}")
-                self.log(f"    等待 {step.template} 出现: {exc}")
+                    raise RuntimeError(
+                        f"累计 {CYCLE_MAX_MISSES} 次未找到 {step.template}，"
+                        f"回退验证后仍无法推进，已自动停止。最后错误: {exc}"
+                    )
+                self.log(f"    等待 {step.template} 出现（第 {misses}/{CYCLE_MAX_MISSES} 次）: {exc}")
                 self._sleep_interruptible(0.15)
         raise RuntimeError("循环任务已停止。")
+
+    def _retry_previous_cycle_click(self, previous_step: Step, expected_template: str, misses: int) -> bool:
+        probe = replace(previous_step, timeout=min(max(previous_step.timeout, 0.5), 1.0))
+        self.log(
+            f"    回退验证：{expected_template} 已连续 {misses} 次未出现，"
+            f"检查上一张 {previous_step.template}。"
+        )
+        try:
+            x, y, score = self._find_image(probe)
+        except Exception as exc:
+            self.log(f"    回退验证：上一张已不在画面，继续等待 {expected_template}: {exc}")
+            return False
+
+        self.log(
+            f"    回退验证命中 {previous_step.template}: ({x}, {y}) "
+            f"相似度 {score:.3f}，执行补点。"
+        )
+        self._click_cycle_template(previous_step, x, y, recovery=True)
+        self._sleep_click_interval(previous_step.seconds)
+        return True
+
+    def _click_cycle_template(self, step: Step, x: int, y: int, recovery: bool = False) -> None:
+        action = "回退补点" if recovery else "正在点击识别坐标"
+        self.log(f"    {action}: ({x}, {y})")
+        result = self.controller.tap(x, y)
+        if isinstance(result, dict):
+            self.log(
+                "    鼠标移动结果: "
+                f"目标{result.get('target')}，"
+                f"移动后{result.get('after_move')}，"
+                f"SetCursorPos={result.get('set_cursor_ok')}"
+            )
+            if not result.get("set_cursor_ok"):
+                self.log("    鼠标没有移动成功：请尝试右键桌面快捷方式，以管理员身份运行。")
+        self.last_clicked_image_step = step
+
+    def _verify_final_cycle_click(self, final_step: Step) -> None:
+        probe = replace(final_step, timeout=min(max(final_step.timeout, 0.5), 1.0))
+        self.log(f"    最终轮验证：确认 {final_step.template} 已响应点击。")
+        for retry_index in range(CYCLE_FINAL_MAX_RETRIES + 1):
+            try:
+                x, y, score = self._find_image(probe)
+            except Exception:
+                self.log(f"    最终轮验证通过：{final_step.template} 已离开当前画面。")
+                return
+
+            if retry_index >= CYCLE_FINAL_MAX_RETRIES:
+                self.stop_event.set()
+                raise RuntimeError(
+                    f"最终模板 {final_step.template} 补点 {CYCLE_FINAL_MAX_RETRIES} 次后仍停留在画面，"
+                    "任务已自动停止，请检查游戏状态。"
+                )
+
+            self.log(
+                f"    最终轮回退命中 {final_step.template}: ({x}, {y}) "
+                f"相似度 {score:.3f}，执行第 {retry_index + 1}/{CYCLE_FINAL_MAX_RETRIES} 次补点。"
+            )
+            self._click_cycle_template(final_step, x, y, recovery=True)
+            self._sleep_click_interval(final_step.seconds)
 
     def _sleep_interruptible(self, seconds: float) -> None:
         deadline = time.time() + seconds
