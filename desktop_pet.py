@@ -1,0 +1,434 @@
+from __future__ import annotations
+
+import random
+from pathlib import Path
+from tkinter import Canvas, Menu, Toplevel
+from typing import Callable
+
+from PIL import Image, ImageTk
+
+from daniya_persona import idle_line
+
+
+class DesktopPet:
+    """Transparent, draggable desktop-pet window driven by PNG frame folders."""
+
+    STATE_DELAYS = {
+        "idle": 160,
+        "running-right": 85,
+        "running-left": 85,
+        "waving": 260,
+        "jumping": 105,
+        "failed": 145,
+        "waiting": 185,
+        "running": 120,
+        "review": 165,
+    }
+    ONE_SHOT_REPEATS = {"waving": 2, "jumping": 1, "failed": 1, "review": 1}
+    COMMAND_LABELS = (
+        ("达妮娅帮我诊断", "diagnose"),
+        ("检测游戏窗口", "check_target"),
+        ("拿满奖励（15轮）", "run_rewards"),
+        ("拿满星声（13轮）", "run_astrite"),
+        ("停止当前任务", "stop_task"),
+    )
+
+    def __init__(
+        self,
+        root,
+        frames_dir: Path,
+        scale: float = 1.15,
+        commands: dict[str, Callable[[], None]] | None = None,
+    ):
+        self.root = root
+        self.frames_dir = Path(frames_dir)
+        self.scale = scale
+        self.commands = commands or {}
+        self.window = Toplevel(root)
+        self.window.title("达妮娅 · wwbs 1.3.6")
+        self.window.overrideredirect(True)
+        self.window.attributes("-topmost", True)
+        self.transparent = "#010203"
+        self.window.configure(bg=self.transparent)
+        try:
+            self.window.wm_attributes("-transparentcolor", self.transparent)
+        except Exception:
+            pass
+
+        self.frames = self._load_frames()
+        first = self.frames["idle"][0]
+        self.width, self.height = first.width(), first.height()
+        self.canvas = Canvas(
+            self.window,
+            width=self.width,
+            height=self.height,
+            bg=self.transparent,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.canvas.pack()
+        self.image_item = self.canvas.create_image(self.width // 2, self.height // 2, image=first)
+        self.canvas.bind("<ButtonPress-1>", self._start_drag)
+        self.canvas.bind("<B1-Motion>", self._drag)
+        self.canvas.bind("<ButtonRelease-1>", self._stop_drag)
+        self.canvas.bind("<Double-Button-1>", self._interact)
+        self.canvas.bind("<Button-3>", self._popup_menu)
+
+        self.menu = Menu(self.window, tearoff=False)
+        for label, command_key in self.COMMAND_LABELS:
+            command = self.commands.get(command_key)
+            if command is not None:
+                self.menu.add_command(label=label, command=command)
+        self.menu.add_separator()
+        self.menu.add_command(label="开启/关闭漫游", command=self.toggle_roaming)
+        self.menu.add_command(label="隐藏达妮娅", command=self.hide)
+
+        self.bubble_window = Toplevel(self.window)
+        self.bubble_window.overrideredirect(True)
+        self.bubble_window.attributes("-topmost", True)
+        self.bubble_window.configure(bg=self.transparent)
+        try:
+            self.bubble_window.wm_attributes("-transparentcolor", self.transparent)
+        except Exception:
+            pass
+        self.bubble_canvas = Canvas(
+            self.bubble_window,
+            width=300,
+            height=110,
+            bg=self.transparent,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.bubble_canvas.pack()
+        self.bubble_size = (300, 110)
+        self.bubble_text = ""
+        self.bubble_window.withdraw()
+
+        self.state = "idle"
+        self.frame_index = 0
+        self.state_cycles = 0
+        self.visible = True
+        self.dragging = False
+        self.roaming = True
+        self._drag_offset = (0, 0)
+        self._animation_job = None
+        self._roam_job = None
+        self._move_job = None
+        self._bubble_job = None
+        self._chatter_job = None
+        self._move_remaining = 0
+        self._move_step = 0
+
+        self.root.update_idletasks()
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x = max(10, screen_w - self.width - 54)
+        y = max(10, screen_h - self.height - 72)
+        self.window.geometry(f"{self.width}x{self.height}+{x}+{y}")
+        self._animate()
+        self._schedule_roam(4200)
+        self._schedule_chatter(random.randint(24000, 40000))
+
+    def _load_frames(self):
+        loaded = {}
+        for state in self.STATE_DELAYS:
+            paths = sorted((self.frames_dir / state).glob("*.png"))
+            if not paths:
+                raise FileNotFoundError(f"桌宠动画帧缺失：{self.frames_dir / state}")
+            state_frames = []
+            for path in paths:
+                with Image.open(path) as source:
+                    image = source.convert("RGBA")
+                    target = (round(image.width * self.scale), round(image.height * self.scale))
+                    if target != image.size:
+                        image = image.resize(target, Image.Resampling.LANCZOS)
+                    state_frames.append(ImageTk.PhotoImage(image, master=self.window))
+            loaded[state] = state_frames
+        return loaded
+
+    def _animate(self):
+        if not self.visible:
+            return
+        sequence = self.frames[self.state]
+        self.canvas.itemconfigure(self.image_item, image=sequence[self.frame_index])
+        self.frame_index += 1
+        if self.frame_index >= len(sequence):
+            self.frame_index = 0
+            self.state_cycles += 1
+            required_cycles = self.ONE_SHOT_REPEATS.get(self.state)
+            if required_cycles is not None and self.state_cycles >= required_cycles and not self.dragging:
+                self.state = "idle"
+                self.state_cycles = 0
+        self._animation_job = self.window.after(self.STATE_DELAYS[self.state], self._animate)
+
+    def play(self, state: str):
+        if state not in self.frames:
+            return
+        self.show()
+        if state == self.state:
+            return
+        self.state = state
+        self.frame_index = 0
+        self.state_cycles = 0
+
+    def say(self, text: str, duration: int = 3200):
+        self.show()
+        if self._bubble_job:
+            try:
+                self.bubble_window.after_cancel(self._bubble_job)
+            except Exception:
+                pass
+        self.bubble_text = text
+        self._draw_bubble(text)
+        self.bubble_window.deiconify()
+        self.bubble_window.lift()
+        self._position_bubble()
+        self._bubble_job = self.bubble_window.after(duration, self._hide_bubble)
+
+    @staticmethod
+    def _rounded_rect_points(x1: int, y1: int, x2: int, y2: int, radius: int) -> list[int]:
+        return [
+            x1 + radius, y1, x2 - radius, y1,
+            x2, y1, x2, y1 + radius,
+            x2, y2 - radius, x2, y2,
+            x2 - radius, y2, x1 + radius, y2,
+            x1, y2, x1, y2 - radius,
+            x1, y1 + radius, x1, y1,
+        ]
+
+    def _draw_bubble(self, text: str):
+        canvas = self.bubble_canvas
+        canvas.delete("all")
+        probe = canvas.create_text(
+            0,
+            0,
+            text=text,
+            width=254,
+            font=("Microsoft YaHei UI", 10, "bold"),
+            anchor="nw",
+        )
+        canvas.update_idletasks()
+        bbox = canvas.bbox(probe) or (0, 0, 254, 38)
+        text_height = bbox[3] - bbox[1]
+        canvas.delete(probe)
+
+        width = 300
+        body_top = 9
+        body_bottom = body_top + max(78, text_height + 51)
+        height = body_bottom + 24
+        self.bubble_size = (width, height)
+        canvas.configure(width=width, height=height)
+
+        center = width // 2
+        shadow = self._rounded_rect_points(8, body_top + 4, width - 4, body_bottom + 5, 18)
+        canvas.create_polygon(shadow, smooth=True, splinesteps=24, fill="#d9acc5", outline="")
+        canvas.create_polygon(
+            center - 11, body_bottom + 3,
+            center + 15, body_bottom + 3,
+            center + 2, body_bottom + 22,
+            fill="#d9acc5",
+            outline="",
+        )
+        canvas.create_polygon(
+            center - 12, body_bottom - 1,
+            center + 12, body_bottom - 1,
+            center, body_bottom + 19,
+            fill="#fff8fc",
+            outline="#e58ab8",
+            width=2,
+        )
+        body = self._rounded_rect_points(4, body_top, width - 8, body_bottom, 18)
+        canvas.create_polygon(
+            body,
+            smooth=True,
+            splinesteps=24,
+            fill="#fff8fc",
+            outline="#e58ab8",
+            width=2,
+        )
+
+        badge = self._rounded_rect_points(17, 1, 88, 28, 12)
+        canvas.create_polygon(badge, smooth=True, splinesteps=20, fill="#e887b7", outline="#d66ca2", width=1)
+        canvas.create_text(52, 14, text="达妮娅", fill="#ffffff", font=("Microsoft YaHei UI", 9, "bold"))
+        canvas.create_polygon(
+            width - 25, 14,
+            width - 19, 22,
+            width - 25, 30,
+            width - 31, 22,
+            fill="#d7ad63",
+            outline="#c48f3f",
+            width=1,
+        )
+        canvas.create_text(
+            20,
+            37,
+            text=text,
+            width=254,
+            fill="#5d3650",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            justify="left",
+            anchor="nw",
+        )
+
+    def _position_bubble(self):
+        if not self.visible:
+            return
+        self.bubble_window.update_idletasks()
+        bubble_w, bubble_h = self.bubble_size
+        screen_w = self.root.winfo_screenwidth()
+        x = self.window.winfo_x() + ((self.width - bubble_w) // 2)
+        x = max(6, min(screen_w - bubble_w - 6, x))
+        y = self.window.winfo_y() - bubble_h + 14
+        if y < 6:
+            y = self.window.winfo_y() + 42
+        self.bubble_window.geometry(f"{bubble_w}x{bubble_h}+{x}+{y}")
+
+    def _hide_bubble(self):
+        self._bubble_job = None
+        if self.bubble_window.winfo_exists():
+            self.bubble_window.withdraw()
+
+    def _schedule_chatter(self, delay: int | None = None):
+        if self._chatter_job:
+            try:
+                self.window.after_cancel(self._chatter_job)
+            except Exception:
+                pass
+        wait_ms = delay if delay is not None else random.randint(32000, 62000)
+        self._chatter_job = self.window.after(wait_ms, self._chatter_tick)
+
+    def _chatter_tick(self):
+        self._chatter_job = None
+        if self.visible and self.state == "idle" and not self.dragging and self._bubble_job is None:
+            self.say(idle_line(), 4600)
+        self._schedule_chatter()
+
+    def _start_drag(self, event):
+        self.dragging = True
+        self._drag_offset = (event.x_root - self.window.winfo_x(), event.y_root - self.window.winfo_y())
+        self._cancel_move()
+
+    def _drag(self, event):
+        x = event.x_root - self._drag_offset[0]
+        y = event.y_root - self._drag_offset[1]
+        self.window.geometry(f"+{x}+{y}")
+        self._position_bubble()
+        self.play("running-right" if event.x_root >= self.window.winfo_x() + self.width // 2 else "running-left")
+
+    def _stop_drag(self, _event):
+        self.dragging = False
+        self.play("idle")
+        self._schedule_roam(3500)
+
+    def _interact(self, _event=None):
+        self.play(random.choice(("waving", "jumping", "review")))
+
+    def _popup_menu(self, event):
+        try:
+            self.menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.menu.grab_release()
+
+    def toggle_roaming(self):
+        self.roaming = not self.roaming
+        if self.roaming:
+            self._schedule_roam(800)
+        else:
+            self._cancel_move()
+            self.play("idle")
+
+    def _schedule_roam(self, delay=5000):
+        if self._roam_job:
+            try:
+                self.window.after_cancel(self._roam_job)
+            except Exception:
+                pass
+        if self.visible and self.roaming and not self.dragging:
+            self._roam_job = self.window.after(delay, self._begin_roam)
+
+    def _begin_roam(self):
+        if not (self.visible and self.roaming) or self.dragging:
+            return
+        direction = random.choice((-1, 1))
+        screen_w = self.root.winfo_screenwidth()
+        x = self.window.winfo_x()
+        if x < 35:
+            direction = 1
+        elif x + self.width > screen_w - 35:
+            direction = -1
+        self._move_step = 4 * direction
+        self._move_remaining = random.randint(22, 48)
+        self.play("running-right" if direction > 0 else "running-left")
+        self._move_tick()
+
+    def _move_tick(self):
+        if self._move_remaining <= 0 or self.dragging or not self.roaming:
+            self._move_job = None
+            self.play("idle")
+            self._schedule_roam(random.randint(4200, 7200))
+            return
+        screen_w = self.root.winfo_screenwidth()
+        x = max(0, min(screen_w - self.width, self.window.winfo_x() + self._move_step))
+        self.window.geometry(f"+{x}+{self.window.winfo_y()}")
+        self._position_bubble()
+        self._move_remaining -= 1
+        self._move_job = self.window.after(45, self._move_tick)
+
+    def _cancel_move(self):
+        if self._move_job:
+            try:
+                self.window.after_cancel(self._move_job)
+            except Exception:
+                pass
+            self._move_job = None
+
+    def show(self):
+        if self.visible:
+            return
+        self.visible = True
+        self.window.deiconify()
+        self.frame_index = 0
+        self._animate()
+        self._schedule_roam(2500)
+        self._schedule_chatter(random.randint(18000, 34000))
+
+    def hide(self):
+        if not self.visible:
+            return
+        self.visible = False
+        self._cancel_move()
+        self._hide_bubble()
+        if self._chatter_job:
+            try:
+                self.window.after_cancel(self._chatter_job)
+            except Exception:
+                pass
+            self._chatter_job = None
+        if self._animation_job:
+            try:
+                self.window.after_cancel(self._animation_job)
+            except Exception:
+                pass
+            self._animation_job = None
+        self.window.withdraw()
+
+    def toggle_visible(self):
+        self.hide() if self.visible else self.show()
+
+    def close(self):
+        self.visible = False
+        self._cancel_move()
+        if self._roam_job:
+            try:
+                self.window.after_cancel(self._roam_job)
+            except Exception:
+                pass
+        if self._chatter_job:
+            try:
+                self.window.after_cancel(self._chatter_job)
+            except Exception:
+                pass
+        if self.bubble_window.winfo_exists():
+            self.bubble_window.destroy()
+        if self.window.winfo_exists():
+            self.window.destroy()

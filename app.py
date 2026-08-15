@@ -1,4 +1,7 @@
 import json
+import ctypes
+from ctypes import wintypes
+import io
 import os
 import queue
 import random
@@ -11,6 +14,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
+import zipfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +24,8 @@ from PIL import Image, ImageDraw, ImageTk
 
 from image_matcher import TemplateMatcher
 from windows_client import ClientWindowController
+from desktop_pet import DesktopPet
+from daniya_persona import event_line
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -28,7 +34,10 @@ TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.6"
+PET_FRAMES_DIR = APP_DIR / "pet-assets" / "pink-lace-chibi" / "frames"
+THEME_CONFIG = APP_DIR / "theme-settings.json"
+DANIYA_THEME_PACK = APP_DIR / "optional-themes" / "daniya-theme.wwbstheme"
 UPDATE_API_URL = "https://api.github.com/repos/ybpan34-prog/WWBS/releases/latest"
 UPDATE_ASSET_NAME = "wwbs-exe.zip"
 ABOUT_BILIBILI_URL = "https://www.bilibili.com/video/BV1aPuo6uE9r/"
@@ -44,6 +53,16 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    (
+        "v1.3.6",
+        """v1.3.6 更新内容
+1. 加入 Q 版桌宠“达妮娅”，支持状态动作、可爱气泡、主动闲聊和运行诊断。
+2. 加入可选“达妮娅主题”，使用粉色界面与星海背景横幅。
+3. 保留原版简约主题，可在“设置 → 程序主题”中随时切换。
+4. 达妮娅主题以独立压缩包保存，程序直接读取，额外占用约 49 KB。
+5. 新增全局停止快捷键 Ctrl + Alt + S，焦点在游戏窗口时也能请求停止任务。
+6. 桌宠触发自动任务时不再显示重复的开始确认窗口。""",
+    ),
     ("v1.3.5", UPDATE_NOTICE.split("\n使用前请确认", 1)[0]),
     (
         "v1.3.4",
@@ -84,15 +103,25 @@ PREVIEW_MAX_HEIGHT = 520
 PREVIEW_MIN_HEIGHT = 320
 START_CONTENT_SIDE_PADDING = 28
 ACTION_PANEL_WIDTH = 360
+THEME_BANNER_HEIGHT = 176
+STOP_HOTKEY_ID = 0xB136
+STOP_HOTKEY_LABEL = "Ctrl + Alt + S"
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_NOREPEAT = 0x4000
+VK_S = 0x53
+WM_HOTKEY = 0x0312
+WM_QUIT = 0x0012
 CLICK_EDGE_MARGIN_RATIO = 0.10
 CLICK_JITTER_RATIO = 0.25
 CLICK_DELAY_JITTER_SECONDS = 0.20
 CYCLE_MAX_MISSES = 5
 CYCLE_FALLBACK_MISS_COUNTS = (2, 4)
 CYCLE_FINAL_MAX_RETRIES = 2
+DIAGNOSTIC_START_TEMPLATE = "menu1.png"
 FONT_FAMILY = "Microsoft YaHei UI"
 MONO_FONT = "Consolas"
-COLORS = {
+SIMPLE_COLORS = {
     "app_bg": "#f5f5f7",
     "panel": "#ffffff",
     "panel_alt": "#fbfbfd",
@@ -105,6 +134,20 @@ COLORS = {
     "danger": "#ff3b30",
     "preview": "#111318",
 }
+DANIYA_COLORS = {
+    "app_bg": "#fff4f8",
+    "panel": "#fffafd",
+    "panel_alt": "#fff0f6",
+    "line": "#e9b9cf",
+    "line_soft": "#f3d9e5",
+    "text": "#402c39",
+    "muted": "#806474",
+    "primary": "#d65f98",
+    "primary_hover": "#e976ab",
+    "danger": "#c94f73",
+    "preview": "#241d2d",
+}
+COLORS = dict(SIMPLE_COLORS)
 
 
 @dataclass
@@ -648,11 +691,18 @@ class TemplateCropper:
 class App:
     def __init__(self, root: Tk):
         self.root = root
+        self.theme_id = self._load_theme_preference()
+        COLORS.clear()
+        COLORS.update(DANIYA_COLORS if self.theme_id == "daniya" else SIMPLE_COLORS)
         self.root.title(f"wwbs {APP_VERSION}")
         if APP_ICON.exists():
             self.root.iconbitmap(str(APP_ICON))
-        self.root.geometry("1280x1210")
-        self.root.minsize(1100, 760)
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        initial_width = min(1280, max(960, screen_width - 80))
+        initial_height = min(900, max(700, screen_height - 80))
+        self.root.geometry(f"{initial_width}x{initial_height}")
+        self.root.minsize(min(1100, screen_width - 40), min(760, screen_height - 40))
         self.config_path = StringVar(value=str(DEFAULT_CONFIG))
         self.target_mode = StringVar(value="client")
         self.window_title = StringVar(value="鸣潮")
@@ -683,24 +733,70 @@ class App:
         self.preview_photo = None
         self.preview_source: Path | None = None
         self.preview_title = ""
+        self.desktop_pet: DesktopPet | None = None
+        self.theme_status = StringVar(value=self._theme_status_text())
+        self.theme_banner_photo = None
+        self.theme_banner_source = None
+        self._theme_banner_resize_job = None
+        self._hotkey_thread_id: int | None = None
+        self._hotkey_registered = False
+        self._hotkey_ready = threading.Event()
+        self._hotkey_triggered = threading.Event()
+        self._hotkey_status_reported = False
+        self._hotkey_poll_job = None
 
         self._build_ui()
         self._load_config(silent=True)
         self._refresh_templates()
         self._drain_logs()
+        self.root.protocol("WM_DELETE_WINDOW", self._close_app)
+        self._start_stop_hotkey()
+        self.root.after(120, self._start_desktop_pet)
         self.root.after(300, self._show_update_notice)
+
+    @staticmethod
+    def _theme_pack_valid(path: Path = DANIYA_THEME_PACK) -> bool:
+        try:
+            with zipfile.ZipFile(path) as archive:
+                names = set(archive.namelist())
+                if not {"theme.json", "background.webp"}.issubset(names):
+                    return False
+                manifest = json.loads(archive.read("theme.json").decode("utf-8"))
+                return manifest.get("id") == "daniya-pink"
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile, json.JSONDecodeError):
+            return False
+
+    @classmethod
+    def _load_theme_preference(cls) -> str:
+        try:
+            selected = json.loads(THEME_CONFIG.read_text(encoding="utf-8")).get("theme", "simple")
+        except (OSError, ValueError, json.JSONDecodeError):
+            selected = "simple"
+        if selected == "daniya" and cls._theme_pack_valid():
+            return "daniya"
+        return "simple"
+
+    def _theme_status_text(self) -> str:
+        if self.theme_id == "daniya":
+            return "当前：达妮娅主题 · 可选资源约 49 KB"
+        if self._theme_pack_valid():
+            return "当前：原版简约主题 · 达妮娅主题包已就绪"
+        return "当前：原版简约主题 · 尚未安装达妮娅主题包"
 
     def _build_ui(self) -> None:
         self._setup_style()
         self.root.configure(bg=COLORS["app_bg"])
 
-        header = Frame(self.root, padx=24, pady=18, bg=COLORS["app_bg"])
-        header.pack(side=TOP, fill=X)
-        Label(header, text="wwbs", font=(FONT_FAMILY, 22, "bold"), fg=COLORS["text"], bg=COLORS["app_bg"]).pack(side=LEFT)
-        Button(header, text="检查更新", command=self._check_for_updates).pack(side=RIGHT, padx=(0, 8))
-        Button(header, text="关于", command=self._show_about).pack(side=RIGHT, padx=(0, 8))
-        Button(header, text="更新公告", command=self._show_update_history).pack(side=RIGHT, padx=(0, 14))
-        Label(header, textvariable=self.status, font=(FONT_FAMILY, 10), fg=COLORS["muted"], bg=COLORS["app_bg"]).pack(side=RIGHT)
+        if self.theme_id == "daniya":
+            self._build_theme_banner()
+
+        self.header = Frame(self.root, padx=24, pady=18, bg=COLORS["app_bg"])
+        self.header.pack(side=TOP, fill=X)
+        Label(self.header, text="wwbs", font=(FONT_FAMILY, 22, "bold"), fg=COLORS["text"], bg=COLORS["app_bg"]).pack(side=LEFT)
+        Button(self.header, text="检查更新", command=self._check_for_updates).pack(side=RIGHT, padx=(0, 8))
+        Button(self.header, text="关于", command=self._show_about).pack(side=RIGHT, padx=(0, 8))
+        Button(self.header, text="更新公告", command=self._show_update_history).pack(side=RIGHT, padx=(0, 14))
+        Label(self.header, textvariable=self.status, font=(FONT_FAMILY, 10), fg=COLORS["muted"], bg=COLORS["app_bg"]).pack(side=RIGHT)
 
         summary = Frame(self.root, padx=24, pady=4, bg=COLORS["app_bg"])
         summary.pack(side=TOP, fill=X)
@@ -729,6 +825,69 @@ class App:
         self._build_log_tab()
         self._polish_widgets(self.root)
 
+    def _build_theme_banner(self) -> None:
+        try:
+            with zipfile.ZipFile(DANIYA_THEME_PACK) as archive:
+                image_bytes = archive.read("background.webp")
+            with Image.open(io.BytesIO(image_bytes)) as source:
+                self.theme_banner_source = source.convert("RGB")
+        except (OSError, KeyError, zipfile.BadZipFile) as exc:
+            self.log_queue.put(f"达妮娅主题背景读取失败：{exc}")
+            return
+
+        self.theme_banner = Canvas(
+            self.root,
+            height=THEME_BANNER_HEIGHT,
+            bg="#241d2d",
+            highlightthickness=0,
+        )
+        self.theme_banner.pack(side=TOP, fill=X)
+        self.theme_banner.bind("<Configure>", self._schedule_theme_banner_render)
+        self.root.after_idle(self._render_theme_banner)
+
+    def _schedule_theme_banner_render(self, _event=None) -> None:
+        if self._theme_banner_resize_job is not None:
+            self.root.after_cancel(self._theme_banner_resize_job)
+        self._theme_banner_resize_job = self.root.after(80, self._render_theme_banner)
+
+    def _render_theme_banner(self) -> None:
+        self._theme_banner_resize_job = None
+        source = self.theme_banner_source
+        canvas = getattr(self, "theme_banner", None)
+        if source is None or canvas is None or not canvas.winfo_exists():
+            return
+        width = max(canvas.winfo_width(), 1100)
+        height = THEME_BANNER_HEIGHT
+        source_width, source_height = source.size
+        target_ratio = width / height
+        source_ratio = source_width / source_height
+        if source_ratio < target_ratio:
+            crop_height = max(1, round(source_width / target_ratio))
+            focus_y = round(source_height * 0.38)
+            top = min(max(0, focus_y - crop_height // 2), source_height - crop_height)
+            crop_box = (0, top, source_width, top + crop_height)
+        else:
+            crop_width = max(1, round(source_height * target_ratio))
+            left = max(0, (source_width - crop_width) // 2)
+            crop_box = (left, 0, left + crop_width, source_height)
+
+        banner = source.crop(crop_box).resize((width, height), Image.Resampling.LANCZOS).convert("RGBA")
+        overlay = Image.new("RGBA", banner.size, (24, 18, 42, 34))
+        banner = Image.alpha_composite(banner, overlay).convert("RGB")
+        self.theme_banner_photo = ImageTk.PhotoImage(banner)
+        canvas.delete("all")
+        canvas.create_image(0, 0, image=self.theme_banner_photo, anchor="nw")
+        text_x = width - 38
+        canvas.create_text(text_x, 67, text="达妮娅", anchor="e", fill="#fff7fb", font=(FONT_FAMILY, 22, "bold"))
+        canvas.create_text(
+            text_x,
+            108,
+            text="我不太擅长战斗啦……可以申请偷懒吗？",
+            anchor="e",
+            fill="#f5c9dd",
+            font=(FONT_FAMILY, 11),
+        )
+
     def _setup_style(self) -> None:
         style = ttk.Style()
         try:
@@ -740,11 +899,11 @@ class App:
         self.root.option_add("*selectForeground", "#ffffff")
         style.configure("TNotebook", background=COLORS["app_bg"], borderwidth=0, tabmargins=(0, 0, 0, 0))
         style.configure("TNotebook.Tab", padding=(18, 9), font=(FONT_FAMILY, 10, "bold"), background=COLORS["panel_alt"], foreground=COLORS["muted"], borderwidth=0)
-        style.map("TNotebook.Tab", background=[("selected", COLORS["panel"]), ("active", "#ffffff")], foreground=[("selected", COLORS["text"]), ("active", COLORS["text"])])
+        style.map("TNotebook.Tab", background=[("selected", COLORS["panel"]), ("active", COLORS["panel"])], foreground=[("selected", COLORS["text"]), ("active", COLORS["text"])])
         style.configure("Primary.TButton", padding=(18, 11), font=(FONT_FAMILY, 11, "bold"), background=COLORS["primary"], foreground="#ffffff", borderwidth=0, focusthickness=0)
-        style.map("Primary.TButton", background=[("active", COLORS["primary_hover"]), ("pressed", "#0066cc")], foreground=[("disabled", "#f2f2f7"), ("!disabled", "#ffffff")])
-        style.configure("TButton", padding=(12, 7), font=(FONT_FAMILY, 10), background="#ffffff", foreground=COLORS["text"], bordercolor=COLORS["line"], lightcolor="#ffffff", darkcolor=COLORS["line"], focusthickness=0)
-        style.map("TButton", background=[("active", COLORS["panel_alt"]), ("pressed", "#f2f2f7")])
+        style.map("Primary.TButton", background=[("active", COLORS["primary_hover"]), ("pressed", COLORS["primary"])], foreground=[("disabled", COLORS["line_soft"]), ("!disabled", "#ffffff")])
+        style.configure("TButton", padding=(12, 7), font=(FONT_FAMILY, 10), background=COLORS["panel"], foreground=COLORS["text"], bordercolor=COLORS["line"], lightcolor=COLORS["panel"], darkcolor=COLORS["line"], focusthickness=0)
+        style.map("TButton", background=[("active", COLORS["panel_alt"]), ("pressed", COLORS["line_soft"])])
         style.configure("TRadiobutton", background=COLORS["panel"], foreground=COLORS["text"], font=(FONT_FAMILY, 10))
         style.map("TRadiobutton", background=[("active", COLORS["panel"])])
         style.configure("Vertical.TScrollbar", background=COLORS["line_soft"], troughcolor=COLORS["panel"], borderwidth=0, arrowcolor=COLORS["muted"])
@@ -767,7 +926,7 @@ class App:
                 child.configure(bg=parent_bg, fg=child.cget("fg") if child.cget("fg") not in ("SystemButtonText", "black") else COLORS["text"])
             elif klass == "Button":
                 child.configure(
-                    bg="#ffffff",
+                    bg=COLORS["panel"],
                     fg=COLORS["text"],
                     activebackground=COLORS["panel_alt"],
                     activeforeground=COLORS["text"],
@@ -781,7 +940,7 @@ class App:
                 )
             elif klass == "Entry":
                 child.configure(
-                    bg="#ffffff",
+                    bg=COLORS["panel"],
                     fg=COLORS["text"],
                     insertbackground=COLORS["text"],
                     relief="flat",
@@ -792,7 +951,7 @@ class App:
                 )
             elif klass == "Listbox":
                 child.configure(
-                    bg="#ffffff",
+                    bg=COLORS["panel"],
                     fg=COLORS["text"],
                     selectbackground=COLORS["primary"],
                     selectforeground="#ffffff",
@@ -804,7 +963,7 @@ class App:
                 )
             elif klass == "Text":
                 child.configure(
-                    bg="#ffffff",
+                    bg=COLORS["panel"],
                     fg=COLORS["text"],
                     insertbackground=COLORS["text"],
                     relief="flat",
@@ -816,9 +975,9 @@ class App:
                 )
             elif klass == "Checkbutton":
                 parent_bg = child.master.cget("bg") if hasattr(child.master, "cget") else COLORS["panel"]
-                child.configure(bg=parent_bg, fg=COLORS["text"], activebackground=parent_bg, activeforeground=COLORS["text"], selectcolor="#ffffff")
+                child.configure(bg=parent_bg, fg=COLORS["text"], activebackground=parent_bg, activeforeground=COLORS["text"], selectcolor=COLORS["panel"])
             elif klass == "Canvas":
-                if child is not getattr(self, "preview_canvas", None):
+                if child not in (getattr(self, "preview_canvas", None), getattr(self, "theme_banner", None)):
                     child.configure(bg=COLORS["panel"], highlightthickness=0)
             self._polish_widgets(child)
 
@@ -861,7 +1020,20 @@ class App:
         ttk.Button(action_box, text="检测游戏窗口", style="Primary.TButton", command=self._check_target).grid(row=0, column=0, sticky="ew", pady=(0, 10))
         ttk.Button(action_box, text="拿满奖励（15轮）", style="Primary.TButton", command=lambda: self._start_enabled_real(15)).grid(row=1, column=0, sticky="ew", pady=(0, 10))
         ttk.Button(action_box, text="拿满星声（13轮）", style="Primary.TButton", command=lambda: self._start_enabled_real(13)).grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        Button(action_box, text="停止当前任务", command=self._stop).grid(row=3, column=0, sticky="ew")
+        Button(action_box, text=f"停止当前任务（{STOP_HOTKEY_LABEL}）", command=self._stop).grid(row=3, column=0, sticky="ew")
+
+        Label(left, text="达妮娅", font=(FONT_FAMILY, 12, "bold")).pack(anchor="w", pady=(10, 0))
+        pet_box = Frame(left, padx=14, pady=14, bg=COLORS["panel_alt"], highlightthickness=1, highlightbackground=COLORS["line_soft"])
+        pet_box.pack(fill=X, pady=(8, 10))
+        Button(pet_box, text="显示 / 隐藏", command=self._toggle_desktop_pet).pack(fill=X)
+        Label(
+            left,
+            text="提示：右键达妮娅可直接执行一键操作",
+            fg=COLORS["muted"],
+            bg=COLORS["panel"],
+            wraplength=ACTION_PANEL_WIDTH - 10,
+            justify=LEFT,
+        ).pack(anchor="w", pady=(0, 10))
 
         Label(right, text="游戏窗口预览", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(12, 4))
         self.preview_canvas = Canvas(right, width=900, height=506, bg=COLORS["preview"], highlightthickness=1, highlightbackground=COLORS["line_soft"])
@@ -982,6 +1154,28 @@ class App:
         Label(self.settings_tab, text="高级设置", font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
         Label(self.settings_tab, text="普通使用 PC 客户端模式即可。只有使用模拟器时才需要切换到 ADB。", fg="#5f6b7a").pack(anchor="w", pady=(2, 12))
 
+        theme_box = Frame(
+            self.settings_tab,
+            padx=16,
+            pady=14,
+            bg=COLORS["panel_alt"],
+            highlightthickness=1,
+            highlightbackground=COLORS["line_soft"],
+        )
+        theme_box.pack(fill=X, pady=(0, 14))
+        Label(theme_box, text="程序主题", font=(FONT_FAMILY, 11, "bold"), bg=COLORS["panel_alt"]).pack(anchor="w")
+        Label(theme_box, textvariable=self.theme_status, fg=COLORS["muted"], bg=COLORS["panel_alt"]).pack(anchor="w", pady=(3, 10))
+        theme_actions = Frame(theme_box, bg=COLORS["panel_alt"])
+        theme_actions.pack(fill=X)
+        Button(theme_actions, text="使用原版简约主题", command=lambda: self._select_theme("simple")).pack(side=LEFT)
+        Button(theme_actions, text="安装 / 使用达妮娅主题（约 49 KB）", command=lambda: self._select_theme("daniya")).pack(side=LEFT, padx=(10, 0))
+        Label(
+            theme_box,
+            text="主题包独立存放，程序直接读取压缩资源；切换后会自动重启程序。",
+            fg=COLORS["muted"],
+            bg=COLORS["panel_alt"],
+        ).pack(anchor="w", pady=(10, 0))
+
         mode_row = Frame(self.settings_tab)
         mode_row.pack(fill=X, pady=5)
         Label(mode_row, text="操作目标", width=12, anchor="w").pack(side=LEFT)
@@ -1024,7 +1218,41 @@ class App:
         Checkbutton(row4, text="预演模式：识别模板但不点击设备", variable=self.dry_run).pack(side=LEFT)
         Button(row4, text="保存一张当前截图", command=self._screenshot).pack(side=LEFT, padx=12)
         Button(row4, text="查看程序目录", command=self._open_config_dir).pack(side=LEFT)
+
         self._update_mode_label()
+
+    def _select_theme(self, theme_id: str) -> None:
+        if theme_id == "daniya" and not self._theme_pack_valid():
+            source = filedialog.askopenfilename(
+                title="选择达妮娅主题包",
+                filetypes=[("wwbs 主题包", "*.wwbstheme"), ("所有文件", "*.*")],
+                parent=self.root,
+            )
+            if not source:
+                return
+            source_path = Path(source)
+            if not self._theme_pack_valid(source_path):
+                messagebox.showerror("主题包不可用", "这个文件不是有效的达妮娅主题包。", parent=self.root)
+                return
+            DANIYA_THEME_PACK.parent.mkdir(parents=True, exist_ok=True)
+            if source_path.resolve() != DANIYA_THEME_PACK.resolve():
+                shutil.copy2(source_path, DANIYA_THEME_PACK)
+
+        if theme_id == self.theme_id:
+            messagebox.showinfo("主题", "已经在使用这个主题了。", parent=self.root)
+            return
+        THEME_CONFIG.write_text(json.dumps({"theme": theme_id}, ensure_ascii=False), encoding="utf-8")
+        display_name = "达妮娅主题" if theme_id == "daniya" else "原版简约主题"
+        if messagebox.askyesno("切换主题", f"已选择{display_name}。现在重启程序查看效果吗？", parent=self.root):
+            self._restart_app()
+
+    def _restart_app(self) -> None:
+        if getattr(sys, "frozen", False):
+            command = [sys.executable]
+        else:
+            command = [sys.executable, str(Path(__file__).resolve())]
+        subprocess.Popen(command, cwd=str(APP_DIR))
+        self._close_app()
 
     def _build_log_tab(self) -> None:
         Label(self.log_tab, text="运行日志", font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
@@ -1033,7 +1261,283 @@ class App:
         Button(self.log_tab, text="清空日志", command=lambda: self.log_text.delete("1.0", END)).pack(anchor="e")
 
     def _show_update_notice(self) -> None:
-        messagebox.showinfo(f"wwbs {APP_VERSION} 更新公告", UPDATE_NOTICE, parent=self.root)
+        messagebox.showinfo(
+            f"wwbs {APP_VERSION} 更新公告",
+            "1.3.6 正式版\n\n"
+            "• 加入 Q 版桌宠「达妮娅」\n"
+            "• 支持待机、行走、挥手、跳跃、等待、处理、检查与失败动画\n"
+            "• 右键达妮娅可执行一键操作，程序状态会触发对应动作和可爱气泡提示\n"
+            "• 新增“达妮娅帮我诊断”，可检查权限、窗口比例、截图、配置和模板\n"
+            "• 待机时达妮娅偶尔会称呼你为“漂泊者”并主动闲聊\n"
+            "• 可拖动、双击互动，也可关闭自动漫游\n\n"
+            "• 新增可选粉色“达妮娅主题”，含星海背景横幅\n"
+            "• 可在“设置 → 程序主题”切回原版简约主题，主题包仅约 49 KB\n\n"
+            "• 全局按下 Ctrl + Alt + S 可立即请求停止当前任务\n\n"
+            "感谢参与 1.3.6 beta 本地测试。达妮娅现在正式加入 wwbs。",
+            parent=self.root,
+        )
+
+    def _start_desktop_pet(self) -> None:
+        if self.desktop_pet is not None:
+            return
+        try:
+            self.desktop_pet = DesktopPet(
+                self.root,
+                PET_FRAMES_DIR,
+                commands={
+                    "diagnose": self._diagnose_runtime,
+                    "check_target": self._check_target,
+                    "run_rewards": lambda: self._start_enabled_real(15, require_confirmation=False),
+                    "run_astrite": lambda: self._start_enabled_real(13, require_confirmation=False),
+                    "stop_task": self._stop,
+                },
+            )
+            self.log_queue.put("达妮娅已启动：拖动移动，双击互动，右键执行功能或运行诊断。")
+        except Exception as exc:
+            self.log_queue.put(f"达妮娅启动失败：{exc}")
+
+    def _toggle_desktop_pet(self) -> None:
+        if self.desktop_pet is None:
+            self._start_desktop_pet()
+        elif self.desktop_pet.window.winfo_exists():
+            self.desktop_pet.toggle_visible()
+
+    def _play_pet(self, state: str) -> None:
+        if self.desktop_pet is None:
+            self._start_desktop_pet()
+        if self.desktop_pet is not None:
+            self.desktop_pet.play(state)
+
+    def _pet_feedback(self, state: str, message: str, duration: int = 3200) -> None:
+        if self.desktop_pet is None:
+            self._start_desktop_pet()
+        if self.desktop_pet is not None:
+            self.desktop_pet.play(state)
+            self.desktop_pet.say(message, duration)
+
+    def _show_task_error_feedback(self, error_text: str) -> None:
+        template_problem = any(
+            marker in error_text
+            for marker in ("未找到", "识别超时", "模板不存在", "模板组不存在", "模板列表为空")
+        )
+        if template_problem:
+            self._pet_feedback("waiting", event_line("template_missing"), 4800)
+        else:
+            self._pet_feedback("failed", event_line("runtime_error"), 4800)
+
+    def _diagnose_runtime(self) -> None:
+        self._pet_feedback("review", event_line("diagnose_start"), 3000)
+        mode = self.target_mode.get()
+        window_title = self.window_title.get()
+        expected_resolution = self.expected_resolution.get()
+        adb_path = self.adb_path.get()
+        device_id = self.device_id.get()
+        config_path = Path(self.config_path.get())
+        template_dir = self._template_group_dir(self.template_group.get())
+        task_count = len(self.tasks)
+        worker_running = bool(self.worker and self.worker.is_alive())
+
+        def work() -> None:
+            findings: list[tuple[str, str]] = []
+
+            try:
+                is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+            except Exception:
+                is_admin = False
+            if is_admin:
+                findings.append(("ok", "程序已使用管理员权限运行。"))
+            else:
+                findings.append(("warning", "程序没有以管理员身份运行，鼠标点击可能会被游戏拦截。"))
+
+            if config_path.exists():
+                try:
+                    configured_tasks = ConfigStore(config_path).load()
+                    findings.append(("ok", f"任务配置可读取，共 {len(configured_tasks)} 个任务。"))
+                except Exception as exc:
+                    findings.append(("error", f"任务配置读取失败：{exc}"))
+            else:
+                findings.append(("error", f"任务配置不存在：{config_path}"))
+
+            template_count = len(list(template_dir.glob("*.png"))) if template_dir.exists() else 0
+            if template_count:
+                findings.append(("ok", f"当前模板组有 {template_count} 张模板。"))
+            else:
+                findings.append(("error", f"当前模板组没有可用 PNG 模板：{template_dir}"))
+
+            if task_count:
+                findings.append(("ok", f"程序内已加载 {task_count} 个任务。"))
+            else:
+                findings.append(("error", "程序内没有加载任何任务。"))
+            if worker_running:
+                findings.append(("warning", "当前已有任务线程正在运行，不需要重复启动。"))
+
+            try:
+                if mode == "adb":
+                    output = AdbClient(adb_path, device_id).devices()
+                    connected = [line for line in output.splitlines()[1:] if line.strip().endswith("device")]
+                    if connected:
+                        findings.append(("ok", f"ADB 已连接 {len(connected)} 台设备。"))
+                    else:
+                        findings.append(("error", "ADB 没有发现可用设备。"))
+                else:
+                    resolution_text = expected_resolution.strip().lower().replace("×", "x")
+                    if resolution_text:
+                        width_text, height_text = resolution_text.split("x", 1)
+                        base_size = (int(width_text), int(height_text))
+                    else:
+                        base_size = None
+                    controller = ClientWindowController(window_title, base_size)
+                    connection_message = controller.connect()
+                    findings.append(("ok", connection_message + "。"))
+                    preview = APP_DIR / "_diagnostic_preview.png"
+                    capture_method = controller.screencap(preview)
+                    capture_size = controller.last_capture_size or controller.client_size()
+                    findings.append(("ok", f"游戏截图成功：{capture_size[0]}x{capture_size[1]}，方式 {capture_method}。"))
+                    start_template = template_dir / DIAGNOSTIC_START_TEMPLATE
+                    if not start_template.exists():
+                        findings.append(("error", f"缺少起始界面模板：{DIAGNOSTIC_START_TEMPLATE}。"))
+                    else:
+                        try:
+                            start_match = TemplateMatcher(template_dir).find(
+                                preview,
+                                DIAGNOSTIC_START_TEMPLATE,
+                                threshold=0.82,
+                                scales=controller.template_scales(),
+                            )
+                            findings.append(
+                                (
+                                    "ok",
+                                    f"已确认位于无存档的小漂泊者初始界面，相似度 {start_match.score:.3f}。",
+                                )
+                            )
+                        except Exception as exc:
+                            if "未找到模板" in str(exc):
+                                findings.append(
+                                    (
+                                        "error",
+                                        "当前不是小漂泊者的初始界面，或界面已经存在存档。"
+                                        "请返回带“开始游戏”按钮的小漂泊者页面，并确保没有存档。",
+                                    )
+                                )
+                            else:
+                                findings.append(("error", f"起始界面识别失败：{exc}"))
+                    self.root.after(0, lambda: self._show_preview(preview, "诊断截图"))
+            except Exception as exc:
+                error_text = str(exc)
+                if "等比例缩放" in error_text:
+                    findings.append(("error", f"游戏窗口比例不对：{error_text}"))
+                elif mode == "adb":
+                    findings.append(("error", f"ADB 检查失败：{error_text}"))
+                else:
+                    findings.append(("error", f"游戏窗口检查失败：{error_text}"))
+
+            self._log("=== 达妮娅运行诊断 ===")
+            icons = {"ok": "[正常]", "warning": "[注意]", "error": "[问题]"}
+            for level, message in findings:
+                self._log(f"{icons[level]} {message}")
+            self._log("=== 诊断结束 ===")
+
+            errors = [message for level, message in findings if level == "error"]
+            warnings = [message for level, message in findings if level == "warning"]
+            if errors:
+                primary = errors[0]
+                self.root.after(
+                    0,
+                    lambda text=primary: self._pet_feedback(
+                        "failed",
+                        event_line("diagnose_error", detail=text),
+                        6200,
+                    ),
+                )
+            elif warnings:
+                primary = warnings[0]
+                self.root.after(
+                    0,
+                    lambda text=primary: self._pet_feedback(
+                        "waiting",
+                        event_line("diagnose_warning", detail=text),
+                        6200,
+                    ),
+                )
+            else:
+                self.root.after(
+                    0,
+                    lambda: self._pet_feedback(
+                        "waving",
+                        event_line("diagnose_ok"),
+                        4600,
+                    ),
+                )
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _close_app(self) -> None:
+        self.stop_event.set()
+        if self._hotkey_poll_job is not None:
+            try:
+                self.root.after_cancel(self._hotkey_poll_job)
+            except Exception:
+                pass
+            self._hotkey_poll_job = None
+        if self._hotkey_thread_id is not None:
+            try:
+                ctypes.windll.user32.PostThreadMessageW(self._hotkey_thread_id, WM_QUIT, 0, 0)
+            except Exception:
+                pass
+        if self.desktop_pet is not None:
+            self.desktop_pet.close()
+        self.root.destroy()
+
+    def _start_stop_hotkey(self) -> None:
+        self.root.bind_all("<Control-Alt-s>", self._handle_local_stop_hotkey, add="+")
+
+        def listen() -> None:
+            try:
+                self._hotkey_thread_id = int(ctypes.windll.kernel32.GetCurrentThreadId())
+                modifiers = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT
+                self._hotkey_registered = bool(
+                    ctypes.windll.user32.RegisterHotKey(None, STOP_HOTKEY_ID, modifiers, VK_S)
+                )
+            except Exception:
+                self._hotkey_registered = False
+            finally:
+                self._hotkey_ready.set()
+
+            if not self._hotkey_registered:
+                return
+            message = wintypes.MSG()
+            try:
+                while ctypes.windll.user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+                    if message.message == WM_HOTKEY and message.wParam == STOP_HOTKEY_ID:
+                        self._hotkey_triggered.set()
+            finally:
+                ctypes.windll.user32.UnregisterHotKey(None, STOP_HOTKEY_ID)
+
+        threading.Thread(target=listen, name="wwbs-stop-hotkey", daemon=True).start()
+        self._hotkey_poll_job = self.root.after(100, self._poll_stop_hotkey)
+
+    def _handle_local_stop_hotkey(self, _event=None):
+        if not self._hotkey_registered:
+            self._stop_from_hotkey()
+        return "break"
+
+    def _poll_stop_hotkey(self) -> None:
+        self._hotkey_poll_job = None
+        if self._hotkey_ready.is_set() and not self._hotkey_status_reported:
+            self._hotkey_status_reported = True
+            if self._hotkey_registered:
+                self._log(f"全局停止快捷键已启用：{STOP_HOTKEY_LABEL}")
+            else:
+                self._log(f"全局快捷键注册失败；{STOP_HOTKEY_LABEL} 仍可在程序窗口内使用。")
+        if self._hotkey_triggered.is_set():
+            self._hotkey_triggered.clear()
+            self._stop_from_hotkey()
+        if self.root.winfo_exists():
+            self._hotkey_poll_job = self.root.after(100, self._poll_stop_hotkey)
+
+    def _stop_from_hotkey(self) -> None:
+        self._log(f"收到快捷键 {STOP_HOTKEY_LABEL}。")
+        self._stop()
 
     def _show_about(self) -> None:
         window = Toplevel(self.root)
@@ -1448,10 +1952,13 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         self.dry_run.set(True)
         self._run_selected()
 
-    def _start_enabled_real(self, max_cycles: int | None = None) -> None:
-        target = "PC 客户端窗口" if self.target_mode.get() == "client" else "模拟器 / ADB"
-        if not messagebox.askyesno("确认开始", f"程序将操作 {target}。请确认游戏已打开并停在正确界面。"):
-            return
+    def _start_enabled_real(self, max_cycles: int | None = None, require_confirmation: bool = True) -> None:
+        if require_confirmation:
+            target = "PC 客户端窗口" if self.target_mode.get() == "client" else "模拟器 / ADB"
+            if not messagebox.askyesno("确认开始", f"程序将操作 {target}。请确认游戏已打开并停在正确界面。"):
+                return
+        else:
+            self._log("由达妮娅触发任务，已跳过开始确认。")
         self.max_cycles = max_cycles
         self.dry_run.set(False)
         self._run_enabled()
@@ -1491,6 +1998,7 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             messagebox.showinfo("提示", "任务正在运行中。")
             return
         self.stop_event.clear()
+        self._pet_feedback("running", event_line("task_start"))
         self.worker = threading.Thread(target=self._run_tasks, args=(tasks,), daemon=True)
         self.worker.start()
 
@@ -1505,8 +2013,11 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             for task in tasks:
                 runner.run_task(task)
             self._log("执行结束。")
+            self.root.after(0, lambda: self._pet_feedback("review", event_line("task_complete")))
         except Exception as exc:
-            self._log(f"执行失败: {exc}")
+            error_text = str(exc)
+            self._log(f"执行失败: {error_text}")
+            self.root.after(0, lambda text=error_text: self._show_task_error_feedback(text))
         finally:
             self.max_cycles = None
 
@@ -1549,6 +2060,8 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             raise RuntimeError("模板基准格式应为 1920x1080。")
 
     def _check_target(self) -> None:
+        self._pet_feedback("review", event_line("check_start"), 2600)
+
         def work() -> None:
             try:
                 if self.target_mode.get() == "adb":
@@ -1556,10 +2069,11 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
                     connected = [line for line in output.splitlines()[1:] if line.strip().endswith("device")]
                     self.device_status.set(f"已连接 {len(connected)} 台设备" if connected else "未发现可用设备")
                     self._log("ADB 设备列表:\n" + output)
-                    if connected:
-                        preview = APP_DIR / "_target_preview.png"
-                        AdbClient(self.adb_path.get(), self.device_id.get()).screencap(preview)
-                        self.root.after(0, lambda: self._show_preview(preview, "模拟器画面"))
+                    if not connected:
+                        raise RuntimeError("未发现可用设备")
+                    preview = APP_DIR / "_target_preview.png"
+                    AdbClient(self.adb_path.get(), self.device_id.get()).screencap(preview)
+                    self.root.after(0, lambda: self._show_preview(preview, "模拟器画面"))
                 else:
                     controller = ClientWindowController(self.window_title.get(), self._parse_resolution())
                     message = controller.connect()
@@ -1569,9 +2083,11 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
                     self._log(message)
                     self._log(f"PC 截图方式: {capture_method}")
                     self.root.after(0, lambda: self._show_preview(preview, "PC 客户端画面"))
+                self.root.after(0, lambda: self._pet_feedback("waving", event_line("check_success")))
             except Exception as exc:
                 self.device_status.set("检测失败")
                 self._log(f"检测失败: {exc}")
+                self.root.after(0, lambda: self._pet_feedback("failed", event_line("check_failure"), 4600))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1620,6 +2136,7 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 
     def _stop(self) -> None:
         self.stop_event.set()
+        self._pet_feedback("waiting", event_line("stop_requested"))
         self._log("正在请求停止...")
 
     def _open_config_dir(self) -> None:
