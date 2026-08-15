@@ -11,6 +11,7 @@ venv/
 dist/
 build/
 *.spec
+!wwbs.spec
 release/
 wwbs-exe/
 wwbs-release.zip
@@ -20,3 +21,6 @@ vendor/
 vendor2/
 vendor_wheels/
 pyuserbase/
+1.3.6-beta/
+theme-settings.json
+_diagnostic_preview.png
