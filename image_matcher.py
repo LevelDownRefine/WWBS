@@ -6,14 +6,6 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-try:
-    from scipy.signal import fftconvolve
-except Exception as exc:  # pragma: no cover - shown to users at runtime
-    fftconvolve = None
-    SCIPY_IMPORT_ERROR = exc
-else:
-    SCIPY_IMPORT_ERROR = None
-
 
 @dataclass
 class MatchResult:
@@ -39,9 +31,6 @@ class TemplateMatcher:
         threshold: float = 0.82,
         scales: list[float] | None = None,
     ) -> MatchResult:
-        if fftconvolve is None:
-            raise RuntimeError(f"缺少 scipy，无法进行模板识别: {SCIPY_IMPORT_ERROR}")
-
         template_path = self.templates_dir / template_name
         if not template_path.exists():
             raise FileNotFoundError(f"模板不存在: {template_path}")
@@ -64,6 +53,56 @@ class TemplateMatcher:
         if best.score < threshold:
             raise RuntimeError(f"未找到模板 {template_name}，最高相似度 {best.score:.3f}，阈值 {threshold:.3f}")
         return best
+
+    def find_fast(
+        self,
+        screenshot_path: Path,
+        template_name: str,
+        threshold: float = 0.82,
+        scale: float = 1.0,
+        max_width: int = 1920,
+    ) -> MatchResult:
+        """Fast presence check using one grayscale FFT, capped at 1920px for 4K input."""
+        template_path = self.templates_dir / template_name
+        if not template_path.exists():
+            raise FileNotFoundError(f"模板不存在: {template_path}")
+
+        with Image.open(screenshot_path) as source:
+            screenshot_image = source.convert("L")
+        reduction = min(1.0, max_width / max(1, screenshot_image.width))
+        reduced_size = (
+            max(8, round(screenshot_image.width * reduction)),
+            max(8, round(screenshot_image.height * reduction)),
+        )
+        screenshot = np.asarray(
+            screenshot_image.resize(reduced_size, Image.Resampling.BILINEAR),
+            dtype=np.float64,
+        ) / 255.0
+
+        with Image.open(template_path) as source:
+            template_image = source.convert("L")
+        template_size = (
+            max(8, round(template_image.width * scale * reduction)),
+            max(8, round(template_image.height * scale * reduction)),
+        )
+        template = np.asarray(
+            template_image.resize(template_size, Image.Resampling.BILINEAR),
+            dtype=np.float64,
+        ) / 255.0
+        if template.shape[0] >= screenshot.shape[0] or template.shape[1] >= screenshot.shape[1]:
+            raise RuntimeError("模板尺寸不适合当前截图。")
+
+        reduced = _match_single_scale_gray(screenshot, template)
+        result = MatchResult(
+            x=round(reduced.x / reduction),
+            y=round(reduced.y / reduction),
+            width=round(reduced.width / reduction),
+            height=round(reduced.height / reduction),
+            score=reduced.score,
+        )
+        if result.score < threshold:
+            raise RuntimeError(f"未找到模板 {template_name}，最高相似度 {result.score:.3f}，阈值 {threshold:.3f}")
+        return result
 
 
 def _load_rgb(path: Path) -> np.ndarray:
@@ -90,7 +129,7 @@ def _match_single_scale_rgb(image: np.ndarray, template: np.ndarray) -> MatchRes
     for channel in range(channels):
         channel_image = image[:, :, channel]
         channel_template = template_zero[:, :, channel]
-        channel_numerator = fftconvolve(channel_image, channel_template[::-1, ::-1], mode="valid")
+        channel_numerator = _fft_convolve_valid(channel_image, channel_template[::-1, ::-1])
         image_sum = _window_sum(channel_image, th, tw)
         image_sum_sq = _window_sum(channel_image * channel_image, th, tw)
         image_var = image_sum_sq - (image_sum * image_sum / window_area)
@@ -107,6 +146,26 @@ def _match_single_scale_rgb(image: np.ndarray, template: np.ndarray) -> MatchRes
     return MatchResult(x=int(x), y=int(y), width=int(tw), height=int(th), score=float(scores[y, x]))
 
 
+def _match_single_scale_gray(image: np.ndarray, template: np.ndarray) -> MatchResult:
+    th, tw = template.shape
+    template_zero = template - template.mean()
+    template_norm = float(np.sqrt(np.sum(template_zero * template_zero)))
+    if template_norm < 1e-6:
+        raise RuntimeError("模板内容过于单一，请裁剪包含文字、图标或边框的区域。")
+
+    numerator = _fft_convolve_valid(image, template_zero[::-1, ::-1])
+    window_area = float(th * tw)
+    image_sum = _window_sum(image, th, tw)
+    image_sum_sq = _window_sum(image * image, th, tw)
+    image_norm = np.sqrt(np.maximum(image_sum_sq - image_sum * image_sum / window_area, 0.0))
+    denominator = image_norm * template_norm
+    scores = np.divide(numerator, denominator, out=np.full_like(numerator, -1.0), where=denominator > 1e-8)
+    scores[image_norm < (template_norm * 0.08)] = -1.0
+    scores = np.clip(scores, -1.0, 1.0)
+    y, x = np.unravel_index(np.argmax(scores), scores.shape)
+    return MatchResult(x=int(x), y=int(y), width=int(tw), height=int(th), score=float(scores[y, x]))
+
+
 def _window_sum(image: np.ndarray, height: int, width: int) -> np.ndarray:
     integral = np.pad(image, ((1, 0), (1, 0)), mode="constant").cumsum(axis=0).cumsum(axis=1)
     return (
@@ -115,3 +174,23 @@ def _window_sum(image: np.ndarray, height: int, width: int) -> np.ndarray:
         - integral[height:, :-width]
         + integral[:-height, :-width]
     )
+
+
+def _fft_convolve_valid(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+    """NumPy-only equivalent of scipy.signal.fftconvolve(..., mode='valid')."""
+    image_height, image_width = image.shape
+    kernel_height, kernel_width = kernel.shape
+    if kernel_height > image_height or kernel_width > image_width:
+        raise ValueError("卷积模板不能大于截图。")
+
+    full_shape = (
+        image_height + kernel_height - 1,
+        image_width + kernel_width - 1,
+    )
+    image_fft = np.fft.rfft2(image, full_shape)
+    kernel_fft = np.fft.rfft2(kernel, full_shape)
+    full = np.fft.irfft2(image_fft * kernel_fft, full_shape)
+    return full[
+        kernel_height - 1 : image_height,
+        kernel_width - 1 : image_width,
+    ]

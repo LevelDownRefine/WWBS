@@ -17,10 +17,15 @@ wwbs-exe/
 wwbs-release.zip
 wwbs-exe.zip
 wwbs-[0-9]*.zip
+wwbs-[0-9]*/
 vendor/
 vendor2/
 vendor_wheels/
 pyuserbase/
 1.3.6-beta/
 theme-settings.json
+pet-settings.json
+aemeath-language-state.json
 _diagnostic_preview.png
+1.3.7-beta/
+_release-work/
