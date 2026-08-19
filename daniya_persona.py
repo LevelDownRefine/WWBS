@@ -6,6 +6,7 @@ import random
 
 
 OWNER_NAME = "漂泊者"
+OWNER_ADDRESS_PROBABILITY = 0.42
 
 # 语言原则：慵懒、克制、略带试探；在乎通常只说一半。
 # 避免元气卖萌、传统傲娇、攻击性毒舌、客服表达和高频称呼。
@@ -66,6 +67,10 @@ EVENT_LINES: dict[str, tuple[str, ...]] = {
         "现在停下，对吧。嗯……随你。",
         "好吧，先到这里。别担心，我没有舍不得这份工作。",
     ),
+    "mouse_move_failed": (
+        "鼠标没有移动成功。漂泊者，先退出程序，再右键桌面快捷方式，选择“以管理员身份运行”。",
+        "漂泊者，日志里说鼠标没能移动……右键桌面快捷方式，用管理员身份重新打开吧。别让我再提醒一次哦。",
+    ),
 }
 
 IDLE_NORMAL = (
@@ -101,7 +106,7 @@ IDLE_VULNERABLE = (
 
 def event_line(event: str, **values: str) -> str:
     options = EVENT_LINES[event]
-    return random.choice(options).format(**values)
+    return _with_owner(random.choice(options).format(**values))
 
 
 def idle_line() -> str:
@@ -110,4 +115,11 @@ def idle_line() -> str:
         weights=(70, 20, 8, 2),
         k=1,
     )[0]
-    return random.choice(category)
+    return _with_owner(random.choice(category))
+
+
+def _with_owner(text: str, probability: float = OWNER_ADDRESS_PROBABILITY) -> str:
+    """提高称呼密度，同时避免一句话里重复出现“漂泊者”。"""
+    if OWNER_NAME in text or random.random() >= probability:
+        return text
+    return f"{OWNER_NAME}，{text}"

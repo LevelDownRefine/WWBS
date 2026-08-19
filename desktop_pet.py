@@ -7,9 +7,6 @@ from typing import Callable
 
 from PIL import Image, ImageTk
 
-from daniya_persona import idle_line
-
-
 class DesktopPet:
     """Transparent, draggable desktop-pet window driven by PNG frame folders."""
 
@@ -26,7 +23,6 @@ class DesktopPet:
     }
     ONE_SHOT_REPEATS = {"waving": 2, "jumping": 1, "failed": 1, "review": 1}
     COMMAND_LABELS = (
-        ("达妮娅帮我诊断", "diagnose"),
         ("检测游戏窗口", "check_target"),
         ("拿满奖励（15轮）", "run_rewards"),
         ("拿满星声（13轮）", "run_astrite"),
@@ -39,13 +35,30 @@ class DesktopPet:
         frames_dir: Path,
         scale: float = 1.15,
         commands: dict[str, Callable[[], None]] | None = None,
+        pet_name: str = "达妮娅",
+        app_version: str = "1.3.7",
+        idle_line_factory: Callable[[], object] | None = None,
+        bubble_palette: dict[str, str] | None = None,
     ):
         self.root = root
         self.frames_dir = Path(frames_dir)
         self.scale = scale
         self.commands = commands or {}
+        self.pet_name = pet_name
+        self.idle_line_factory = idle_line_factory or (lambda: "漂泊者，要稍微休息一下吗？")
+        self.bubble_palette = {
+            "shadow": "#d9acc5",
+            "body": "#fff8fc",
+            "outline": "#e58ab8",
+            "badge": "#e887b7",
+            "badge_outline": "#d66ca2",
+            "ornament": "#d7ad63",
+            "ornament_outline": "#c48f3f",
+            "text": "#5d3650",
+            **(bubble_palette or {}),
+        }
         self.window = Toplevel(root)
-        self.window.title("达妮娅 · wwbs 1.3.6")
+        self.window.title(f"{self.pet_name} · wwbs {app_version}")
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
         self.transparent = "#010203"
@@ -75,13 +88,16 @@ class DesktopPet:
         self.canvas.bind("<Button-3>", self._popup_menu)
 
         self.menu = Menu(self.window, tearoff=False)
+        diagnose = self.commands.get("diagnose")
+        if diagnose is not None:
+            self.menu.add_command(label=f"{self.pet_name}帮我诊断", command=diagnose)
         for label, command_key in self.COMMAND_LABELS:
             command = self.commands.get(command_key)
             if command is not None:
                 self.menu.add_command(label=label, command=command)
         self.menu.add_separator()
         self.menu.add_command(label="开启/关闭漫游", command=self.toggle_roaming)
-        self.menu.add_command(label="隐藏达妮娅", command=self.hide)
+        self.menu.add_command(label=f"隐藏{self.pet_name}", command=self.hide)
 
         self.bubble_window = Toplevel(self.window)
         self.bubble_window.overrideredirect(True)
@@ -110,6 +126,7 @@ class DesktopPet:
         self.visible = True
         self.dragging = False
         self.roaming = True
+        self.working = False
         self._drag_offset = (0, 0)
         self._animation_job = None
         self._roam_job = None
@@ -198,6 +215,7 @@ class DesktopPet:
 
     def _draw_bubble(self, text: str):
         canvas = self.bubble_canvas
+        palette = self.bubble_palette
         canvas.delete("all")
         probe = canvas.create_text(
             0,
@@ -221,20 +239,20 @@ class DesktopPet:
 
         center = width // 2
         shadow = self._rounded_rect_points(8, body_top + 4, width - 4, body_bottom + 5, 18)
-        canvas.create_polygon(shadow, smooth=True, splinesteps=24, fill="#d9acc5", outline="")
+        canvas.create_polygon(shadow, smooth=True, splinesteps=24, fill=palette["shadow"], outline="")
         canvas.create_polygon(
             center - 11, body_bottom + 3,
             center + 15, body_bottom + 3,
             center + 2, body_bottom + 22,
-            fill="#d9acc5",
+            fill=palette["shadow"],
             outline="",
         )
         canvas.create_polygon(
             center - 12, body_bottom - 1,
             center + 12, body_bottom - 1,
             center, body_bottom + 19,
-            fill="#fff8fc",
-            outline="#e58ab8",
+            fill=palette["body"],
+            outline=palette["outline"],
             width=2,
         )
         body = self._rounded_rect_points(4, body_top, width - 8, body_bottom, 18)
@@ -242,21 +260,21 @@ class DesktopPet:
             body,
             smooth=True,
             splinesteps=24,
-            fill="#fff8fc",
-            outline="#e58ab8",
+            fill=palette["body"],
+            outline=palette["outline"],
             width=2,
         )
 
         badge = self._rounded_rect_points(17, 1, 88, 28, 12)
-        canvas.create_polygon(badge, smooth=True, splinesteps=20, fill="#e887b7", outline="#d66ca2", width=1)
-        canvas.create_text(52, 14, text="达妮娅", fill="#ffffff", font=("Microsoft YaHei UI", 9, "bold"))
+        canvas.create_polygon(badge, smooth=True, splinesteps=20, fill=palette["badge"], outline=palette["badge_outline"], width=1)
+        canvas.create_text(52, 14, text=self.pet_name, fill="#ffffff", font=("Microsoft YaHei UI", 9, "bold"))
         canvas.create_polygon(
             width - 25, 14,
             width - 19, 22,
             width - 25, 30,
             width - 31, 22,
-            fill="#d7ad63",
-            outline="#c48f3f",
+            fill=palette["ornament"],
+            outline=palette["ornament_outline"],
             width=1,
         )
         canvas.create_text(
@@ -264,7 +282,7 @@ class DesktopPet:
             37,
             text=text,
             width=254,
-            fill="#5d3650",
+            fill=palette["text"],
             font=("Microsoft YaHei UI", 10, "bold"),
             justify="left",
             anchor="nw",
@@ -300,7 +318,12 @@ class DesktopPet:
     def _chatter_tick(self):
         self._chatter_job = None
         if self.visible and self.state == "idle" and not self.dragging and self._bubble_job is None:
-            self.say(idle_line(), 4600)
+            generated = self.idle_line_factory()
+            text = str(getattr(generated, "text", generated))
+            action = str(getattr(generated, "action", "idle"))
+            if action in self.frames and action != "idle":
+                self.play(action)
+            self.say(text, 4600)
         self._schedule_chatter()
 
     def _start_drag(self, event):
@@ -331,23 +354,33 @@ class DesktopPet:
 
     def toggle_roaming(self):
         self.roaming = not self.roaming
-        if self.roaming:
+        if self.roaming and not self.working:
             self._schedule_roam(800)
         else:
+            self._cancel_roam()
             self._cancel_move()
-            self.play("idle")
+            if not self.working:
+                self.play("idle")
+
+    def set_working(self, working: bool) -> None:
+        """Temporarily pause autonomous movement while an automation task runs."""
+        if self.working == working:
+            return
+        self.working = working
+        if working:
+            self._cancel_roam()
+            self._cancel_move()
+        elif self.visible and self.roaming and not self.dragging:
+            self._schedule_roam(3500)
 
     def _schedule_roam(self, delay=5000):
-        if self._roam_job:
-            try:
-                self.window.after_cancel(self._roam_job)
-            except Exception:
-                pass
-        if self.visible and self.roaming and not self.dragging:
+        self._cancel_roam()
+        if self.visible and self.roaming and not self.working and not self.dragging:
             self._roam_job = self.window.after(delay, self._begin_roam)
 
     def _begin_roam(self):
-        if not (self.visible and self.roaming) or self.dragging:
+        self._roam_job = None
+        if not (self.visible and self.roaming) or self.working or self.dragging:
             return
         direction = random.choice((-1, 1))
         screen_w = self.root.winfo_screenwidth()
@@ -362,7 +395,7 @@ class DesktopPet:
         self._move_tick()
 
     def _move_tick(self):
-        if self._move_remaining <= 0 or self.dragging or not self.roaming:
+        if self._move_remaining <= 0 or self.dragging or self.working or not self.roaming:
             self._move_job = None
             self.play("idle")
             self._schedule_roam(random.randint(4200, 7200))
@@ -382,6 +415,14 @@ class DesktopPet:
                 pass
             self._move_job = None
 
+    def _cancel_roam(self):
+        if self._roam_job:
+            try:
+                self.window.after_cancel(self._roam_job)
+            except Exception:
+                pass
+            self._roam_job = None
+
     def show(self):
         if self.visible:
             return
@@ -389,13 +430,15 @@ class DesktopPet:
         self.window.deiconify()
         self.frame_index = 0
         self._animate()
-        self._schedule_roam(2500)
+        if not self.working:
+            self._schedule_roam(2500)
         self._schedule_chatter(random.randint(18000, 34000))
 
     def hide(self):
         if not self.visible:
             return
         self.visible = False
+        self._cancel_roam()
         self._cancel_move()
         self._hide_bubble()
         if self._chatter_job:
@@ -417,12 +460,8 @@ class DesktopPet:
 
     def close(self):
         self.visible = False
+        self._cancel_roam()
         self._cancel_move()
-        if self._roam_job:
-            try:
-                self.window.after_cancel(self._roam_job)
-            except Exception:
-                pass
         if self._chatter_job:
             try:
                 self.window.after_cancel(self._chatter_job)
