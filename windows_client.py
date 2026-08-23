@@ -22,6 +22,10 @@ INPUT_MOUSE = 0
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
 
+DEFAULT_GAME_WINDOW_TITLES = ("鸣潮", "Wuthering Waves")
+AUTO_TITLE_KEYWORDS = {"", "自动", "auto", "鸣潮", "wuthering waves"}
+MIN_GAME_CLIENT_SIZE = (640, 360)
+
 
 def _enable_dpi_awareness() -> None:
     try:
@@ -69,8 +73,9 @@ class INPUT(ctypes.Structure):
 
 
 class ClientWindowController:
-    def __init__(self, title_keyword: str = "鸣潮", base_size: tuple[int, int] | None = None):
-        self.title_keyword = title_keyword.strip() or "鸣潮"
+    def __init__(self, title_keyword: str = "自动", base_size: tuple[int, int] | None = None):
+        self.title_keyword = title_keyword.strip() or "自动"
+        self.title_keywords = self._expand_title_keywords(self.title_keyword)
         self.base_size = base_size
         self.hwnd = 0
         self.scale = 1.0
@@ -137,8 +142,12 @@ class ClientWindowController:
         return self._window_class_name() == "UnrealWindow"
 
     def _window_class_name(self) -> str:
+        return self._window_class_name_for(self.hwnd)
+
+    @staticmethod
+    def _window_class_name_for(hwnd: int) -> str:
         buffer = ctypes.create_unicode_buffer(256)
-        if not user32.GetClassNameW(self.hwnd, buffer, len(buffer)):
+        if not user32.GetClassNameW(hwnd, buffer, len(buffer)):
             return ""
         return buffer.value
 
@@ -335,8 +344,8 @@ class ClientWindowController:
         self.hwnd = self._find_window()
 
     def _find_window(self) -> int:
-        exact_matches: list[int] = []
-        partial_matches: list[int] = []
+        candidates: list[tuple[int, str, int, int, str]] = []
+        rejected_sizes: list[tuple[int, int]] = []
         current_pid = os.getpid()
 
         @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -349,17 +358,76 @@ class ClientWindowController:
                 title = self._window_title(hwnd)
                 if not title:
                     return True
-                if title == self.title_keyword:
-                    exact_matches.append(hwnd)
-                elif self.title_keyword.lower() in title.lower():
-                    partial_matches.append(hwnd)
+                match_kind = self._title_match_kind(title, self.title_keywords)
+                if match_kind == "none":
+                    return True
+                width, height = self._window_client_size(hwnd)
+                if not self._is_plausible_game_size(width, height):
+                    rejected_sizes.append((width, height))
+                    return True
+                class_name = self._window_class_name_for(hwnd)
+                candidates.append((hwnd, match_kind, width, height, class_name))
             return True
 
         user32.EnumWindows(enum_proc, 0)
-        matches = exact_matches or partial_matches
-        if not matches:
-            raise RuntimeError(f"没有找到标题包含“{self.title_keyword}”的窗口。请先打开 PC 客户端。")
-        return matches[0]
+        if not candidates:
+            attempted = "、".join(self.title_keywords)
+            if rejected_sizes:
+                sizes = "、".join(f"{width}x{height}" for width, height in sorted(set(rejected_sizes)))
+                raise RuntimeError(
+                    f"找到了同名小窗口（{sizes}），但它不是游戏画面。"
+                    f"请确认国服或国际服 Steam 游戏已完成启动，而不是只打开启动器。"
+                )
+            raise RuntimeError(f"没有找到游戏窗口（已尝试：{attempted}）。请先打开国服或国际服 Steam PC 客户端。")
+        candidates.sort(
+            key=lambda candidate: self._candidate_sort_key(
+                candidate[1], candidate[2], candidate[3], candidate[4]
+            ),
+            reverse=True,
+        )
+        return candidates[0][0]
+
+    @staticmethod
+    def _window_client_size(hwnd: int) -> tuple[int, int]:
+        rect = RECT()
+        if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+            return 0, 0
+        return rect.right - rect.left, rect.bottom - rect.top
+
+    @staticmethod
+    def _is_plausible_game_size(width: int, height: int) -> bool:
+        minimum_width, minimum_height = MIN_GAME_CLIENT_SIZE
+        return width >= minimum_width and height >= minimum_height
+
+    @staticmethod
+    def _candidate_sort_key(match_kind: str, width: int, height: int, class_name: str) -> tuple[int, int, int]:
+        return (
+            1 if class_name == "UnrealWindow" else 0,
+            1 if match_kind == "exact" else 0,
+            width * height,
+        )
+
+    @staticmethod
+    def _expand_title_keywords(value: str) -> tuple[str, ...]:
+        normalized = value.strip()
+        if normalized.casefold() in AUTO_TITLE_KEYWORDS:
+            return DEFAULT_GAME_WINDOW_TITLES
+        keywords = tuple(
+            part.strip()
+            for part in normalized.replace("，", ",").replace("；", ";").replace("/", "|").replace(",", "|").replace(";", "|").split("|")
+            if part.strip()
+        )
+        return keywords or DEFAULT_GAME_WINDOW_TITLES
+
+    @staticmethod
+    def _title_match_kind(title: str, keywords: tuple[str, ...]) -> str:
+        folded_title = title.strip().casefold()
+        folded_keywords = tuple(keyword.strip().casefold() for keyword in keywords if keyword.strip())
+        if folded_title in folded_keywords:
+            return "exact"
+        if any(keyword in folded_title for keyword in folded_keywords):
+            return "partial"
+        return "none"
 
     @staticmethod
     def _window_title(hwnd: int) -> str:

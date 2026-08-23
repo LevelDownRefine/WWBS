@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 
 @dataclass
@@ -35,16 +35,26 @@ class TemplateMatcher:
         if not template_path.exists():
             raise FileNotFoundError(f"模板不存在: {template_path}")
 
-        screenshot = _load_rgb(screenshot_path)
-        template_image = Image.open(template_path).convert("RGB")
+        screenshot_image = Image.open(screenshot_path).convert("L")
+        template_image = Image.open(template_path).convert("L")
         scales = scales or [1.0, 0.95, 1.05, 0.9, 1.1]
 
         best: MatchResult | None = None
+        tested_sizes: set[tuple[int, int]] = set()
+        screenshot_cache: dict[float, np.ndarray] = {}
         for scale in scales:
-            template = _scaled_template(template_image, scale)
+            blur_radius = 0.0 if abs(scale - 1.0) < 0.015 else 0.7
+            if blur_radius not in screenshot_cache:
+                screenshot_cache[blur_radius] = _gray_array(screenshot_image, blur_radius)
+            screenshot = screenshot_cache[blur_radius]
+            template = _scaled_template_gray(template_image, scale, blur_radius)
+            template_size = (template.shape[1], template.shape[0])
+            if template_size in tested_sizes:
+                continue
+            tested_sizes.add(template_size)
             if template.shape[0] >= screenshot.shape[0] or template.shape[1] >= screenshot.shape[1]:
                 continue
-            result = _match_single_scale_rgb(screenshot, template)
+            result = _match_single_scale_gray(screenshot, template)
             if best is None or result.score > best.score:
                 best = result
 
@@ -109,10 +119,25 @@ def _load_rgb(path: Path) -> np.ndarray:
     return np.asarray(Image.open(path).convert("RGB"), dtype=np.float64) / 255.0
 
 
+def _gray_array(image: Image.Image, blur_radius: float = 0.0) -> np.ndarray:
+    if blur_radius > 0:
+        image = image.filter(ImageFilter.GaussianBlur(blur_radius))
+    return np.asarray(image, dtype=np.float64) / 255.0
+
+
 def _scaled_template(image: Image.Image, scale: float) -> np.ndarray:
     width = max(8, int(image.width * scale))
     height = max(8, int(image.height * scale))
     resized = image.resize((width, height), Image.Resampling.BILINEAR)
+    return np.asarray(resized, dtype=np.float64) / 255.0
+
+
+def _scaled_template_gray(image: Image.Image, scale: float, blur_radius: float = 0.0) -> np.ndarray:
+    width = max(8, round(image.width * scale))
+    height = max(8, round(image.height * scale))
+    resized = image.resize((width, height), Image.Resampling.LANCZOS)
+    if blur_radius > 0:
+        resized = resized.filter(ImageFilter.GaussianBlur(blur_radius))
     return np.asarray(resized, dtype=np.float64) / 255.0
 
 
