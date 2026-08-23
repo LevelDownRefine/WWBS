@@ -59,6 +59,30 @@ class ImageMatcherTests(unittest.TestCase):
         self.assertEqual((result.x, result.y), (x, y))
         self.assertGreater(result.score, 0.999)
 
+    def test_scaled_matching_supports_common_16_by_9_resolutions(self) -> None:
+        rng = np.random.default_rng(1080)
+        base_width, base_height = 384, 216
+        screenshot = rng.integers(0, 256, size=(base_height, base_width, 3), dtype=np.uint8)
+        x, y, width, height = 167, 79, 66, 42
+        template = screenshot[y : y + height, x : x + width]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_path = root / "target.png"
+            Image.fromarray(template).save(template_path)
+            for scale in (1600 / 1920, 1536 / 1920, 1280 / 1920):
+                screenshot_path = root / f"screen-{scale:.3f}.png"
+                scaled_size = (round(base_width * scale), round(base_height * scale))
+                Image.fromarray(screenshot).resize(scaled_size, Image.Resampling.LANCZOS).save(screenshot_path)
+                result = TemplateMatcher(root).find(
+                    screenshot_path,
+                    template_path.name,
+                    threshold=0.82,
+                    scales=[scale, scale * 0.97, scale * 1.03],
+                )
+                self.assertAlmostEqual(result.x, round(x * scale), delta=2)
+                self.assertAlmostEqual(result.y, round(y * scale), delta=2)
+                self.assertGreaterEqual(result.score, 0.82)
+
 
 if __name__ == "__main__":
     unittest.main()
