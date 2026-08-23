@@ -40,7 +40,7 @@ TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.3.7"
+APP_VERSION = "1.3.8"
 THEME_CONFIG = APP_DIR / "theme-settings.json"
 PET_CONFIG = APP_DIR / "pet-settings.json"
 DANIYA_THEME_PACK = APP_DIR / "optional-themes" / "daniya-theme.wwbstheme"
@@ -60,6 +60,15 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    (
+        "v1.3.8",
+        """v1.3.8 更新内容
+1. PC 窗口标题默认改为“自动”，同时识别国服“鸣潮”和国际服 Steam 版“Wuthering Waves”。
+2. 修复误选 199x34 等同名启动器或辅助小窗口的问题，优先选择真实 Unreal 游戏窗口。
+3. 修复任务识别阶段把模板缩放固定为 1.0、导致实际上只有 1920x1080 可用的问题。
+4. 模板匹配改用更耐缩放的灰度抗锯齿识别，保持原阈值，减少缩放后的漏识别与误点风险。
+5. 已验证 1920x1080、1600x900、1536x864 和 1280x720 等 16:9 分辨率。""",
+    ),
     (
         "v1.3.7",
         """v1.3.7 更新内容
@@ -664,6 +673,8 @@ class TaskRunner:
         return random.randint(left, right), random.randint(top, bottom)
 
     def _fast_scales(self) -> list[float]:
+        if hasattr(self.controller, "template_scales"):
+            return self.controller.template_scales()
         return [1.0]
 
     def _save_match_debug(self, screenshot: Path, template_name: str, match, click_x: int, click_y: int) -> None:
@@ -794,7 +805,7 @@ class App:
         self.root.minsize(min(1100, screen_width - 40), min(760, screen_height - 40))
         self.config_path = StringVar(value=str(DEFAULT_CONFIG))
         self.target_mode = StringVar(value="client")
-        self.window_title = StringVar(value="鸣潮")
+        self.window_title = StringVar(value="自动")
         self.expected_resolution = StringVar(value="1920x1080")
         self.adb_path = StringVar(value="adb")
         self.device_id = StringVar(value="")
@@ -1317,6 +1328,7 @@ class App:
         client_row.pack(fill=X, pady=5)
         Label(client_row, text="窗口标题", width=12, anchor="w").pack(side=LEFT)
         Entry(client_row, textvariable=self.window_title, width=24).pack(side=LEFT, padx=6)
+        Label(client_row, text="“自动”同时识别国服与国际服 Steam 端", fg="#697386").pack(side=LEFT, padx=6)
         Label(client_row, text="标题包含这些字就会被识别", fg="#697386").pack(side=LEFT)
 
         size_row = Frame(self.settings_tab)
@@ -1418,14 +1430,13 @@ class App:
     def _show_update_notice(self) -> None:
         messagebox.showinfo(
             f"wwbs {APP_VERSION} 更新公告",
-            "1.3.7 正式版\n\n"
-            "• 新增第二款 Q 版桌宠「爱弥斯」\n"
-            "• 与达妮娅保持相同动作状态、右键功能、气泡排版和运行诊断\n"
-            "• 爱弥斯拥有独立人格语言与主动闲聊\n"
-            "• 新增粉白科技感「爱弥斯主题」\n"
-            "• 设置页可分别选择桌宠角色和程序主题\n"
-            "• 达妮娅、达妮娅主题和原版简约主题全部保留\n\n"
-            "本版本仅用于本地测试，不会自动发布到 GitHub。",
+            "1.3.8 正式版\n\n"
+            "• 支持国际服 Steam 版 Wuthering Waves 窗口\n"
+            "• 自动过滤同名启动器和 199x34 等辅助小窗口\n"
+            "• 修复任务模板缩放被固定为 1.0 的问题\n"
+            "• 优化缩放后的模板抗锯齿匹配\n"
+            "• 已验证 1920x1080、1600x900、1536x864 和 1280x720\n\n"
+            "达妮娅、爱弥斯及两款主题均完整保留。",
             parent=self.root,
         )
 

@@ -36,7 +36,7 @@ class DesktopPet:
         scale: float = 1.15,
         commands: dict[str, Callable[[], None]] | None = None,
         pet_name: str = "达妮娅",
-        app_version: str = "1.3.7",
+        app_version: str = "1.3.8",
         idle_line_factory: Callable[[], object] | None = None,
         bubble_palette: dict[str, str] | None = None,
     ):
