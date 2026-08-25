@@ -24,8 +24,10 @@ class DesktopPet:
     ONE_SHOT_REPEATS = {"waving": 2, "jumping": 1, "failed": 1, "review": 1}
     COMMAND_LABELS = (
         ("检测游戏窗口", "check_target"),
-        ("拿满奖励（15轮）", "run_rewards"),
+        ("启动（拿满奖励）", "run_rewards"),
         ("拿满星声（13轮）", "run_astrite"),
+        ("4C刷取（5次）", "run_4c_5"),
+        ("4C刷取（10次）", "run_4c_10"),
         ("停止当前任务", "stop_task"),
     )
 
@@ -36,7 +38,7 @@ class DesktopPet:
         scale: float = 1.15,
         commands: dict[str, Callable[[], None]] | None = None,
         pet_name: str = "达妮娅",
-        app_version: str = "1.3.8",
+        app_version: str = "1.3.9 beta",
         idle_line_factory: Callable[[], object] | None = None,
         bubble_palette: dict[str, str] | None = None,
     ):
@@ -97,6 +99,13 @@ class DesktopPet:
                 self.menu.add_command(label=label, command=command)
         self.menu.add_separator()
         self.menu.add_command(label="开启/关闭漫游", command=self.toggle_roaming)
+        size_menu = Menu(self.menu, tearoff=False)
+        for percent in (70, 85, 100, 115, 130, 150):
+            command = self.commands.get(f"pet_size_{percent}")
+            if command is not None:
+                size_menu.add_command(label=f"{percent}%", command=command)
+        if size_menu.index("end") is not None:
+            self.menu.add_cascade(label="调整大小", menu=size_menu)
         self.menu.add_command(label=f"隐藏{self.pet_name}", command=self.hide)
 
         self.bubble_window = Toplevel(self.window)
@@ -162,6 +171,35 @@ class DesktopPet:
                     state_frames.append(ImageTk.PhotoImage(image, master=self.window))
             loaded[state] = state_frames
         return loaded
+
+    def set_scale(self, scale: float) -> None:
+        """Resize every animation frame while keeping the pet's feet in place."""
+        new_scale = max(0.45, min(2.25, float(scale)))
+        if abs(new_scale - self.scale) < 0.001:
+            return
+
+        self.window.update_idletasks()
+        old_center_x = self.window.winfo_x() + self.width // 2
+        old_bottom_y = self.window.winfo_y() + self.height
+        self.scale = new_scale
+        self.frames = self._load_frames()
+
+        sequence = self.frames.get(self.state, self.frames["idle"])
+        first = sequence[0]
+        self.width, self.height = first.width(), first.height()
+        self.canvas.configure(width=self.width, height=self.height)
+        self.canvas.coords(self.image_item, self.width // 2, self.height // 2)
+        self.canvas.itemconfigure(self.image_item, image=first)
+        self.frame_index = 1 % len(sequence)
+        self.state_cycles = 0
+
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x = max(0, min(screen_w - self.width, old_center_x - self.width // 2))
+        y = max(0, min(screen_h - self.height, old_bottom_y - self.height))
+        self.window.geometry(f"{self.width}x{self.height}+{x}+{y}")
+        if self.bubble_window.winfo_viewable():
+            self._position_bubble()
 
     def _animate(self):
         if not self.visible:

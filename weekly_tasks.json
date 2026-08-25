@@ -1,12 +1,13 @@
 {
   "version": 1,
-  "reset_hint": "当前程序只会在你点击“开始执行”后运行，不会自动定时执行。",
+  "reset_hint": "1.3.9：新增群声共振模拟域与4C刷取。",
   "tasks": [
     {
-      "name": "菜单模板循环点击",
+      "name": "幻梦游园",
       "enabled": true,
       "weekday": "any",
-      "description": "第一步先识别点击 menu1，之后从 menu2 到 menu99 循环识别；选择拿满奖励时执行 15 轮，选择拿满星声时执行 13 轮，也可以手动停止。",
+      "description": "原版周本流程：先识别并点击 menu1，再依次循环 menu2 到 menu99；普通启动按钮按所选15轮或13轮执行。",
+      "template_group": "default",
       "steps": [
         {
           "action": "tap_image",
@@ -62,6 +63,84 @@
           "y2": null,
           "duration_ms": 300,
           "seconds": 0.15,
+          "text": ""
+        }
+      ]
+    },
+    {
+      "name": "群声共振模拟域",
+      "enabled": false,
+      "weekday": "any",
+      "description": "用户先自行选择关卡；程序从场景选择页点击“开始模拟”，进入场景后识别蓝色守岸人并用短按 W/A/S/D 靠近，出现 F / 守岸人提示后停止移动并按 F。",
+      "template_group": "群声共振模拟域",
+      "steps": [
+        {
+          "action": "tap_image",
+          "label": "在场景选择页点击开始模拟",
+          "template": "start_simulation.png",
+          "templates": [],
+          "loop": false,
+          "skip_missing": false,
+          "threshold": 0.76,
+          "timeout": 12,
+          "offset_x": 90,
+          "offset_y": 0,
+          "x": null,
+          "y": null,
+          "x2": null,
+          "y2": null,
+          "duration_ms": 300,
+          "seconds": 2.5,
+          "text": ""
+        },
+        {
+          "action": "move_to_visual_target",
+          "label": "靠近并与守岸人交互",
+          "template": "interaction_prompt.png",
+          "templates": [
+            "npc_far.png",
+            "npc_near.png"
+          ],
+          "loop": false,
+          "skip_missing": true,
+          "threshold": 0.56,
+          "timeout": 35,
+          "offset_x": 0,
+          "offset_y": 0,
+          "x": null,
+          "y": null,
+          "x2": null,
+          "y2": null,
+          "duration_ms": 160,
+          "seconds": 0.12,
+          "text": ""
+        }
+      ]
+    },
+    {
+      "name": "4C刷取",
+      "enabled": false,
+      "weekday": "any",
+      "description": "独立战斗循环：每轮开打先按鼠标中键锁定敌人；一号位以0.15秒节奏不间断普攻，每10秒使用自定义技能键，每20秒按Q并使用自定义大招键（默认R）。每9秒切三号位执行两段跳跃普攻回血。血条消失快速复核3次后进入最长90秒的声骸搜索，仅识别紧凑的深金/橙金目标；左侧可见目标用W+A靠近，目标不可见时固定向右搜索，吸收提示一出现立即按F。",
+      "template_group": "4c",
+      "steps": [
+        {
+          "action": "combat_4c",
+          "label": "执行4C战斗与三号位回血循环",
+          "template": "",
+          "templates": [],
+          "loop": true,
+          "skip_missing": true,
+          "threshold": 0.82,
+          "timeout": 1200,
+          "offset_x": 0,
+          "offset_y": 0,
+          "x": null,
+          "y": null,
+          "x2": null,
+          "y2": null,
+          "duration_ms": 90,
+          "seconds": 0.1,
           "text": ""
         }
       ]

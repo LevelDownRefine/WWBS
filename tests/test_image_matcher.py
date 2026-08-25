@@ -5,12 +5,36 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from image_matcher import TemplateMatcher, _fft_convolve_valid
 
 
 class ImageMatcherTests(unittest.TestCase):
+    def test_fast_match_supports_cropped_search_region_and_returns_full_coordinates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            templates = root / "templates"
+            templates.mkdir()
+            screenshot = Image.new("RGB", (800, 500), (20, 25, 30))
+            patch = Image.new("RGB", (90, 45), (230, 230, 230))
+            draw = ImageDraw.Draw(patch)
+            draw.rectangle((8, 8, 35, 35), fill=(25, 25, 25))
+            draw.ellipse((48, 8, 80, 37), fill=(90, 90, 90))
+            patch.save(templates / "prompt.png")
+            screenshot.paste(patch, (610, 310))
+            screenshot_path = root / "screen.png"
+            screenshot.save(screenshot_path)
+
+            result = TemplateMatcher(templates).find_fast(
+                screenshot_path,
+                "prompt.png",
+                threshold=0.90,
+                region=(400, 200, 790, 490),
+            )
+
+            self.assertEqual((result.x, result.y), (610, 310))
+
     def test_numpy_fft_matches_direct_valid_convolution(self) -> None:
         rng = np.random.default_rng(137)
         image = rng.random((9, 11))

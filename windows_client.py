@@ -15,10 +15,18 @@ kernel32 = ctypes.windll.kernel32
 SW_RESTORE = 9
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_MIDDLEDOWN = 0x0020
+MOUSEEVENTF_MIDDLEUP = 0x0040
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_ABSOLUTE = 0x8000
 MOUSEEVENTF_VIRTUALDESK = 0x4000
+MOUSEEVENTF_XDOWN = 0x0080
+MOUSEEVENTF_XUP = 0x0100
+XBUTTON1 = 0x0001
+XBUTTON2 = 0x0002
 INPUT_MOUSE = 0
+INPUT_KEYBOARD = 1
+KEYEVENTF_KEYUP = 0x0002
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
 
@@ -64,8 +72,18 @@ class MOUSEINPUT(ctypes.Structure):
     ]
 
 
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),
+    ]
+
+
 class INPUT_UNION(ctypes.Union):
-    _fields_ = [("mi", MOUSEINPUT)]
+    _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT)]
 
 
 class INPUT(ctypes.Structure):
@@ -103,6 +121,143 @@ class ClientWindowController:
 
     def template_scales(self) -> list[float]:
         return [self.scale, self.scale * 0.97, self.scale * 1.03, self.scale * 0.94, self.scale * 1.06]
+
+    def press_keys(self, keys: tuple[str, ...] | list[str], duration_ms: int = 100) -> None:
+        """Press one or more ordinary keyboard keys, then always release them."""
+        self._ensure_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            self._focus_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            raise RuntimeError("游戏窗口未获得焦点，已取消键盘操作。")
+        virtual_keys = [self._virtual_key(key) for key in keys]
+        try:
+            for virtual_key in virtual_keys:
+                self._send_keyboard_event(virtual_key, key_up=False)
+            time.sleep(max(0.02, min(duration_ms, 1000) / 1000.0))
+        finally:
+            for virtual_key in reversed(virtual_keys):
+                self._send_keyboard_event(virtual_key, key_up=True)
+
+    def press_key(self, key: str, duration_ms: int = 80) -> None:
+        self.press_keys((key,), duration_ms)
+
+    def press_binding(self, binding: str, duration_ms: int = 80) -> None:
+        normalized = self.normalize_input_binding(binding)
+        if normalized == "XBUTTON1":
+            self._press_mouse_side_button(XBUTTON1, duration_ms)
+        elif normalized == "XBUTTON2":
+            self._press_mouse_side_button(XBUTTON2, duration_ms)
+        else:
+            self.press_key(normalized, duration_ms)
+
+    def left_click(self) -> None:
+        self._ensure_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            self._focus_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            raise RuntimeError("游戏窗口未获得焦点，已取消鼠标攻击。")
+        try:
+            self._send_mouse_button(MOUSEEVENTF_LEFTDOWN)
+            time.sleep(0.025)
+        finally:
+            self._send_mouse_button(MOUSEEVENTF_LEFTUP)
+
+    def middle_click(self) -> None:
+        """Click the middle mouse button once to lock the current combat target."""
+        self._ensure_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            self._focus_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            raise RuntimeError("游戏窗口未获得焦点，已取消目标锁定。")
+        try:
+            self._send_mouse_button(MOUSEEVENTF_MIDDLEDOWN)
+            time.sleep(0.04)
+        finally:
+            self._send_mouse_button(MOUSEEVENTF_MIDDLEUP)
+
+    def move_mouse_relative(self, dx: int, dy: int = 0) -> None:
+        self._ensure_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            self._focus_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            raise RuntimeError("游戏窗口未获得焦点，已取消镜头转动。")
+        move = INPUT(
+            type=INPUT_MOUSE,
+            union=INPUT_UNION(mi=MOUSEINPUT(int(dx), int(dy), 0, MOUSEEVENTF_MOVE, 0, 0)),
+        )
+        sent = user32.SendInput(1, ctypes.byref(move), ctypes.sizeof(move))
+        if sent != 1:
+            raise RuntimeError("镜头转动发送失败，请尝试以管理员身份运行。")
+        time.sleep(0.035)
+
+    def _press_mouse_side_button(self, button: int, duration_ms: int) -> None:
+        self._ensure_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            self._focus_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            raise RuntimeError("游戏窗口未获得焦点，已取消鼠标侧键操作。")
+        try:
+            self._send_mouse_button(MOUSEEVENTF_XDOWN, button)
+            time.sleep(max(0.02, min(duration_ms, 1000) / 1000.0))
+        finally:
+            self._send_mouse_button(MOUSEEVENTF_XUP, button)
+
+    def release_keys(self, keys: tuple[str, ...] = ("W", "A", "S", "D", "F")) -> None:
+        for key in keys:
+            self._send_keyboard_event(self._virtual_key(key), key_up=True)
+
+    @staticmethod
+    def normalize_input_binding(binding: str) -> str:
+        normalized = binding.strip().upper().replace(" ", "")
+        aliases = {
+            "鼠标侧键1": "XBUTTON1",
+            "侧键1": "XBUTTON1",
+            "MOUSE4": "XBUTTON1",
+            "鼠标侧键2": "XBUTTON2",
+            "侧键2": "XBUTTON2",
+            "MOUSE5": "XBUTTON2",
+            "空格": "SPACE",
+            "空格键": "SPACE",
+            "ESC键": "ESC",
+            "ESCAPE": "ESC",
+        }
+        normalized = aliases.get(normalized, normalized)
+        if normalized in {"XBUTTON1", "XBUTTON2", "SPACE", "ESC"}:
+            return normalized
+        if len(normalized) == 1 and normalized.isascii() and normalized.isalnum():
+            return normalized
+        raise ValueError(f"不支持的输入键位: {binding}")
+
+    @classmethod
+    def _virtual_key(cls, key: str) -> int:
+        normalized = cls.normalize_input_binding(key)
+        if normalized == "SPACE":
+            return 0x20
+        if normalized == "ESC":
+            return 0x1B
+        if normalized in {"XBUTTON1", "XBUTTON2"}:
+            raise ValueError("鼠标侧键不能作为键盘事件发送。")
+        if len(normalized) != 1 or not normalized.isascii() or not normalized.isalnum():
+            raise ValueError(f"不支持的键盘按键: {key}")
+        return ord(normalized)
+
+    @staticmethod
+    def _send_keyboard_event(virtual_key: int, key_up: bool) -> None:
+        event = INPUT(
+            type=INPUT_KEYBOARD,
+            union=INPUT_UNION(
+                ki=KEYBDINPUT(
+                    virtual_key,
+                    0,
+                    KEYEVENTF_KEYUP if key_up else 0,
+                    0,
+                    0,
+                )
+            ),
+        )
+        sent = user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(event))
+        if sent != 1:
+            raise RuntimeError("键盘操作发送失败，请尝试以管理员身份运行。")
 
     def screencap(self, target: Path, bring_to_front: bool = False) -> str:
         self._ensure_window()
@@ -557,8 +712,8 @@ class ClientWindowController:
                 user32.AttachThreadInput(current_thread, foreground_thread, False)
 
     @staticmethod
-    def _send_mouse_button(flag: int) -> None:
-        event = INPUT(type=INPUT_MOUSE, union=INPUT_UNION(mi=MOUSEINPUT(0, 0, 0, flag, 0, 0)))
+    def _send_mouse_button(flag: int, mouse_data: int = 0) -> None:
+        event = INPUT(type=INPUT_MOUSE, union=INPUT_UNION(mi=MOUSEINPUT(0, 0, mouse_data, flag, 0, 0)))
         sent = user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(event))
         if sent != 1:
             raise RuntimeError("鼠标点击发送失败。")

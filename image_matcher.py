@@ -71,6 +71,8 @@ class TemplateMatcher:
         threshold: float = 0.82,
         scale: float = 1.0,
         max_width: int = 1920,
+        region: tuple[int, int, int, int] | None = None,
+        template_crop: tuple[int, int, int, int] | None = None,
     ) -> MatchResult:
         """Fast presence check using one grayscale FFT, capped at 1920px for 4K input."""
         template_path = self.templates_dir / template_name
@@ -79,6 +81,16 @@ class TemplateMatcher:
 
         with Image.open(screenshot_path) as source:
             screenshot_image = source.convert("L")
+        origin_x = 0
+        origin_y = 0
+        if region is not None:
+            left, top, right, bottom = region
+            left = max(0, min(screenshot_image.width - 1, int(left)))
+            top = max(0, min(screenshot_image.height - 1, int(top)))
+            right = max(left + 1, min(screenshot_image.width, int(right)))
+            bottom = max(top + 1, min(screenshot_image.height, int(bottom)))
+            screenshot_image = screenshot_image.crop((left, top, right, bottom))
+            origin_x, origin_y = left, top
         reduction = min(1.0, max_width / max(1, screenshot_image.width))
         reduced_size = (
             max(8, round(screenshot_image.width * reduction)),
@@ -91,6 +103,13 @@ class TemplateMatcher:
 
         with Image.open(template_path) as source:
             template_image = source.convert("L")
+        if template_crop is not None:
+            crop_left, crop_top, crop_right, crop_bottom = template_crop
+            crop_left = max(0, min(template_image.width - 1, int(crop_left)))
+            crop_top = max(0, min(template_image.height - 1, int(crop_top)))
+            crop_right = max(crop_left + 1, min(template_image.width, int(crop_right)))
+            crop_bottom = max(crop_top + 1, min(template_image.height, int(crop_bottom)))
+            template_image = template_image.crop((crop_left, crop_top, crop_right, crop_bottom))
         template_size = (
             max(8, round(template_image.width * scale * reduction)),
             max(8, round(template_image.height * scale * reduction)),
@@ -104,8 +123,8 @@ class TemplateMatcher:
 
         reduced = _match_single_scale_gray(screenshot, template)
         result = MatchResult(
-            x=round(reduced.x / reduction),
-            y=round(reduced.y / reduction),
+            x=round(reduced.x / reduction) + origin_x,
+            y=round(reduced.y / reduction) + origin_y,
             width=round(reduced.width / reduction),
             height=round(reduced.height / reduction),
             score=reduced.score,

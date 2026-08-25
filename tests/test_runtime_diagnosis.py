@@ -11,6 +11,13 @@ import app as app_module
 
 
 class RuntimeDiagnosisTests(unittest.TestCase):
+    def test_diagnosis_can_bind_to_recent_4c_task_instead_of_chorus(self) -> None:
+        chorus = SimpleNamespace(steps=[SimpleNamespace(action="move_to_visual_target")])
+        combat = SimpleNamespace(steps=[SimpleNamespace(action="combat_4c")])
+
+        self.assertIs(App._task_with_action([combat, chorus], "combat_4c"), combat)
+        self.assertIs(App._task_with_action([combat, chorus], "move_to_visual_target"), chorus)
+
     @staticmethod
     def _app(tasks, due=True):
         app = App.__new__(App)
