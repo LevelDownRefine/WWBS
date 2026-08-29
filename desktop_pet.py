@@ -24,8 +24,9 @@ class DesktopPet:
     ONE_SHOT_REPEATS = {"waving": 2, "jumping": 1, "failed": 1, "review": 1}
     COMMAND_LABELS = (
         ("检测游戏窗口", "check_target"),
-        ("启动（拿满奖励）", "run_rewards"),
-        ("拿满星声（13轮）", "run_astrite"),
+        ("周常拿满奖励", "run_rewards"),
+        ("周常拿满星声", "run_astrite"),
+        ("一键日常（2轮双倍）", "run_daily"),
         ("4C刷取（5次）", "run_4c_5"),
         ("4C刷取（10次）", "run_4c_10"),
         ("停止当前任务", "stop_task"),

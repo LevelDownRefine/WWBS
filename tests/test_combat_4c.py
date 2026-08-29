@@ -249,6 +249,22 @@ class Combat4CTests(unittest.TestCase):
             self.assertIsNone(x)
             self.assertIsNone(y)
 
+    def test_gold_target_location_rejects_ring_below_wide_billboard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "billboard-ring.png"
+            image = Image.new("RGB", (1920, 1080), (18, 24, 30))
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((930, 220, 1390, 480), fill=(220, 153, 45))
+            draw.ellipse((1030, 610, 1110, 690), fill=(210, 155, 58))
+            draw.ellipse((1048, 628, 1092, 672), fill=(18, 24, 30))
+            image.save(target)
+
+            ratio, x, y = app.TaskRunner._gold_target_location(target)
+
+            self.assertEqual(ratio, 0.0)
+            self.assertIsNone(x)
+            self.assertIsNone(y)
+
     def test_gold_target_location_rejects_pale_floor_reflection(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "pale-reflection.png"
@@ -331,7 +347,7 @@ class Combat4CTests(unittest.TestCase):
 
         result = runner._approach_4c_gold_target(-440, 1920)
 
-        controller.press_keys.assert_called_once_with(("W", "A"), 220)
+        controller.press_keys.assert_called_once_with(("W", "A"), 400)
         controller.move_mouse_relative.assert_not_called()
         self.assertIn("左侧", result)
 
@@ -343,7 +359,7 @@ class Combat4CTests(unittest.TestCase):
 
         turn = controller.move_mouse_relative.call_args.args[0]
         self.assertGreater(turn, 0)
-        controller.press_keys.assert_called_once_with(("W",), 180)
+        controller.press_keys.assert_called_once_with(("W",), 360)
         self.assertIn("右侧", result)
 
     def test_health_bar_detection_accounts_for_window_titlebar(self):

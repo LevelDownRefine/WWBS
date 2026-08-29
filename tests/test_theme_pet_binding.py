@@ -33,6 +33,7 @@ class ThemePetBindingTests(unittest.TestCase):
             ):
                 instance._select_theme("aemeath")
             self.assertEqual(json.loads(theme_config.read_text(encoding="utf-8"))["theme"], "aemeath")
+            self.assertTrue(json.loads(theme_config.read_text(encoding="utf-8"))["explicit"])
             self.assertEqual(json.loads(pet_config.read_text(encoding="utf-8"))["pet"], "aemeath")
 
     def test_pet_writes_matching_character_theme(self) -> None:
@@ -47,6 +48,7 @@ class ThemePetBindingTests(unittest.TestCase):
             ):
                 instance._select_pet("aemeath")
             self.assertEqual(json.loads(theme_config.read_text(encoding="utf-8"))["theme"], "aemeath")
+            self.assertTrue(json.loads(theme_config.read_text(encoding="utf-8"))["explicit"])
             self.assertEqual(json.loads(pet_config.read_text(encoding="utf-8"))["pet"], "aemeath")
 
     def test_simple_theme_keeps_current_pet(self) -> None:
@@ -61,7 +63,15 @@ class ThemePetBindingTests(unittest.TestCase):
             ):
                 instance._select_theme("simple")
             self.assertEqual(json.loads(theme_config.read_text(encoding="utf-8"))["theme"], "simple")
+            self.assertTrue(json.loads(theme_config.read_text(encoding="utf-8"))["explicit"])
             self.assertFalse(pet_config.exists())
+
+    def test_legacy_character_theme_does_not_replace_simple_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            theme_config = Path(directory) / "theme.json"
+            theme_config.write_text(json.dumps({"theme": "daniya"}), encoding="utf-8")
+            with patch.object(app_module, "THEME_CONFIG", theme_config):
+                self.assertEqual(App._load_theme_preference(), "simple")
 
 
 if __name__ == "__main__":
