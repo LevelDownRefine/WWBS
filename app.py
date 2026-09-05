@@ -41,7 +41,7 @@ TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.4"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
 RUN_NOTICES = {
     "daily": (
@@ -80,11 +80,16 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
     (
+        "v1.4.4",
+        """v1.4.4 更新内容
+- 活跃度已满时跳过无音区，但仍会继续检查并执行尚未完成的周度游历。
+- 修复“＋ / 选择祝福”空槽被误判为已有技能的问题，单独周常与日常衔接周常均生效。
+""",
+    ),
+    (
         "v1.4.3",
         """v1.4.3 更新内容
 - 一键日常完成领奖后会检查周度游历，未完成时自动进入幻梦游园并执行15轮周常。
-- 活跃度已满时跳过无音区，但仍会继续检查并执行尚未完成的周度游历。
-- 修复“＋ / 选择祝福”空槽被误判为已有技能的问题，单独周常与日常衔接周常均生效。
 - 一键日常、一键周常和4C刷取按钮旁新增圆圈问号，可查看16:9启动页面示例。
 - 修复桌宠及底部任务栏图标显示异常。
 """,
@@ -3732,12 +3737,10 @@ class App:
     def _show_update_notice(self) -> None:
         messagebox.showinfo(
             f"wwbs {APP_VERSION} 更新公告",
-            "1.4.3 正式版\n\n"
-            "- 日常完成后自动检查并衔接未完成的周度游历。\n"
+            "1.4.4 正式版\n\n"
             "- 活跃度已满时跳过无音区，但仍继续检查周常。\n"
             "- 修复无技能空槽被误判为已有技能的问题。\n"
-            "- 操作按钮旁新增启动页面问号提示与16:9示例图。\n"
-            "- 修复桌宠和任务栏图标显示异常。\n\n"
+            "- 单独周常与日常衔接周常共用同一技能判断。\n\n"
             "• 修复退出副本后卡在“确认离开”二次提示的问题\n"
             "• 仅在识别到完整确认弹窗时点击右侧“确认”\n"
             "• 没有弹窗时不会盲点固定坐标\n\n"
@@ -5263,7 +5266,7 @@ def ensure_default_config() -> None:
 def main() -> None:
     ensure_default_config()
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ybpan34.wwbs.1.4.3")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ybpan34.wwbs.1.4.4")
     except Exception:
         pass
     root = Tk()

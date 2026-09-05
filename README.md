@@ -2,7 +2,7 @@
 
 wwbs 是一个面向《鸣潮》Windows PC 客户端的图像识别自动点击工具。它会识别游戏窗口中的模板图片，并按照任务配置自动点击目标位置。
 
-当前版本：`1.4.3`
+当前版本：`1.4.4`
 
 程序顶部的“关于”按钮可查看当前版本，并跳转至作者的 [B 站视频](https://www.bilibili.com/video/BV1aPuo6uE9r/) 和 [GitHub 仓库](https://github.com/ybpan34-prog/WWBS)。
 
