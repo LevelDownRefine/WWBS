@@ -203,6 +203,16 @@ class DailyRoutineTests(unittest.TestCase):
             self.assertTrue(TaskRunner._weekly_skill_slot_empty(screenshot))
             self.assertFalse(TaskRunner._weekly_skill_equipped(screenshot))
 
+    def test_any_non_plus_weekly_skill_is_equipped(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            screenshot = Path(temp_dir) / "alternate-weekly-skill.png"
+            image = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            image[:] = (122, 164, 196)
+            Image.fromarray(image).save(screenshot)
+
+            self.assertFalse(TaskRunner._weekly_skill_slot_empty(screenshot))
+            self.assertTrue(TaskRunner._weekly_skill_equipped(screenshot))
+
     def test_standalone_weekly_run_checks_skill_before_clicking_start(self):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
         runner._wait_for_daily_template = Mock()
@@ -331,7 +341,7 @@ class DailyRoutineTests(unittest.TestCase):
         self.assertIsNone(py)
         self.assertEqual(portal_density, 0.0)
 
-    def test_reward_orb_below_point_two_five_confidence_is_not_actionable(self):
+    def test_reward_orb_below_point_six_five_confidence_is_not_actionable(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "weak-orb.png"
             image = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -339,7 +349,7 @@ class DailyRoutineTests(unittest.TestCase):
             Image.fromarray(image).save(path)
             x, y, confidence = TaskRunner._daily_reward_orb_location(path)
         self.assertGreater(confidence, 0.1)
-        self.assertLessEqual(confidence, 0.25)
+        self.assertLessEqual(confidence, 0.65)
         self.assertIsNone(x)
         self.assertIsNone(y)
 

@@ -41,7 +41,7 @@ TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
 RUN_NOTICES = {
     "daily": (
@@ -57,6 +57,50 @@ RUN_NOTICES = {
         RUN_NOTICE_DIR / "combat-4c-start.jpg",
     ),
 }
+
+
+def is_running_as_admin() -> bool:
+    """Return whether the current Windows process is elevated."""
+    if os.name != "nt":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def apply_windows_taskbar_icon(window, icon_path: Path) -> bool:
+    """Apply an .ico to the real top-level HWND used by the Windows taskbar."""
+    if os.name != "nt" or not icon_path.exists():
+        return False
+    try:
+        window.update_idletasks()
+        child_hwnd = int(window.winfo_id())
+        parent_hwnd = int(ctypes.windll.user32.GetParent(child_hwnd))
+        hwnd = parent_hwnd or child_hwnd
+        image_icon = 1
+        load_from_file = 0x0010
+        wm_seticon = 0x0080
+        handles = []
+        for size, slot in ((16, 0), (32, 1)):
+            handle = ctypes.windll.user32.LoadImageW(
+                None,
+                str(icon_path),
+                image_icon,
+                size,
+                size,
+                load_from_file,
+            )
+            if handle:
+                ctypes.windll.user32.SendMessageW(hwnd, wm_seticon, slot, handle)
+                handles.append(handle)
+        if handles:
+            # Windows needs these handles to remain alive for the lifetime of the window.
+            window._wwbs_native_icon_handles = handles
+            return True
+    except Exception:
+        pass
+    return False
 THEME_CONFIG = APP_DIR / "theme-settings.json"
 PET_CONFIG = APP_DIR / "pet-settings.json"
 PET_DISPLAY_CONFIG = APP_DIR / "pet-display-settings.json"
@@ -79,6 +123,16 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    (
+        "v1.4.5",
+        """v1.4.5 更新内容
+- 任务执行报错且检测到程序未使用管理员权限时，自动请求管理员权限并重启。
+- 修复部分 Windows 环境中底部任务栏仍显示 Tk 羽毛图标的问题。
+- 4C刷取按钮固定使用内置4C模板，不再需要手动切换模板组。
+- 日常奖励光球最低置信度由0.25提高到0.65，减少误判。
+- 周本祝福只以“＋ / 选择祝福”判断空槽；任意已装备祝福均可直接开始，不再要求第一个祝福。
+""",
+    ),
     (
         "v1.4.4",
         """v1.4.4 更新内容
@@ -117,7 +171,7 @@ UPDATE_HISTORY = [
 1. “一键日常”转为正式功能：滑动选择指定无音区，自动完成两轮挑战与双倍领取。
 2. 体力不足时仅按顺序使用结晶单质、结晶溶剂；绿色资源为0或补充后仍不足时自动改用溶剂，绝不消耗星声。
 3. 优化无音区列表滚动、进入战斗后一号位确认、战斗结束复核、奖励光球搜索与靠近逻辑。
-4. 奖励光球最低置信度提高至0.25；靠近后置信度未提升会立即转向重新寻找。
+4. 奖励光球最低置信度提高至0.65；靠近后置信度未提升会立即转向重新寻找。
 5. 自动领取活跃度100宝箱及先约电台免费奖励，并完善大世界、终端与页面切换确认。
 6. 优化日常流程的界面识别区域与轮询速度，识别成功后立即执行下一步，同时保留加载超时保护。
 7. 改进4C声骸搜索与吸收验证，排除广告牌等相似目标，并在目标停滞时主动换向。
@@ -225,7 +279,7 @@ CLICK_JITTER_RATIO = 0.25
 CLICK_DELAY_JITTER_SECONDS = 0.20
 CYCLE_MAX_MISSES = 5
 CYCLE_FALLBACK_MISS_COUNTS = (2, 4)
-DAILY_REWARD_ORB_MIN_CONFIDENCE = 0.25
+DAILY_REWARD_ORB_MIN_CONFIDENCE = 0.65
 CYCLE_FINAL_MAX_RETRIES = 2
 DIAGNOSTIC_START_TEMPLATE = "menu1.png"
 FONT_FAMILY = "Microsoft YaHei UI"
@@ -1794,32 +1848,8 @@ class TaskRunner:
 
     @staticmethod
     def _weekly_skill_equipped(screenshot: Path) -> bool:
-        """Reject the explicit plus-sign empty slot before checking the name plate."""
-        if TaskRunner._weekly_skill_slot_empty(screenshot):
-            return False
-        with Image.open(screenshot) as source:
-            image = np.asarray(source.convert("RGB"))
-        height, width = image.shape[:2]
-        region = image[
-            # Inspect only the blessing-name plate. The empty slot may still
-            # contain an orange circular button above it, which must not count
-            # as an equipped skill.
-            round(height * 0.855):round(height * 0.90),
-            round(width * 0.425):round(width * 0.555),
-        ]
-        if region.size == 0:
-            return False
-        red = region[:, :, 0].astype(np.int16)
-        green = region[:, :, 1].astype(np.int16)
-        blue = region[:, :, 2].astype(np.int16)
-        orange_plate = (
-            (red > 180)
-            & (green > 90)
-            & (green < 210)
-            & (blue < 100)
-            & ((red - blue) > 90)
-        )
-        return float(orange_plate.mean()) > 0.15
+        """Any known weekly slot without the explicit plus sign is equipped."""
+        return not TaskRunner._weekly_skill_slot_empty(screenshot)
 
     def _ensure_weekly_skill_selected(self) -> None:
         """Use one shared empty-slot rule for standalone and daily-triggered weekly runs."""
@@ -2724,6 +2754,8 @@ class App:
                 self.root.iconphoto(True, self._app_icon_photo)
             except Exception:
                 pass
+        apply_windows_taskbar_icon(self.root, APP_ICON)
+        self.root.after(250, lambda: apply_windows_taskbar_icon(self.root, APP_ICON))
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         reference_screen = (2560, 1440)
@@ -2788,6 +2820,7 @@ class App:
         self._hotkey_was_down = False
         self._last_hotkey_stop_at = 0.0
         self._last_mouse_admin_warning_at = 0.0
+        self._admin_restart_requested = False
         self._preflight_running = False
         self._last_started_tasks: list[WeeklyTask] = []
         self._last_task_started_at = 0.0
@@ -3716,6 +3749,68 @@ class App:
         subprocess.Popen(command, cwd=str(APP_DIR))
         self._close_app()
 
+    @staticmethod
+    def _elevated_launch_command() -> tuple[str, str]:
+        if getattr(sys, "frozen", False):
+            executable = sys.executable
+            arguments = list(sys.argv[1:])
+        else:
+            executable = sys.executable
+            arguments = [str(Path(__file__).resolve()), *sys.argv[1:]]
+        return executable, subprocess.list2cmdline(arguments)
+
+    def _request_admin_restart(self, log_message: str) -> bool:
+        if is_running_as_admin() or self._admin_restart_requested:
+            return False
+        self._admin_restart_requested = True
+        executable, parameters = self._elevated_launch_command()
+        self._log(log_message)
+        try:
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                executable,
+                parameters or None,
+                str(APP_DIR),
+                1,
+            )
+        except Exception as exc:
+            self._admin_restart_requested = False
+            self._log(f"无法请求管理员权限：{exc}")
+            return False
+        if int(result) > 32:
+            self.stop_event.set()
+            self.root.after(120, self._close_app)
+            return True
+        self._admin_restart_requested = False
+        self._log(f"管理员重启未获批准或启动失败（返回值 {int(result)}）。")
+        return False
+
+    def _restart_as_admin_after_error(self, error_text: str) -> bool:
+        return self._request_admin_restart(
+            "检测到任务执行失败且程序未使用管理员权限，正在请求管理员权限并自动重启。"
+        )
+
+    def _ensure_admin_for_real_run(self) -> bool:
+        if self.dry_run.get() or is_running_as_admin():
+            return True
+        restarted = self._request_admin_restart(
+            "真实任务开始前检测到程序未使用管理员权限，正在请求管理员权限并自动重启。"
+        )
+        if not restarted:
+            messagebox.showerror(
+                "需要管理员权限",
+                "真实任务需要以管理员身份运行。请允许 Windows 权限请求后重试。",
+                parent=self.root,
+            )
+        return False
+
+    def _handle_task_failure(self, error_text: str) -> None:
+        if self._restart_as_admin_after_error(error_text):
+            return
+        if is_running_as_admin() or not self._admin_restart_requested:
+            self._show_task_error_feedback(error_text)
+
     def _build_log_tab(self) -> None:
         Label(self.log_tab, text="运行日志", font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
         log_body = Frame(self.log_tab, bg=COLORS["panel"])
@@ -3737,13 +3832,11 @@ class App:
     def _show_update_notice(self) -> None:
         messagebox.showinfo(
             f"wwbs {APP_VERSION} 更新公告",
-            "1.4.4 正式版\n\n"
-            "- 活跃度已满时跳过无音区，但仍继续检查周常。\n"
-            "- 修复无技能空槽被误判为已有技能的问题。\n"
-            "- 单独周常与日常衔接周常共用同一技能判断。\n\n"
-            "• 修复退出副本后卡在“确认离开”二次提示的问题\n"
-            "• 仅在识别到完整确认弹窗时点击右侧“确认”\n"
-            "• 没有弹窗时不会盲点固定坐标\n\n"
+            "1.4.5 正式版\n\n"
+            "- 真实任务开始前检查权限，非管理员时自动请求提权并重启。\n"
+            "- 修复 Windows 底部任务栏显示羽毛图标的问题。\n"
+            "- 4C刷取直接使用内置模板，不需要手动切换。\n"
+            "- 日常奖励光球最低置信度提高至0.65。\n\n"
             "正式版支持通过 GitHub Releases 检查和安装后续更新。",
             parent=self.root,
         )
@@ -4596,6 +4689,8 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             self._log(f"由{self.pet_name}触发任务，已跳过开始确认。")
         self.max_cycles = max_cycles
         self.dry_run.set(False)
+        if not self._ensure_admin_for_real_run():
+            return
         self._preflight_enabled_run()
 
     def _start_named_task_real(
@@ -4608,6 +4703,10 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         if task is None:
             messagebox.showerror("任务不可用", f"没有找到任务：{task_name}", parent=self.root)
             return
+        if task_name == "4C刷取":
+            # The dedicated launcher always uses the packaged 4C resources. It must
+            # not depend on, or alter, the template group selected in the UI.
+            task = replace(task, template_group="4c", enabled=True)
         if self.target_mode.get() != "client":
             messagebox.showerror("模式不支持", "4C刷取目前只支持 PC 客户端窗口。", parent=self.root)
             return
@@ -4619,6 +4718,8 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             return
         self.max_cycles = cycles
         self.dry_run.set(False)
+        if not self._ensure_admin_for_real_run():
+            return
         self._start_worker([task])
 
     def _start_daily_routine(self, require_confirmation: bool = True) -> None:
@@ -4660,6 +4761,8 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         )
         self.max_cycles = 2
         self.dry_run.set(False)
+        if not self._ensure_admin_for_real_run():
+            return
         self._start_worker([task])
 
     def _preflight_enabled_run(self) -> None:
@@ -4697,7 +4800,7 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         def finish_failure(error_text: str, elapsed: float) -> None:
             self._preflight_running = False
             self._log(f"快速启动检查失败，用时 {elapsed:.2f} 秒。")
-            self._show_task_error_feedback(error_text)
+            self._handle_task_failure(error_text)
 
         def work() -> None:
             started = time.perf_counter()
@@ -4755,6 +4858,8 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("提示", "任务正在运行中。")
             return
+        if not self._ensure_admin_for_real_run():
+            return
         self._last_started_tasks = list(tasks)
         self._last_task_started_at = time.monotonic()
         if len(tasks) == 1:
@@ -4797,7 +4902,7 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         except Exception as exc:
             error_text = str(exc)
             self._log(f"执行失败: {error_text}")
-            self.root.after(0, lambda text=error_text: self._show_task_error_feedback(text))
+            self.root.after(0, lambda text=error_text: self._handle_task_failure(text))
         finally:
             self.max_cycles = None
             self.root.after(0, lambda: self._set_pet_working(False))
@@ -5266,7 +5371,7 @@ def ensure_default_config() -> None:
 def main() -> None:
     ensure_default_config()
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ybpan34.wwbs.1.4.4")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ybpan34.wwbs.1.4.5")
     except Exception:
         pass
     root = Tk()

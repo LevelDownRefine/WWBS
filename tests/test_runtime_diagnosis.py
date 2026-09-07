@@ -97,6 +97,7 @@ class RuntimeDiagnosisTests(unittest.TestCase):
         app._template_group_dir = Mock(return_value=Path("templates"))
         app._run_enabled = Mock()
         app._show_task_error_feedback = Mock()
+        app._handle_task_failure = Mock()
         app._log = Mock()
         app.root = Mock()
         app.root.after.side_effect = lambda _delay, callback: callback()
@@ -127,9 +128,92 @@ class RuntimeDiagnosisTests(unittest.TestCase):
             patch.object(app_module.threading, "Thread", side_effect=immediate_thread),
         ):
             app._preflight_enabled_run()
-        app._show_task_error_feedback.assert_called_once_with("没有找到游戏窗口")
+        app._handle_task_failure.assert_called_once_with("没有找到游戏窗口")
+        app._show_task_error_feedback.assert_not_called()
         app._run_enabled.assert_not_called()
         self.assertFalse(app._preflight_running)
+
+    def test_non_admin_task_failure_restarts_with_elevation(self) -> None:
+        app = App.__new__(App)
+        app._admin_restart_requested = False
+        app._elevated_launch_command = Mock(return_value=("C:\\wwbs.exe", '--mode "daily"'))
+        app._log = Mock()
+        app.stop_event = Mock()
+        app.root = Mock()
+        app._close_app = Mock()
+        app._show_task_error_feedback = Mock()
+        shell32 = Mock()
+        shell32.ShellExecuteW.return_value = 42
+
+        with (
+            patch.object(app_module, "is_running_as_admin", return_value=False),
+            patch.object(app_module.ctypes, "windll", SimpleNamespace(shell32=shell32)),
+        ):
+            app._handle_task_failure("键盘操作发送失败")
+
+        shell32.ShellExecuteW.assert_called_once_with(
+            None,
+            "runas",
+            "C:\\wwbs.exe",
+            '--mode "daily"',
+            str(app_module.APP_DIR),
+            1,
+        )
+        app.stop_event.set.assert_called_once_with()
+        app.root.after.assert_called_once_with(120, app._close_app)
+        app._show_task_error_feedback.assert_not_called()
+
+    def test_admin_task_failure_keeps_normal_error_feedback(self) -> None:
+        app = App.__new__(App)
+        app._admin_restart_requested = False
+        app._show_task_error_feedback = Mock()
+
+        with patch.object(app_module, "is_running_as_admin", return_value=True):
+            app._handle_task_failure("普通错误")
+
+        app._show_task_error_feedback.assert_called_once_with("普通错误")
+
+    def test_real_run_requests_admin_before_starting(self) -> None:
+        app = App.__new__(App)
+        app.dry_run = Mock()
+        app.dry_run.get.return_value = False
+        app._request_admin_restart = Mock(return_value=True)
+
+        with patch.object(app_module, "is_running_as_admin", return_value=False):
+            self.assertFalse(app._ensure_admin_for_real_run())
+
+        app._request_admin_restart.assert_called_once_with(
+            "真实任务开始前检测到程序未使用管理员权限，正在请求管理员权限并自动重启。"
+        )
+
+    def test_preview_does_not_request_admin(self) -> None:
+        app = App.__new__(App)
+        app.dry_run = Mock()
+        app.dry_run.get.return_value = True
+        app._request_admin_restart = Mock()
+
+        with patch.object(app_module, "is_running_as_admin", return_value=False):
+            self.assertTrue(app._ensure_admin_for_real_run())
+
+        app._request_admin_restart.assert_not_called()
+
+    def test_native_windows_icon_is_sent_to_taskbar_window(self) -> None:
+        window = Mock()
+        window.winfo_id.return_value = 111
+        user32 = Mock()
+        user32.GetParent.return_value = 222
+        user32.LoadImageW.side_effect = (333, 444)
+
+        with (
+            patch.object(app_module.os, "name", "nt"),
+            patch.object(app_module.ctypes, "windll", SimpleNamespace(user32=user32)),
+        ):
+            result = app_module.apply_windows_taskbar_icon(window, app_module.APP_ICON)
+
+        self.assertTrue(result)
+        self.assertEqual(user32.SendMessageW.call_count, 2)
+        user32.SendMessageW.assert_any_call(222, 0x0080, 0, 333)
+        user32.SendMessageW.assert_any_call(222, 0x0080, 1, 444)
 
 
 if __name__ == "__main__":
