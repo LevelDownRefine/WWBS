@@ -19,7 +19,7 @@ class Combat4CTests(unittest.TestCase):
         self.assertGreaterEqual(app.TaskRunner.REWARD_SEARCH_TIMEOUT, 90.0)
         self.assertEqual(app.TaskRunner.EMPTY_HEALTH_CONFIRMATIONS, 3)
         self.assertEqual(app.TaskRunner.BOSS_HEADER_CHECK_INTERVAL, 0.5)
-        self.assertEqual(app.TaskRunner.DAILY_BATTLE_END_CHECK_INTERVAL, 0.2)
+        self.assertEqual(app.TaskRunner.DAILY_BATTLE_END_CHECK_INTERVAL, 1.0)
 
     def test_dark_absorb_prompt_template_is_detectable(self):
         template = Path(app.TEMPLATES_DIR) / "4c" / "absorb_prompt_dark.png"

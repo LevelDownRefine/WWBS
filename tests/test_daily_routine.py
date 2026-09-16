@@ -157,11 +157,23 @@ class DailyRoutineTests(unittest.TestCase):
         controller.press_key.assert_not_called()
         self.assertEqual(taps[0], (0.744, 0.257))
 
+    def test_auto_selected_weekly_page_does_not_wait_for_daily_activity(self):
+        runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
+        runner._tap_ratio = Mock()
+        runner._capture_for_matching = Mock()
+        runner._weekly_travel_page_present = Mock(return_value=True)
+        runner._wait_for_daily_template = Mock()
+        runner._start_weekly_travel_from_selected_page = Mock()
+        runner._continue_daily_into_weekly_travel()
+        runner._wait_for_daily_template.assert_not_called()
+        runner._start_weekly_travel_from_selected_page.assert_called_once()
+
     def test_completed_weekly_travel_skips_dream_park(self):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
         runner._tap_ratio = Mock()
         runner._capture_for_matching = Mock()
         runner._wait_for_daily_template = Mock()
+        runner._weekly_travel_page_present = Mock(return_value=False)
         runner._weekly_travel_completed = Mock(return_value=True)
         runner._run_default_weekly_from_daily = Mock()
 
@@ -175,6 +187,7 @@ class DailyRoutineTests(unittest.TestCase):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
         runner._tap_ratio = Mock()
         runner._capture_for_matching = Mock()
+        runner._weekly_travel_page_present = Mock(return_value=False)
         runner._weekly_travel_completed = Mock(return_value=False)
         runner._weekly_skill_equipped = Mock(return_value=False)
         runner._wait_for_daily_template = Mock()
@@ -283,6 +296,7 @@ class DailyRoutineTests(unittest.TestCase):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
         runner._tap_ratio = Mock()
         runner._capture_for_matching = Mock()
+        runner._weekly_travel_page_present = Mock(return_value=False)
         runner._weekly_travel_completed = Mock(return_value=False)
         runner._weekly_skill_equipped = Mock(return_value=True)
         runner._wait_for_daily_template = Mock()
@@ -428,6 +442,7 @@ class DailyRoutineTests(unittest.TestCase):
             dry_run=False,
             daily_heal_enabled=True,
         )
+        runner.DAILY_BATTLE_END_CHECK_INTERVAL = 0.2
         runner.HEAL_ROTATION_INTERVAL = 0.5
         runner._select_daily_slot_one_after_loading = Mock()
         runner._capture_for_matching = Mock()
@@ -444,7 +459,7 @@ class DailyRoutineTests(unittest.TestCase):
         runner._confirm_daily_battle_finished.assert_called_once()
         runner._perform_4c_heal_rotation.assert_not_called()
 
-    def test_reward_stage_detection_accepts_prompt_or_strong_orb(self):
+    def test_reward_stage_detection_rejects_white_orb_during_combat(self):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
         runner._find_daily_reward_prompt = Mock(return_value=object())
         runner._daily_reward_orb_location = Mock(return_value=(None, None, 0.0))
@@ -454,9 +469,10 @@ class DailyRoutineTests(unittest.TestCase):
 
         runner._find_daily_reward_prompt.return_value = None
         runner._daily_reward_orb_location.return_value = (900, 360, 0.82)
-        self.assertTrue(runner._daily_reward_stage_present(Path("screen.png")))
+        self.assertFalse(runner._daily_reward_stage_present(Path("screen.png")))
+        runner._daily_reward_orb_location.assert_not_called()
 
-    def test_reward_search_prefers_visible_orb_over_lingering_task_text(self):
+    def test_reward_search_returns_to_combat_when_white_enemy_is_visible(self):
         controller = Mock()
         runner = TaskRunner(controller, lambda _message: None, dry_run=False)
         runner._capture_for_matching = Mock()
@@ -469,11 +485,10 @@ class DailyRoutineTests(unittest.TestCase):
             screenshot = Path(temp_dir) / "_runtime_screenshot.png"
             Image.new("RGB", (1920, 1080)).save(screenshot)
             with patch.object(app, "APP_DIR", Path(temp_dir)):
-                with self.assertRaises(RuntimeError):
-                    runner._collect_daily_reward(1)
+                self.assertFalse(runner._collect_daily_reward(1))
 
-        runner._daily_battle_task_present.assert_not_called()
-        controller.press_keys.assert_called_once_with(("W",), 500)
+        runner._daily_battle_task_present.assert_called_once()
+        controller.press_keys.assert_not_called()
 
     def test_refill_never_selects_star_currency_card(self):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)

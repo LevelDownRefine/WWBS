@@ -11,6 +11,16 @@ import app as app_module
 
 
 class RuntimeDiagnosisTests(unittest.TestCase):
+    def test_elevated_launch_marks_restart_without_duplicate_flags(self):
+        with patch.object(app_module.sys, "argv", ["app.py", "--admin-restarted"]):
+            _, arguments = App._elevated_launch_command()
+        self.assertEqual(arguments.count("--admin-restarted"), 1)
+
+    def test_elevated_launch_adds_restart_flag(self):
+        with patch.object(app_module.sys, "argv", ["app.py"]):
+            _, arguments = App._elevated_launch_command()
+        self.assertIn("--admin-restarted", arguments)
+
     def test_diagnosis_can_bind_to_recent_4c_task_instead_of_chorus(self) -> None:
         chorus = SimpleNamespace(steps=[SimpleNamespace(action="move_to_visual_target")])
         combat = SimpleNamespace(steps=[SimpleNamespace(action="combat_4c")])

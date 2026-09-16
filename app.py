@@ -42,7 +42,7 @@ TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.4.7"
+APP_VERSION = "1.4.8"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
 RUN_NOTICES = {
     "daily": (
@@ -125,6 +125,13 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    ("v1.4.8", """v1.4.8 更新内容
+- 修复日常完成后索拉指南自动切换到周度游历时的衔接超时。
+- 修复日常诊断错误提示缺少 menu1.png，分别检查日常与周常模板。
+- 管理员模式自动重启后跳过更新公告，仅记录“检测到未开启管理员模式，已通过管理员模式打开”。
+- 日常战斗结束检查改为每1秒一次，不再将白色怪物或技能特效作为奖励光球结束信号。
+- 加长目标消失复核间隔；奖励搜索发现清怪目标仍在时恢复战斗，减少误判打断。
+"""),
     (
         "v1.4.7",
         """v1.4.7 更新内容
@@ -613,9 +620,9 @@ class TaskRunner:
     EMPTY_HEALTH_CONFIRMATIONS = 3
     EMPTY_HEALTH_CONFIRMATION_INTERVAL = 0.15
     BOSS_HEADER_CHECK_INTERVAL = 0.5
-    DAILY_BATTLE_END_CHECK_INTERVAL = 0.2
+    DAILY_BATTLE_END_CHECK_INTERVAL = 1.0
     DAILY_TASK_MISSING_CONFIRMATIONS = 3
-    DAILY_TASK_MISSING_CONFIRMATION_INTERVAL = 0.15
+    DAILY_TASK_MISSING_CONFIRMATION_INTERVAL = 0.75
     ABSORB_PROMPT_TEMPLATES = ("absorb_prompt_dark.png", "absorb_prompt.png")
     ABSORB_TEXT_CROPS = {
         "absorb_prompt_dark.png": (130, 19, 198, 69),
@@ -1473,7 +1480,7 @@ class TaskRunner:
                         with attack_lock:
                             pass
                         self.controller.release_keys()
-                        self.log("    已识别到奖励光球或领取提示，停止战斗并进入奖励搜索。")
+                        self.log("    已识别到领取奖励提示，停止战斗并进入奖励搜索。")
                         return
                     present = self._daily_battle_task_present(screenshot)
                     last_task_check = time.monotonic()
@@ -1664,10 +1671,9 @@ class TaskRunner:
         )
 
     def _daily_reward_stage_present(self, screenshot: Path) -> bool:
-        if self._find_daily_reward_prompt(screenshot) is not None:
-            return True
-        target_x, _target_y, density = self._daily_reward_orb_location(screenshot)
-        return target_x is not None and density > DAILY_REWARD_ORB_MIN_CONFIDENCE
+        # White enemies and skill effects are not evidence that combat ended.
+        # Colour navigation is only used after the battle-end confirmation.
+        return self._find_daily_reward_prompt(screenshot) is not None
 
     @staticmethod
     def _daily_reward_orb_location(screenshot: Path) -> tuple[int | None, int | None, float]:
@@ -1707,13 +1713,9 @@ class TaskRunner:
             self._capture_for_matching(screenshot)
             prompt = self._find_daily_reward_prompt(screenshot)
             target_x, _target_y, density = self._daily_reward_orb_location(screenshot)
-            # Ultimate effects can temporarily cover the task text and cause the
-            # fast battle loop to think combat ended. Recheck on every reward-search
-            # frame. A visible reward prompt or orb takes precedence because the
-            # old task text can linger after the enemies have already been cleared.
+            # A white object must never override evidence of ongoing combat.
             if (
                 prompt is None
-                and target_x is None
                 and self._daily_battle_task_present(screenshot)
             ):
                 self.controller.release_keys()
@@ -2173,6 +2175,11 @@ class TaskRunner:
         self.log("    回到终端后再次进入索拉指南，检查周度游历。")
         self._tap_ratio(0.515, 0.671, 0.65)
         screenshot = APP_DIR / "_runtime_screenshot.png"
+        self._capture_for_matching(screenshot)
+        if self._weekly_travel_page_present(screenshot):
+            self.log("    索拉指南已选中未完成的周度游历，直接进入幻梦游园。")
+            self._start_weekly_travel_from_selected_page()
+            return
         self._wait_for_daily_template("activity_full.png", timeout=5.0, threshold=0.62)
         self._capture_for_matching(screenshot)
         if self._weekly_travel_completed(screenshot):
@@ -3083,7 +3090,10 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self._close_app)
         self._start_stop_hotkey()
         self.root.after(120, self._start_desktop_pet)
-        self.root.after(300, self._show_update_notice)
+        if "--admin-restarted" in sys.argv and is_running_as_admin():
+            self._log("检测到未开启管理员模式，已通过管理员模式打开")
+        else:
+            self.root.after(300, self._show_update_notice)
 
     @staticmethod
     def _theme_pack_valid(theme_id: str, path: Path | None = None) -> bool:
@@ -4022,6 +4032,8 @@ class App:
         else:
             executable = sys.executable
             arguments = [str(Path(__file__).resolve()), *sys.argv[1:]]
+        if "--admin-restarted" not in arguments:
+            arguments.append("--admin-restarted")
         return executable, subprocess.list2cmdline(arguments)
 
     def _request_admin_restart(self, log_message: str) -> bool:
@@ -4097,12 +4109,12 @@ class App:
     def _show_update_notice(self) -> None:
         messagebox.showinfo(
             f"wwbs {APP_VERSION} 更新公告",
-            "1.4.7 正式版\n\n"
-            "- 4C刷取次数调整为10次和30次。\n"
-            "- 桌宠隐藏状态会自动保存，任务反馈不再强制显示桌宠。\n"
-            "- 日常战斗新增奖励阶段判定，修复目标文字残留时一直攻击的问题。\n"
-            "- 三号位回血会在结束前后复核，不再阻塞正常收尾。\n"
-            "- 大招每5秒检查一次，只在彩色完整亮环就绪时施放。",
+            "1.4.8 正式版\n\n"
+            '- 修复日常完成后索拉指南自动切换到周度游历时的衔接超时。\n'
+            '- 修复日常诊断错误提示缺少 menu1.png，分别检查日常与周常模板。\n'
+            '- 管理员模式自动重启后跳过更新公告，仅记录“检测到未开启管理员模式，已通过管理员模式打开”。\n'
+            '- 日常战斗结束检查改为每1秒一次，不再将白色怪物或技能特效作为奖励光球结束信号。\n'
+            '- 加长目标消失复核间隔；奖励搜索发现清怪目标仍在时恢复战斗，减少误判打断。\n',
             parent=self.root,
         )
 
@@ -4333,6 +4345,15 @@ class App:
                             findings.append(
                                 ("warning", "当前首领名字与整条血条都未出现：可能已经击败，或尚未进入4C战斗。")
                             )
+                    elif self._task_with_action(diagnostic_tasks, "daily_routine") is not None:
+                        required = ["activity_full.png", "battle_task_text.png", "reward_prompt.png"]
+                        missing = [name for name in required if not (TEMPLATES_DIR / "daily" / name).exists()]
+                        if not (TEMPLATES_DIR / DIAGNOSTIC_START_TEMPLATE).exists():
+                            missing.append("../" + DIAGNOSTIC_START_TEMPLATE)
+                        if missing:
+                            findings.append(("error", f"日常与衔接周常模板不完整：{', '.join(missing)}。"))
+                        else:
+                            findings.append(("ok", "日常与衔接周常模板齐全；日常从大世界开始，运行中无需匹配周常起始界面。"))
                     elif navigation_task is not None:
                         navigation_step = next(
                             step for step in navigation_task.steps if step.action == "move_to_visual_target"
