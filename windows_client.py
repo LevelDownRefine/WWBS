@@ -17,6 +17,7 @@ MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
 MOUSEEVENTF_MIDDLEDOWN = 0x0020
 MOUSEEVENTF_MIDDLEUP = 0x0040
+MOUSEEVENTF_WHEEL = 0x0800
 MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_ABSOLUTE = 0x8000
 MOUSEEVENTF_VIRTUALDESK = 0x4000
@@ -30,8 +31,8 @@ KEYEVENTF_KEYUP = 0x0002
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
 
-DEFAULT_GAME_WINDOW_TITLES = ("鸣潮", "Wuthering Waves")
-AUTO_TITLE_KEYWORDS = {"", "自动", "auto", "鸣潮", "wuthering waves"}
+DEFAULT_GAME_WINDOW_TITLES = ("鸣潮", "鳴潮", "Wuthering Waves")
+AUTO_TITLE_KEYWORDS = {"", "自动", "auto", "鸣潮", "鳴潮", "wuthering waves"}
 MIN_GAME_CLIENT_SIZE = (640, 360)
 
 
@@ -174,6 +175,19 @@ class ClientWindowController:
             time.sleep(0.04)
         finally:
             self._send_mouse_button(MOUSEEVENTF_MIDDLEUP)
+
+    def wheel_at(self, x: int, y: int, delta: int) -> None:
+        """Move over a client point and send a mouse-wheel scroll."""
+        self._ensure_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            self._focus_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            raise RuntimeError("游戏窗口未获得焦点，已取消滚轮操作。")
+        sx, sy = self._client_to_screen(x, y)
+        user32.SetCursorPos(sx, sy)
+        wheel_data = ctypes.c_ulong(int(delta) & 0xFFFFFFFF).value
+        user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, wheel_data, 0)
+        time.sleep(0.06)
 
     def move_mouse_relative(self, dx: int, dy: int = 0) -> None:
         self._ensure_window()
