@@ -1,8 +1,9 @@
-# WWBS CI：单元测试
+# WWBS CI：单元测试 / ruff 静态检查 / PyInstaller 打包
 #
-# 必须跑在 Windows 上：windows_client.py 依赖 `from ctypes import wintypes`，
-# 该模块只在 Windows 存在；app.py 还在模块级 import tkinter。
-# 不要改成 ubuntu-latest —— 会在 import 阶段直接失败。
+# test 与 package 必须跑在 Windows 上：windows_client.py 依赖
+# `from ctypes import wintypes`，该模块只在 Windows 存在；app.py 还在模块级
+# import tkinter。不要改成 ubuntu-latest —— 会在 import 阶段直接失败。
+# lint 与操作系统无关，跑在 ubuntu 上更快更省。
 name: CI
 
 on:
@@ -38,3 +39,98 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python -m unittest discover -s tests -t tests -v
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      # 固定版本：ruff 未显式配置时的默认规则集会随版本变化，
+      # 仓库已用 ruff.toml 显式声明 select，这里再钉住解释器版本。
+      - name: 安装 ruff
+        run: pip install ruff==0.16.8
+
+      - name: 静态检查
+        run: ruff check .
+
+  package:
+    name: pyinstaller / windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: 安装依赖与打包工具
+        # 固定 PyInstaller 版本，避免上游主版本升级导致打包行为漂移
+        run: pip install -r requirements.txt pyinstaller==6.22.3
+
+      # spec 里 upx=True，但 runner 上通常没有 UPX：PyInstaller 会静默跳过，
+      # 不是失败。需要压缩产物时再单独装 UPX。
+      - name: 打包
+        run: pyinstaller --noconfirm wwbs.spec
+
+      # 覆盖所有运行时读取的资源，防止 wwbs.spec 的 datas 漏项。
+      - name: 校验产物资源
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/wwbs/wwbs.exe
+          missing=0
+          for item in \
+            templates/menu1.png \
+            templates/daily/zone_hukou_shanmai.png \
+            templates/4c/absorb_prompt.png \
+            templates/群声共振模拟域/start_simulation.png \
+            weekly_tasks.json \
+            wwbs.ico \
+            assets/run-notice/weekly-start.jpg \
+            pet-assets/pink-lace-chibi/frames \
+            pet-assets/aemeath-chibi/frames-sharp \
+            pet-assets/jingran-chibi/frames \
+            pet-assets/jingran-chibi/spritesheet.webp \
+            pet-assets/cartethyia-chibi/frames \
+            pet-assets/cartethyia-chibi/spritesheet.webp \
+            optional-themes/cartethyia-theme.wwbstheme ; do
+            if [ ! -e "dist/wwbs/_internal/$item" ]; then
+              echo "::error::打包产物缺少资源: $item"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          echo "产物资源校验通过"
+
+      # 只验收「进程还在」不够：打包漏 hidden import 时窗口会初始化失败。
+      # 用 PowerShell 直接读 MainWindowTitle，不依赖 PATH 里的 tasklist，
+      # 也不去解析它的本地化输出。
+      - name: 冒烟启动
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath "dist\wwbs\wwbs.exe" -PassThru
+          try {
+            $title = ""
+            for ($i = 0; $i -lt 30 -and -not $title; $i++) {
+              Start-Sleep -Seconds 1
+              if ($proc.HasExited) { throw "wwbs.exe 启动后立即退出，exit code=$($proc.ExitCode)" }
+              $proc.Refresh()
+              $title = $proc.MainWindowTitle
+            }
+            if (-not $title) { throw "30 秒内未取得主窗口标题，GUI 未完成初始化" }
+            Write-Host "主窗口标题: $title"
+            if ($title -notmatch "wwbs") { throw "主窗口标题不含 wwbs：$title" }
+            Write-Host "冒烟启动通过"
+          } finally {
+            if (-not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+          }

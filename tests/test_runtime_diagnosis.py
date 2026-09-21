@@ -10,6 +10,11 @@ from app import App
 import app as app_module
 
 
+def _immediate_thread(target, daemon):
+    """Return a stand-in Thread that runs its target immediately."""
+    return SimpleNamespace(start=target)
+
+
 class RuntimeDiagnosisTests(unittest.TestCase):
     def test_elevated_launch_marks_restart_without_duplicate_flags(self):
         with patch.object(app_module.sys, "argv", ["app.py", "--admin-restarted"]):
@@ -117,11 +122,10 @@ class RuntimeDiagnosisTests(unittest.TestCase):
         app = self._preflight_app()
         controller = Mock()
         controller.scale = 1.0
-        immediate_thread = lambda target, daemon: SimpleNamespace(start=target)
         with (
             patch.object(app_module, "ClientWindowController", return_value=controller),
             patch.object(app_module, "TemplateMatcher"),
-            patch.object(app_module.threading, "Thread", side_effect=immediate_thread),
+            patch.object(app_module.threading, "Thread", side_effect=_immediate_thread),
         ):
             app._preflight_enabled_run()
         app._run_enabled.assert_called_once_with()
@@ -132,10 +136,9 @@ class RuntimeDiagnosisTests(unittest.TestCase):
         app = self._preflight_app()
         controller = Mock()
         controller.connect.side_effect = RuntimeError("没有找到游戏窗口")
-        immediate_thread = lambda target, daemon: SimpleNamespace(start=target)
         with (
             patch.object(app_module, "ClientWindowController", return_value=controller),
-            patch.object(app_module.threading, "Thread", side_effect=immediate_thread),
+            patch.object(app_module.threading, "Thread", side_effect=_immediate_thread),
         ):
             app._preflight_enabled_run()
         app._handle_task_failure.assert_called_once_with("没有找到游戏窗口")
