@@ -6,8 +6,12 @@
 # lint 与操作系统无关，跑在 ubuntu 上更快更省。
 name: CI
 
+# 只对默认分支跑 push：特征分支的检查交给 pull_request 事件。
+# 两者都开的话，同一个提交会分别触发 push（跑分支头）与 pull_request
+# （跑合并结果），每个 job 各跑两遍。
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
