@@ -93,6 +93,7 @@ class DailyRoutineTests(unittest.TestCase):
         runner = TaskRunner(controller, lambda _message: None, dry_run=False)
         runner.daily_zone_name = "荒石高地无音区 I"
         runner._open_terminal_destination = Mock()
+        runner._daily_activity_still_pending = Mock(return_value=True)
         runner._tap_ratio = Mock()
         runner._capture_size = Mock(return_value=(Path("screen.png"), 1920, 1080))
         runner._daily_row_button_ready = Mock(return_value=True)
