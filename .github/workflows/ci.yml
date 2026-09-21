@@ -1,14 +1,5 @@
-# WWBS CI：单元测试 / ruff 静态检查 / PyInstaller 打包
-#
-# test 与 package 必须跑在 Windows 上：windows_client.py 依赖
-# `from ctypes import wintypes`，该模块只在 Windows 存在；app.py 还在模块级
-# import tkinter。不要改成 ubuntu-latest —— 会在 import 阶段直接失败。
-# lint 与操作系统无关，跑在 ubuntu 上更快更省。
 name: CI
 
-# 只对默认分支跑 push：特征分支的检查交给 pull_request 事件。
-# 两者都开的话，同一个提交会分别触发 push（跑分支头）与 pull_request
-# （跑合并结果），每个 job 各跑两遍。
 on:
   push:
     branches: [main]
@@ -25,6 +16,7 @@ concurrency:
 jobs:
   test:
     name: unittest / Python 3.13
+    # app.py 模块级 import tkinter，windows_client.py 依赖 ctypes.wintypes
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -37,8 +29,7 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      # tests/ 不是包（没有 __init__.py），所以 -t 必须指向 tests 本身，
-      # 同时靠 PYTHONPATH 让测试文件能 import 到仓库根目录下的 app.py。
+      # tests/ 不是包，-t 需指向 tests 自身，并用 PYTHONPATH 暴露仓库根
       - name: 运行单元测试
         env:
           PYTHONPATH: ${{ github.workspace }}
@@ -46,6 +37,7 @@ jobs:
 
   lint:
     name: ruff
+    # 静态检查与操作系统无关
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -54,8 +46,7 @@ jobs:
         with:
           python-version: '3.13'
 
-      # 固定版本：ruff 未显式配置时的默认规则集会随版本变化，
-      # 仓库已用 ruff.toml 显式声明 select，这里再钉住解释器版本。
+      # 检查结论以 ruff.toml 加此版本为准
       - name: 安装 ruff
         run: pip install ruff==0.16.8
 
@@ -74,15 +65,13 @@ jobs:
           cache: pip
 
       - name: 安装依赖与打包工具
-        # 固定 PyInstaller 版本，避免上游主版本升级导致打包行为漂移
         run: pip install -r requirements.txt pyinstaller==6.22.3
 
-      # spec 里 upx=True，但 runner 上通常没有 UPX：PyInstaller 会静默跳过，
-      # 不是失败。需要压缩产物时再单独装 UPX。
+      # spec 里 upx=True；runner 无 UPX 时 PyInstaller 跳过，不影响构建
       - name: 打包
         run: pyinstaller --noconfirm wwbs.spec
 
-      # 覆盖所有运行时读取的资源，防止 wwbs.spec 的 datas 漏项。
+      # 断言 spec 的 datas 覆盖了全部运行时资源
       - name: 校验产物资源
         shell: bash
         run: |
@@ -114,9 +103,7 @@ jobs:
           fi
           echo "产物资源校验通过"
 
-      # 只验收「进程还在」不够：打包漏 hidden import 时窗口会初始化失败。
-      # 用 PowerShell 直接读 MainWindowTitle，不依赖 PATH 里的 tasklist，
-      # 也不去解析它的本地化输出。
+      # 主窗口标题非空即 GUI 完成初始化
       - name: 冒烟启动
         shell: pwsh
         run: |
