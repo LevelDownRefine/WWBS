@@ -35,6 +35,7 @@ class DailyRoutineTests(unittest.TestCase):
         self.assertEqual(labels["一键日常（2轮双倍）"], "run_daily")
         self.assertEqual(labels["4C刷取（10次）"], "run_4c_10")
         self.assertEqual(labels["4C刷取（30次）"], "run_4c_30")
+        self.assertNotIn("检测游戏窗口", labels)
         self.assertNotIn("4C刷取（5次）", labels)
         self.assertNotIn("启动（拿满奖励）", labels)
         self.assertNotIn("拿满星声（13轮）", labels)
@@ -174,35 +175,29 @@ class DailyRoutineTests(unittest.TestCase):
         runner._capture_for_matching = Mock()
         runner._wait_for_daily_template = Mock()
         runner._weekly_travel_page_present = Mock(return_value=False)
-        runner._weekly_travel_completed = Mock(return_value=True)
         runner._run_default_weekly_from_daily = Mock()
 
         runner._continue_daily_into_weekly_travel()
 
         runner._run_default_weekly_from_daily.assert_not_called()
+        runner._wait_for_daily_template.assert_not_called()
         self.assertEqual(runner._tap_ratio.call_args_list[0].args[:2], (0.515, 0.671))
         self.assertEqual(runner._tap_ratio.call_args_list[-1].args[:2], (0.957, 0.058))
 
-    def test_unfinished_weekly_travel_selects_first_skill_when_empty(self):
+    def test_weekly_page_not_auto_selected_is_treated_as_completed(self):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
         runner._tap_ratio = Mock()
         runner._capture_for_matching = Mock()
         runner._weekly_travel_page_present = Mock(return_value=False)
-        runner._weekly_travel_completed = Mock(return_value=False)
-        runner._weekly_skill_equipped = Mock(return_value=False)
         runner._wait_for_daily_template = Mock()
-        runner._wait_for_weekly_skill_dialog = Mock()
-        runner._run_default_weekly_from_daily = Mock()
+        runner._start_weekly_travel_from_selected_page = Mock()
 
         runner._continue_daily_into_weekly_travel()
 
         tapped = [call.args[:2] for call in runner._tap_ratio.call_args_list]
-        self.assertIn((0.333, 0.170), tapped)
-        self.assertIn((0.247, 0.505), tapped)
-        self.assertIn((0.496, 0.768), tapped)
-        self.assertIn((0.371, 0.505), tapped)
-        self.assertIn((0.826, 0.858), tapped)
-        runner._run_default_weekly_from_daily.assert_called_once_with()
+        self.assertEqual(tapped, [(0.515, 0.671), (0.957, 0.058)])
+        runner._wait_for_daily_template.assert_not_called()
+        runner._start_weekly_travel_from_selected_page.assert_not_called()
 
     def test_plus_sign_weekly_slot_is_always_empty(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -292,12 +287,11 @@ class DailyRoutineTests(unittest.TestCase):
         runner._start_weekly_travel_from_selected_page.assert_not_called()
         self.assertEqual(runner._tap_ratio.call_args.args[:2], (0.957, 0.058))
 
-    def test_equipped_weekly_skill_is_kept(self):
+    def test_selected_weekly_page_still_runs_and_keeps_equipped_skill(self):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
         runner._tap_ratio = Mock()
         runner._capture_for_matching = Mock()
-        runner._weekly_travel_page_present = Mock(return_value=False)
-        runner._weekly_travel_completed = Mock(return_value=False)
+        runner._weekly_travel_page_present = Mock(return_value=True)
         runner._weekly_skill_equipped = Mock(return_value=True)
         runner._wait_for_daily_template = Mock()
         runner._wait_for_weekly_skill_dialog = Mock()

@@ -26,14 +26,47 @@ import numpy as np
 from image_matcher import TemplateMatcher
 from windows_client import ClientWindowController
 from desktop_pet import DesktopPet
-from daniya_persona import event_line as daniya_event_line, idle_line as daniya_idle_line
+from daniya_persona import (
+    CHARACTER_PROMPT as daniya_character_prompt,
+    DIALOGUE_PROMPT as daniya_dialogue_prompt,
+    PERSONALITY_PROMPT as daniya_personality_prompt,
+    SYSTEM_PROMPT as daniya_system_prompt,
+    event_line as daniya_event_line,
+    idle_line as daniya_idle_line,
+    respond_to_user as daniya_respond_to_user,
+)
 from aemeath_persona import (
+    CHARACTER_PROMPT as aemeath_character_prompt,
+    DIALOGUE_PROMPT as aemeath_dialogue_prompt,
+    PERSONALITY_PROMPT as aemeath_personality_prompt,
+    SYSTEM_PROMPT as aemeath_system_prompt,
     event_line as aemeath_event_line,
     idle_dialogue as aemeath_idle_dialogue,
     record_departure as record_aemeath_departure,
+    respond_to_user as aemeath_respond_to_user,
     welcome_dialogue as aemeath_welcome_dialogue,
 )
-from jingran_persona import event_line as jingran_event_line, idle_line as jingran_idle_line
+from jingran_persona import (
+    CHARACTER_PROMPT as jingran_character_prompt,
+    DIALOGUE_PROMPT as jingran_dialogue_prompt,
+    PERSONALITY_PROMPT as jingran_personality_prompt,
+    SYSTEM_PROMPT as jingran_system_prompt,
+    event_line as jingran_event_line,
+    idle_line as jingran_idle_line,
+    respond_to_user as jingran_respond_to_user,
+    welcome_dialogue as jingran_welcome_dialogue,
+)
+from cartethyia_persona import (
+    CHARACTER_PROMPT as cartethyia_character_prompt,
+    DIALOGUE_PROMPT as cartethyia_dialogue_prompt,
+    PERSONALITY_PROMPT as cartethyia_personality_prompt,
+    SYSTEM_PROMPT as cartethyia_system_prompt,
+    event_line as cartethyia_event_line,
+    idle_line as cartethyia_idle_line,
+    respond_to_user as cartethyia_respond_to_user,
+    welcome_dialogue as cartethyia_welcome_dialogue,
+)
+from local_agent import AgentReply, LocalAgentConfig, LocalCartethyiaAgent
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -42,7 +75,7 @@ TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.4.8"
+APP_VERSION = "1.5.0"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
 RUN_NOTICES = {
     "daily": (
@@ -107,9 +140,12 @@ PET_CONFIG = APP_DIR / "pet-settings.json"
 PET_DISPLAY_CONFIG = APP_DIR / "pet-display-settings.json"
 COMBAT_CONFIG = APP_DIR / "combat-settings.json"
 DAILY_CONFIG = APP_DIR / "daily-settings.json"
+APP_SETTINGS_CONFIG = APP_DIR / "app-settings.json"
+CARTETHYIA_AGENT_CONFIG = APP_DIR / "cartethyia-agent-settings.json"
 DANIYA_THEME_PACK = APP_DIR / "optional-themes" / "daniya-theme.wwbstheme"
 AEMEATH_THEME_PACK = APP_DIR / "optional-themes" / "aemeath-theme.wwbstheme"
 JINGRAN_THEME_PACK = APP_DIR / "optional-themes" / "jingran-theme.wwbstheme"
+CARTETHYIA_THEME_PACK = APP_DIR / "optional-themes" / "cartethyia-theme.wwbstheme"
 UPDATE_API_URL = "https://api.github.com/repos/ybpan34-prog/WWBS/releases/latest"
 UPDATE_ASSET_NAME = "wwbs-exe.zip"
 ABOUT_BILIBILI_URL = "https://www.bilibili.com/video/BV1aPuo6uE9r/"
@@ -125,6 +161,56 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    ("v1.5.0", """v1.5.0 更新内容
+- 新增卡提希娅Q版桌宠、专属冰蓝潮汐主题、16向鼠标注视和完整人格对话，桌宠与程序主题可独立切换。
+- 本地 Agent 正式扩展到达妮娅、爱弥斯、景燃与卡提希娅；右键桌宠即可聊天，四位分别载入自己的完整人格并用桌宠气泡回复。
+- 支持用明确自然语言启动日常、周常、周常星声、4C、停止与诊断白名单任务，回复会明确说明正在执行的目标。
+- 桌宠聊天可安全修改三号位回血、任务完成自动关机，以及景燃/卡提希娅的盯鼠标和定时跳跃开关。
+- 新增“任务正常完成后自动关机”选项，默认关闭；手动停止、执行失败和预演不会关机，触发时保留30秒取消时间。
+- 输入框打开时后台预热 Ollama 模型，移除发送后的等待占位气泡；连续聊天复用模型60秒，自动任务开始前立即释放显存。
+- “你是谁”“年龄多少”等稳定角色事实改为专属本地回答，避免小模型把不同问题重复成同一句或编造年龄。
+- 景燃与卡提希娅新增鼠标注视、定时向前跳跃及右键开关；空中持续保持跳跃姿态，落地蹲姿延长并轻微缩小。
+- 修复四款桌宠所有大小档位的透明边缘与缩放毛边，并修复长角色名气泡徽章遮挡。
+- 修复一键日常结束后的周常页面判断，未进入周度游历页时按本周已完成处理，不再误报。
+"""),
+    ("v1.4.13", """v1.4.13 更新内容
+- 本地 Agent 扩展到达妮娅、爱弥斯、景燃与卡提希娅四位桌宠；四位均可从右键菜单直接聊天，并通过自己的桌宠气泡回复。
+- 四位桌宠分别载入历史版本中已经建立的人格文本，聊天时不会串角色；达妮娅补齐完整的系统、角色、性格与对话四层提示词。
+- 为四位桌宠分别制作日常、周常、周常星声、4C、停止与诊断回复，任务气泡会明确说明正在处理的目标。
+- 聊天输入框会随当前角色切换专属配色、标题与开场提示；四位共享同一套 Ollama 地址、模型和显存释放策略。
+"""),
+    ("v1.4.12", """v1.4.12 更新内容
+- 将系统默认聊天输入框替换为卡提希娅冰蓝主题对话框，使用完整中文标题与“发送/取消”按钮，支持回车发送、Shift+Enter换行，并自动显示在桌宠附近。
+- 优化 qwen3:4b 回复速度：关闭思考模式、限制短回复长度、缩短短期历史，并让连续聊天复用模型60秒。
+- 首次聊天以及模型重新载入时，都会自动携带完整的卡提希娅角色设定；连续聊天保留最近三轮上下文。
+- 日常、周常与4C等任务开始前仍会立即卸载模型，避免与《鸣潮》争抢显存；连接检测结束后同样立即释放。
+"""),
+    ("v1.4.11", """v1.4.11 更新内容
+- 本地 Agent 每次回复后立即卸载 Ollama 模型，执行日常、周常、4C等任务前也会再次释放，避免与《鸣潮》争抢显存。
+- 移除独立的 Agent 聊天窗口和设置页“打开聊天”按钮；现在从卡提希娅桌宠右键选择聊天，输入后由桌宠气泡直接回复。
+- 调整任务指令回复，使卡提希娅明确说出正在执行的日常、周常、星声或4C目标，不再使用含糊的通用开场白。
+"""),
+    ("v1.4.10", """v1.4.10 更新内容
+- 修复 qwen3.5:9b 等大型本地模型首次冷启动时，检测按钮20秒即误报 timed out 的问题；检测与聊天现在最多等待180秒。
+- Ollama 对话成功后让模型保持热加载30分钟，减少连续聊天时反复载入造成的等待。
+- 本地 Agent 超时提示改为中文，并明确给出首次加载、内存和小模型排查建议。
+- 卡提希娅聊天窗口改为微信风格：角色消息左侧白色气泡、用户消息右侧绿色气泡，系统提示居中显示，并支持滚动浏览。
+"""),
+    ("v1.4.9", """v1.4.9 更新内容
+- 新增卡提希娅Q版桌宠、16向鼠标注视、专属台词与冰蓝潮汐主题。
+- 修复四款桌宠在 Windows 透明窗口中的黑边、杂色与缩放边缘模糊，覆盖全部大小档位。
+- 修复单独切换桌宠后被当前主题强制改回的问题，桌宠与程序主题现在可独立选择。
+- 景燃与卡提希娅新增“盯鼠标”和“定时跳跃”开关，设置页与桌宠右键菜单双向同步。
+- 跳跃会沿当前朝向向前腾空，空中保持跳跃动画，接地后播放落地缓冲动作。
+- 定时跳跃首次使用默认开启，每45至90秒尝试触发一次；已经保存的开关选择保持不变。
+- 精简桌宠右键菜单，移除“检测游戏窗口”；主程序原有窗口检测功能保持不变。
+- 完善卡提希娅人格、分级称呼、亲密与守护对话，并严格区分日常卡提希娅与低频芙露德莉斯形态。
+- 重做景燃人格与对话：强化寻幽客、怪谈讲述、《寻幽记》写作及剧情后的同行者关系，危险时会切换为简短可靠的表达。
+- 提高景燃主动说话频率，双击会立即说出台词；景燃与卡提希娅双击高跳时，腾空阶段固定使用真正的跳跃姿态。
+- 新增卡提希娅本地 Agent 试用：用户可选择是否连接自行部署的 Ollama 兼容模型，通过聊天调用受限的日常、周常、4C、停止与诊断白名单。
+- 修复一键日常结束后的周常检查：未自动进入周度游历页时直接判定周常已完成，不再等待错误页面并报错。
+- 桌宠气泡姓名徽章改为自适应宽度与顶部留白，修复“卡提希娅”等长名字被遮挡。
+"""),
     ("v1.4.8", """v1.4.8 更新内容
 - 修复日常完成后索拉指南自动切换到周度游历时的衔接超时。
 - 修复日常诊断错误提示缺少 menu1.png，分别检查日常与周常模板。
@@ -363,6 +449,19 @@ JINGRAN_COLORS = {
     "danger": "#d17a58",
     "preview": "#050a0f",
 }
+CARTETHYIA_COLORS = {
+    "app_bg": "#edf4ff",
+    "panel": "#f9fbff",
+    "panel_alt": "#e3edfb",
+    "line": "#9db6d8",
+    "line_soft": "#cbd9ec",
+    "text": "#1c2c4a",
+    "muted": "#587096",
+    "primary": "#315faf",
+    "primary_hover": "#4778ca",
+    "danger": "#9d5366",
+    "preview": "#09152b",
+}
 THEME_DEFINITIONS = {
     "daniya": {
         "pack": DANIYA_THEME_PACK,
@@ -400,12 +499,25 @@ THEME_DEFINITIONS = {
         "banner_muted": "#b9eaf0",
         "focus_y": 0.48,
     },
+    "cartethyia": {
+        "pack": CARTETHYIA_THEME_PACK,
+        "manifest_id": "cartethyia-fate-tide",
+        "name": "卡提希娅主题",
+        "colors": CARTETHYIA_COLORS,
+        "banner_title": "卡提希娅",
+        "banner_subtitle": "“即便身处命运的漩涡，我也有想要坚持的事。”——卡提希娅",
+        "banner_overlay": (4, 16, 42, 92),
+        "banner_text": "#f8fbff",
+        "banner_muted": "#d9e8ff",
+        "focus_y": 0.43,
+    },
 }
 PET_DEFINITIONS = {
     "daniya": {
         "name": "达妮娅",
         "frames": APP_DIR / "pet-assets" / "pink-lace-chibi" / "frames",
         "scale": 1.15,
+        "alpha_cutoff": 128,
         "event_line": daniya_event_line,
         "idle_line": daniya_idle_line,
         "bubble_palette": {},
@@ -414,6 +526,7 @@ PET_DEFINITIONS = {
         "name": "爱弥斯",
         "frames": APP_DIR / "pet-assets" / "aemeath-chibi" / "frames-sharp",
         "scale": 1.0,
+        "alpha_cutoff": 128,
         "event_line": aemeath_event_line,
         "idle_line": aemeath_idle_dialogue,
         "welcome_dialogue": aemeath_welcome_dialogue,
@@ -433,8 +546,10 @@ PET_DEFINITIONS = {
         "frames": APP_DIR / "pet-assets" / "jingran-chibi" / "frames",
         "look_spritesheet": APP_DIR / "pet-assets" / "jingran-chibi" / "spritesheet.webp",
         "scale": 1.0,
+        "alpha_cutoff": 128,
         "event_line": jingran_event_line,
         "idle_line": jingran_idle_line,
+        "welcome_dialogue": jingran_welcome_dialogue,
         "bubble_palette": {
             "shadow": "#071015",
             "body": "#111d25",
@@ -446,7 +561,80 @@ PET_DEFINITIONS = {
             "text": "#edf7f7",
         },
     },
+    "cartethyia": {
+        "name": "卡提希娅",
+        "frames": APP_DIR / "pet-assets" / "cartethyia-chibi" / "frames",
+        "look_spritesheet": APP_DIR / "pet-assets" / "cartethyia-chibi" / "spritesheet.webp",
+        "scale": 1.0,
+        "alpha_cutoff": 128,
+        "event_line": cartethyia_event_line,
+        "idle_line": cartethyia_idle_line,
+        "welcome_dialogue": cartethyia_welcome_dialogue,
+        "bubble_palette": {
+            "shadow": "#17233d",
+            "body": "#f8fbff",
+            "outline": "#6687c7",
+            "badge": "#315baf",
+            "badge_outline": "#d1b978",
+            "ornament": "#7fc9ee",
+            "ornament_outline": "#3e75bb",
+            "text": "#24324e",
+        },
+    },
 }
+
+PET_AGENT_PROMPT_LAYERS = {
+    "daniya": (daniya_system_prompt, daniya_character_prompt, daniya_personality_prompt, daniya_dialogue_prompt),
+    "aemeath": (aemeath_system_prompt, aemeath_character_prompt, aemeath_personality_prompt, aemeath_dialogue_prompt),
+    "jingran": (jingran_system_prompt, jingran_character_prompt, jingran_personality_prompt, jingran_dialogue_prompt),
+    "cartethyia": (
+        cartethyia_system_prompt,
+        cartethyia_character_prompt,
+        cartethyia_personality_prompt,
+        cartethyia_dialogue_prompt,
+    ),
+}
+
+PET_AGENT_FALLBACKS = {
+    "daniya": daniya_respond_to_user,
+    "aemeath": lambda message: aemeath_respond_to_user(message).text,
+    "jingran": lambda message: jingran_respond_to_user(message).text,
+    "cartethyia": lambda message: cartethyia_respond_to_user(message).text,
+}
+
+AGENT_TASK_LABELS = {
+    "run_daily": "一键日常（2轮双倍）",
+    "run_weekly_rewards": "周常拿满奖励（15轮）",
+    "run_weekly_astrite": "周常拿满星声（13轮）",
+    "run_4c_10": "4C刷取（10次）",
+    "run_4c_30": "4C刷取（30次）",
+    "stop_task": "停止当前任务",
+    "diagnose": "运行诊断",
+}
+
+PET_AGENT_DIALOG_THEMES = {
+    "daniya": {
+        "background": "#fff3fa", "header": "#f7dbea", "title": "#713954", "muted": "#9b6480",
+        "border": "#df8fbc", "editor": "#fffafd", "accent": "#d75f9d", "accent_active": "#bd4f89",
+        "cancel": "#f3e1eb", "cancel_text": "#765469", "subtitle": "嗯……想和我说什么？",
+    },
+    "aemeath": {
+        "background": "#f5fbff", "header": "#e4f6fb", "title": "#365b76", "muted": "#668ba2",
+        "border": "#70ddeb", "editor": "#ffffff", "accent": "#d75f9d", "accent_active": "#bd4f89",
+        "cancel": "#e3f2f7", "cancel_text": "#4e7187", "subtitle": "漂泊者，今天想和我聊什么？",
+    },
+    "jingran": {
+        "background": "#101a22", "header": "#162732", "title": "#edf7f7", "muted": "#8db3ba",
+        "border": "#4ac8d8", "editor": "#1b2b35", "accent": "#b99455", "accent_active": "#9f7b40",
+        "cancel": "#243640", "cancel_text": "#c2d7d9", "subtitle": "有话直说，我听着。",
+    },
+    "cartethyia": {
+        "background": "#eef7ff", "header": "#dceeff", "title": "#173d6b", "muted": "#56779d",
+        "border": "#8ab9e8", "editor": "#ffffff", "accent": "#4a91d2", "accent_active": "#397fbe",
+        "cancel": "#e5eef7", "cancel_text": "#476582", "subtitle": "义人，想和我说些什么？",
+    },
+}
+
 COLORS = dict(SIMPLE_COLORS)
 
 # “一键日常”无音区使用精确名称匹配。相似名称（尤其荒石高地 I / II）
@@ -2171,7 +2359,7 @@ class TaskRunner:
         self._start_weekly_travel_from_selected_page()
 
     def _continue_daily_into_weekly_travel(self) -> None:
-        """From the terminal, enter unfinished weekly travel and start Dream Park."""
+        """Run weekly only when Sola Guide automatically selects its unfinished page."""
         self.log("    回到终端后再次进入索拉指南，检查周度游历。")
         self._tap_ratio(0.515, 0.671, 0.65)
         screenshot = APP_DIR / "_runtime_screenshot.png"
@@ -2180,16 +2368,8 @@ class TaskRunner:
             self.log("    索拉指南已选中未完成的周度游历，直接进入幻梦游园。")
             self._start_weekly_travel_from_selected_page()
             return
-        self._wait_for_daily_template("activity_full.png", timeout=5.0, threshold=0.62)
-        self._capture_for_matching(screenshot)
-        if self._weekly_travel_completed(screenshot):
-            self.log("    周度游历已有勾，自动周常已完成，本次跳过幻梦游园。")
-            self._tap_ratio(0.957, 0.058, 0.35)
-            return
-
-        self.log("    周度游历未完成，进入周度游历 → 幻梦游园。")
-        self._tap_ratio(0.333, 0.170, 0.55)
-        self._start_weekly_travel_from_selected_page()
+        self.log("    索拉指南未自动进入周度游历页，判定本周周常已经完成；本次跳过幻梦游园。")
+        self._tap_ratio(0.957, 0.058, 0.35)
 
     def _perform_4c_main_attack(self) -> None:
         """Keep a steady main-character attack rhythm matching the healer clicks."""
@@ -2992,11 +3172,9 @@ class TemplateCropper:
 class App:
     def __init__(self, root: Tk):
         self.root = root
-        self.pet_id = self._load_pet_preference()
+        preferred_pet_id = self._load_pet_preference()
         self.theme_id = self._load_theme_preference()
-        if self.theme_id in PET_DEFINITIONS and self.pet_id != self.theme_id:
-            self.pet_id = self.theme_id
-            PET_CONFIG.write_text(json.dumps({"pet": self.pet_id}, ensure_ascii=False), encoding="utf-8")
+        self.pet_id = self._select_startup_pet(preferred_pet_id, self.theme_id)
         self.pet_definition = PET_DEFINITIONS[self.pet_id]
         self.pet_name = str(self.pet_definition["name"])
         COLORS.clear()
@@ -3037,8 +3215,35 @@ class App:
         self.combat_ultimate_key = StringVar(value=self._load_combat_ultimate_key())
         self.daily_heal_enabled = BooleanVar(value=self._load_daily_heal_enabled())
         self.daily_zone = StringVar(value=self._load_daily_zone())
+        self.auto_shutdown_enabled = BooleanVar(value=self._load_auto_shutdown_enabled())
         self.pet_size = StringVar(value=f"{self._load_pet_size_percent()}%")
         self.pet_visible = self._load_pet_visible()
+        self.pet_supports_look_controls = self.pet_id in {"jingran", "cartethyia"}
+        self.pet_look_enabled = BooleanVar(
+            value=(
+                self._load_pet_feature_enabled(self.pet_id, "look_at_pointer", True)
+                if self.pet_supports_look_controls
+                else False
+            )
+        )
+        self.pet_auto_jump_enabled = BooleanVar(
+            value=self._load_pet_feature_enabled(self.pet_id, "auto_jump", True)
+        )
+        agent_config = LocalAgentConfig.load(CARTETHYIA_AGENT_CONFIG)
+        self.cartethyia_agent_enabled = BooleanVar(value=agent_config.enabled)
+        self.cartethyia_agent_endpoint = StringVar(value=agent_config.endpoint)
+        self.cartethyia_agent_model = StringVar(value=agent_config.model)
+        self.cartethyia_agent_status = StringVar(
+            value="已启用，等待连接测试" if agent_config.enabled else "未启用，不会连接或下载任何模型"
+        )
+        persona_prompt = "\n\n".join(PET_AGENT_PROMPT_LAYERS[self.pet_id])
+        self.cartethyia_agent = LocalCartethyiaAgent(
+            agent_config,
+            persona_prompt,
+            character_name=self.pet_name,
+            fallback_reply=PET_AGENT_FALLBACKS[self.pet_id],
+        )
+        self._agent_chat_busy = False
         self.dry_run = BooleanVar(value=True)
         self.status = StringVar(value="准备就绪")
         self.device_status = StringVar(value="窗口未检测")
@@ -3058,6 +3263,7 @@ class App:
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.tasks: list[WeeklyTask] = []
         self.stop_event = threading.Event()
+        self._manual_stop_requested = False
         self.worker: threading.Thread | None = None
         self.max_cycles: int | None = None
         self.preview_photo = None
@@ -3140,6 +3346,11 @@ class App:
         return "daniya"
 
     @staticmethod
+    def _select_startup_pet(preferred_pet_id: str, _theme_id: str) -> str:
+        """Keep an explicit pet choice independent from the selected program theme."""
+        return preferred_pet_id
+
+    @staticmethod
     def _normalize_pet_size_percent(value: object) -> int:
         try:
             percent = int(round(float(str(value).strip().rstrip("%"))))
@@ -3172,9 +3383,528 @@ class App:
             encoding="utf-8",
         )
 
+    @classmethod
+    def _load_pet_feature_enabled(
+        cls,
+        pet_id: str,
+        feature: str,
+        default: bool,
+    ) -> bool:
+        saved = cls._load_pet_display_settings().get(feature)
+        if not isinstance(saved, dict):
+            return default
+        value = saved.get(pet_id, default)
+        return value if isinstance(value, bool) else default
+
+    def _save_pet_feature_enabled(self, feature: str, enabled: bool) -> None:
+        saved = self._load_pet_display_settings()
+        feature_settings = saved.get(feature)
+        if not isinstance(feature_settings, dict):
+            feature_settings = {}
+        feature_settings[self.pet_id] = bool(enabled)
+        saved[feature] = feature_settings
+        PET_DISPLAY_CONFIG.write_text(
+            json.dumps(saved, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _apply_pet_look_setting(self) -> None:
+        if not self.pet_supports_look_controls:
+            return
+        enabled = bool(self.pet_look_enabled.get())
+        self._save_pet_feature_enabled("look_at_pointer", enabled)
+        if self.desktop_pet is not None:
+            self.desktop_pet.set_look_enabled(enabled)
+        state = "开启" if enabled else "关闭"
+        self.status.set(f"{self.pet_name}盯鼠标：{state}")
+
+    def _apply_pet_auto_jump_setting(self) -> None:
+        if not self.pet_supports_look_controls:
+            return
+        enabled = bool(self.pet_auto_jump_enabled.get())
+        self._save_pet_feature_enabled("auto_jump", enabled)
+        if self.desktop_pet is not None:
+            self.desktop_pet.set_auto_jump_enabled(enabled)
+        state = "开启" if enabled else "关闭"
+        self.status.set(f"{self.pet_name}定时跳跃：{state}")
+
+    def _set_pet_look_enabled(self, enabled: bool) -> None:
+        self.pet_look_enabled.set(bool(enabled))
+        self._apply_pet_look_setting()
+
+    def _set_pet_auto_jump_enabled(self, enabled: bool) -> None:
+        self.pet_auto_jump_enabled.set(bool(enabled))
+        self._apply_pet_auto_jump_setting()
+
+    def _save_pet_look_from_menu(self, enabled: bool) -> None:
+        self.pet_look_enabled.set(bool(enabled))
+        self._save_pet_feature_enabled("look_at_pointer", bool(enabled))
+        state = "开启" if enabled else "关闭"
+        self.status.set(f"{self.pet_name}盯鼠标：{state}")
+
+    def _save_pet_auto_jump_from_menu(self, enabled: bool) -> None:
+        self.pet_auto_jump_enabled.set(bool(enabled))
+        self._save_pet_feature_enabled("auto_jump", bool(enabled))
+        state = "开启" if enabled else "关闭"
+        self.status.set(f"{self.pet_name}定时跳跃：{state}")
+
     def _save_pet_visibility(self, visible: bool) -> None:
         self.pet_visible = bool(visible)
         self._save_pet_display_settings(visible=self.pet_visible)
+
+    def _current_cartethyia_agent_config(self) -> LocalAgentConfig:
+        return LocalAgentConfig(
+            enabled=bool(self.cartethyia_agent_enabled.get()),
+            endpoint=self.cartethyia_agent_endpoint.get().strip(),
+            model=self.cartethyia_agent_model.get().strip(),
+        )
+
+    def _save_cartethyia_agent_settings(self, announce: bool = True) -> None:
+        config = self._current_cartethyia_agent_config()
+        try:
+            config.save(CARTETHYIA_AGENT_CONFIG)
+        except OSError as exc:
+            if announce:
+                messagebox.showerror("保存失败", f"无法保存本地 Agent 设置：\n{exc}", parent=self.root)
+            return
+        self.cartethyia_agent.update_config(config)
+        state = "已启用" if config.enabled else "未启用，不会连接或下载任何模型"
+        self.cartethyia_agent_status.set(state)
+        if announce:
+            self.status.set("桌宠本地 Agent 设置已保存")
+            self._log("桌宠本地 Agent 设置已保存；模型文件仍由用户自行部署。")
+
+    def _test_cartethyia_agent(self) -> None:
+        self._save_cartethyia_agent_settings(announce=False)
+        config = self.cartethyia_agent.config
+        if not config.enabled:
+            self.cartethyia_agent_status.set("请先勾选“启用本地 Agent”并保存。")
+            return
+        self.cartethyia_agent_status.set("正在连接本地模型……大型模型首次载入可能需要1至3分钟")
+
+        def work() -> None:
+            try:
+                reply = self.cartethyia_agent.test_connection()
+            except Exception as exc:
+                error_text = str(exc)
+                self.root.after(0, lambda text=error_text: self.cartethyia_agent_status.set(f"连接失败：{text}"))
+                return
+            self.root.after(0, lambda: self.cartethyia_agent_status.set(f"连接成功：{reply}"))
+
+        threading.Thread(target=work, name="cartethyia-agent-test", daemon=True).start()
+
+    def _ask_cartethyia_chat_message(self) -> str | None:
+        """Show a compact, themed composer beside the desktop pet."""
+        result: dict[str, str | None] = {"value": None}
+        theme = PET_AGENT_DIALOG_THEMES[self.pet_id]
+        dialog = Toplevel(self.root)
+        dialog.title(f"和{self.pet_name}聊天")
+        dialog.configure(bg=theme["background"])
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.attributes("-topmost", True)
+        if APP_ICON.exists():
+            try:
+                dialog.iconbitmap(str(APP_ICON))
+            except Exception:
+                pass
+
+        header = Frame(dialog, bg=theme["header"], padx=18, pady=13)
+        header.pack(fill=X)
+        Label(
+            header,
+            text=self.pet_name,
+            font=(FONT_FAMILY, 13, "bold"),
+            fg=theme["title"],
+            bg=theme["header"],
+        ).pack(anchor="w")
+        Label(
+            header,
+            text=theme["subtitle"],
+            font=(FONT_FAMILY, 9),
+            fg=theme["muted"],
+            bg=theme["header"],
+        ).pack(anchor="w", pady=(2, 0))
+
+        body = Frame(dialog, bg=theme["background"], padx=18, pady=14)
+        body.pack(fill=BOTH, expand=True)
+        input_border = Frame(body, bg=theme["border"], padx=1, pady=1)
+        input_border.pack(fill=X)
+        editor = Text(
+            input_border,
+            width=44,
+            height=3,
+            wrap="word",
+            font=(FONT_FAMILY, 10),
+            relief="flat",
+            bd=0,
+            padx=9,
+            pady=7,
+            bg=theme["editor"],
+            fg=theme["title"],
+            insertbackground=theme["accent"],
+        )
+        editor.pack(fill=X)
+        Label(
+            body,
+            text="Enter 发送 · Shift+Enter 换行",
+            font=(FONT_FAMILY, 8),
+            fg=theme["muted"],
+            bg=theme["background"],
+        ).pack(anchor="w", pady=(5, 9))
+
+        actions = Frame(body, bg=theme["background"])
+        actions.pack(fill=X)
+
+        def close_dialog() -> None:
+            result["value"] = None
+            dialog.destroy()
+
+        def submit(_event=None) -> str:
+            value = editor.get("1.0", "end-1c").strip()
+            if value:
+                result["value"] = value
+                dialog.destroy()
+            return "break"
+
+        def handle_enter(event) -> str | None:
+            if event.state & 0x0001:
+                return None
+            return submit(event)
+
+        Button(
+            actions,
+            text="取消",
+            width=9,
+            command=close_dialog,
+            bg=theme["cancel"],
+            fg=theme["cancel_text"],
+            activebackground=theme["border"],
+            relief="flat",
+            bd=0,
+        ).pack(side=RIGHT)
+        Button(
+            actions,
+            text="发送",
+            width=9,
+            command=submit,
+            bg=theme["accent"],
+            fg="white",
+            activebackground=theme["accent_active"],
+            activeforeground="white",
+            relief="flat",
+            bd=0,
+        ).pack(side=RIGHT, padx=(0, 9))
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        dialog.bind("<Escape>", lambda _event: close_dialog())
+        editor.bind("<Return>", handle_enter)
+        dialog.update_idletasks()
+        width = max(440, dialog.winfo_reqwidth())
+        height = max(240, dialog.winfo_reqheight())
+        screen_w = dialog.winfo_screenwidth()
+        screen_h = dialog.winfo_screenheight()
+        if self.desktop_pet is not None:
+            anchor_x = self.desktop_pet.window.winfo_x() + self.desktop_pet.width // 2
+            anchor_y = self.desktop_pet.window.winfo_y()
+            x = anchor_x - width // 2
+            y = anchor_y - height - 12
+            if y < 20:
+                y = self.desktop_pet.window.winfo_y() + self.desktop_pet.height + 12
+        else:
+            x = self.root.winfo_x() + max(0, (self.root.winfo_width() - width) // 2)
+            y = self.root.winfo_y() + max(0, (self.root.winfo_height() - height) // 2)
+        x = max(10, min(screen_w - width - 10, x))
+        y = max(10, min(screen_h - height - 50, y))
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.grab_set()
+        editor.focus_force()
+        self.root.wait_window(dialog)
+        return result["value"]
+
+    def _open_cartethyia_chat(self) -> None:
+        if self._agent_chat_busy:
+            self._pet_feedback("waiting", "我还在整理刚才的话，稍等我一下。", 3200)
+            return
+        if not self.cartethyia_agent_enabled.get():
+            self._pet_feedback("failed", "本地 Agent 还没有启用，请先到设置页完成配置。", 5200)
+            return
+        self._save_cartethyia_agent_settings(announce=False)
+        # Start loading the model while the user is composing the message.  The
+        # request is best-effort and the normal chat request still reports any
+        # connection error.  Ollama releases an unused warm model after 60s.
+        threading.Thread(
+            target=self.cartethyia_agent.warmup,
+            name="pet-agent-warmup",
+            daemon=True,
+        ).start()
+        message = self._ask_cartethyia_chat_message()
+        if message is None or not message.strip():
+            return
+        message = message.strip()
+        self._agent_chat_busy = True
+
+        def pet_chat_work() -> None:
+            try:
+                reply = self.cartethyia_agent.respond(message)
+            except Exception as exc:
+                error_text = str(exc)
+                self.root.after(0, lambda text=error_text: self._finish_cartethyia_pet_chat(None, text))
+                return
+            self.root.after(0, lambda: self._finish_cartethyia_pet_chat(reply, None))
+
+        threading.Thread(target=pet_chat_work, name="cartethyia-pet-chat", daemon=True).start()
+        return
+
+        if self._agent_chat_window is not None and self._agent_chat_window.winfo_exists():
+            self._agent_chat_window.deiconify()
+            self._agent_chat_window.lift()
+            if self._agent_chat_entry is not None:
+                self._agent_chat_entry.focus_set()
+            return
+        window = Toplevel(self.root)
+        window.title("与卡提希娅聊天 · 本地 Agent 试用")
+        window.geometry("680x600")
+        window.minsize(560, 460)
+        window.transient(self.root)
+        if APP_ICON.exists():
+            try:
+                window.iconbitmap(str(APP_ICON))
+            except Exception:
+                pass
+        chat_background = "#ededed"
+        shell = Frame(window, bg=chat_background)
+        shell.pack(fill=BOTH, expand=True)
+        header = Frame(shell, padx=16, pady=12, bg="#f7f7f7", highlightthickness=1, highlightbackground="#d7d7d7")
+        header.pack(fill=X)
+        Label(
+            header,
+            text="卡提希娅 · 本地 Agent",
+            font=(FONT_FAMILY, 13, "bold"),
+            bg="#f7f7f7",
+            fg=COLORS["text"],
+        ).pack(anchor="w")
+        Label(
+            header,
+            text="普通聊天由本地模型生成；明确的一键日常等命令只会调用安全白名单。",
+            bg="#f7f7f7",
+            fg=COLORS["muted"],
+        ).pack(anchor="w", pady=(2, 0))
+
+        history_shell = Frame(shell, bg=chat_background)
+        history_shell.pack(fill=BOTH, expand=True)
+        history_canvas = Canvas(history_shell, bg=chat_background, highlightthickness=0, bd=0)
+        history_scrollbar = ttk.Scrollbar(history_shell, orient="vertical", command=history_canvas.yview)
+        history_canvas.configure(yscrollcommand=history_scrollbar.set)
+        history_canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        history_scrollbar.pack(side=RIGHT, fill="y")
+        history = Frame(history_canvas, bg=chat_background, padx=14, pady=12)
+        history_window = history_canvas.create_window((0, 0), window=history, anchor="nw")
+
+        def resize_history(_event=None) -> None:
+            history_canvas.itemconfigure(history_window, width=history_canvas.winfo_width())
+            history_canvas.configure(scrollregion=history_canvas.bbox("all"))
+
+        def scroll_history(event) -> str:
+            history_canvas.yview_scroll(int(-event.delta / 120), "units")
+            return "break"
+
+        history.bind("<Configure>", resize_history)
+        history_canvas.bind("<Configure>", resize_history)
+        history_canvas.bind("<MouseWheel>", scroll_history)
+        history.bind("<MouseWheel>", scroll_history)
+
+        input_row = Frame(shell, padx=12, pady=11, bg="#f7f7f7", highlightthickness=1, highlightbackground="#d7d7d7")
+        input_row.pack(fill=X)
+        entry = Entry(input_row, font=(FONT_FAMILY, 11), relief="flat", bd=0)
+        entry.pack(side=LEFT, fill=X, expand=True, ipady=8, padx=(2, 10))
+        send = Button(
+            input_row,
+            text="发送",
+            width=9,
+            command=self._send_cartethyia_chat,
+            bg="#07c160",
+            fg="white",
+            activebackground="#06ad56",
+            activeforeground="white",
+            relief="flat",
+            bd=0,
+        )
+        send.pack(side=LEFT, ipady=5)
+        self._agent_chat_window = window
+        self._agent_chat_canvas = history_canvas
+        self._agent_chat_text = history
+        self._agent_chat_entry = entry
+        self._agent_chat_send_button = send
+        self._append_cartethyia_chat("卡提希娅", "义人，你来啦。想聊点什么，还是准备开始新的冒险？")
+        if not self.cartethyia_agent_enabled.get():
+            self._append_cartethyia_chat("系统", "本地 Agent 尚未启用。请先到设置页填写服务地址和模型名称。")
+        entry.bind("<Return>", lambda _event: self._send_cartethyia_chat())
+        entry.focus_set()
+
+        def on_destroy(event) -> None:
+            if event.widget is window:
+                self._agent_chat_window = None
+                self._agent_chat_canvas = None
+                self._agent_chat_text = None
+                self._agent_chat_entry = None
+                self._agent_chat_send_button = None
+
+        window.bind("<Destroy>", on_destroy)
+
+    def _append_cartethyia_chat(self, speaker: str, text: str) -> None:
+        widget = self._agent_chat_text
+        if widget is None or not widget.winfo_exists():
+            return
+        if speaker == "系统":
+            Label(
+                widget,
+                text=text,
+                font=(FONT_FAMILY, 9),
+                fg="#888888",
+                bg="#d9d9d9",
+                padx=9,
+                pady=4,
+                wraplength=470,
+                justify=LEFT,
+            ).pack(pady=7)
+        else:
+            is_user = speaker == "你"
+            row = Frame(widget, bg="#ededed")
+            row.pack(fill=X, pady=6)
+            side = RIGHT if is_user else LEFT
+            message_column = Frame(row, bg="#ededed")
+            message_column.pack(side=side, anchor="e" if is_user else "w")
+            Label(
+                message_column,
+                text=speaker,
+                font=(FONT_FAMILY, 8),
+                fg="#888888",
+                bg="#ededed",
+            ).pack(anchor="e" if is_user else "w", padx=3, pady=(0, 2))
+            bubble = Label(
+                message_column,
+                text=text,
+                font=(FONT_FAMILY, 10),
+                fg="#111111",
+                bg="#95ec69" if is_user else "#ffffff",
+                padx=12,
+                pady=8,
+                wraplength=390,
+                justify=LEFT,
+                relief="flat",
+                bd=0,
+            )
+            bubble.pack(anchor="e" if is_user else "w")
+            canvas = self._agent_chat_canvas
+            if canvas is not None:
+                row.bind("<MouseWheel>", lambda event, target=canvas: (target.yview_scroll(int(-event.delta / 120), "units"), "break")[1])
+                bubble.bind("<MouseWheel>", lambda event, target=canvas: (target.yview_scroll(int(-event.delta / 120), "units"), "break")[1])
+        widget.update_idletasks()
+        canvas = self._agent_chat_canvas
+        if canvas is not None and canvas.winfo_exists():
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.yview_moveto(1.0)
+
+    def _send_cartethyia_chat(self) -> None:
+        if self._agent_chat_busy or self._agent_chat_entry is None:
+            return
+        message = self._agent_chat_entry.get().strip()
+        if not message:
+            return
+        if not self.cartethyia_agent_enabled.get():
+            self._append_cartethyia_chat("系统", "本地 Agent 尚未启用，请先在设置页完成配置。")
+            return
+        self._save_cartethyia_agent_settings(announce=False)
+        self._agent_chat_entry.delete(0, END)
+        self._append_cartethyia_chat("你", message)
+        self._agent_chat_busy = True
+        if self._agent_chat_send_button is not None:
+            self._agent_chat_send_button.configure(state="disabled")
+
+        def work() -> None:
+            try:
+                reply = self.cartethyia_agent.respond(message)
+            except Exception as exc:
+                error_text = str(exc)
+                self.root.after(0, lambda text=error_text: self._finish_cartethyia_chat(None, text))
+                return
+            self.root.after(0, lambda: self._finish_cartethyia_chat(reply, None))
+
+        threading.Thread(target=work, name="cartethyia-agent-chat", daemon=True).start()
+
+    def _finish_cartethyia_chat(self, reply: AgentReply | None, error: str | None) -> None:
+        self._agent_chat_busy = False
+        if self._agent_chat_send_button is not None and self._agent_chat_send_button.winfo_exists():
+            self._agent_chat_send_button.configure(state="normal")
+        if error is not None:
+            self._append_cartethyia_chat("系统", error)
+            return
+        if reply is None:
+            return
+        display_text = self._agent_reply_with_action(reply)
+        self._append_cartethyia_chat(self.pet_name, display_text)
+        self._pet_feedback("waving", display_text, 5200)
+        if reply.tool is not None:
+            self._execute_cartethyia_agent_tool(reply.tool)
+
+    @staticmethod
+    def _agent_reply_with_action(reply: AgentReply) -> str:
+        task_label = AGENT_TASK_LABELS.get(reply.tool or "")
+        if task_label is None:
+            return reply.text
+        return f"{reply.text}\n现在执行：{task_label}。"
+
+    def _finish_cartethyia_pet_chat(self, reply: AgentReply | None, error: str | None) -> None:
+        self._agent_chat_busy = False
+        if error is not None:
+            self._pet_feedback("failed", error, 7200)
+            return
+        if reply is None:
+            return
+        display_text = self._agent_reply_with_action(reply)
+        duration = max(5200, min(11000, 2600 + len(display_text) * 115))
+        self._pet_feedback("waving", display_text, duration)
+        if reply.tool is not None:
+            self._execute_cartethyia_agent_tool(reply.tool)
+
+    def _execute_cartethyia_agent_tool(self, tool: str) -> None:
+        actions = {
+            "run_daily": lambda: self._start_daily_routine(require_confirmation=False),
+            "run_weekly_rewards": lambda: self._start_enabled_real(15, require_confirmation=False),
+            "run_weekly_astrite": lambda: self._start_enabled_real(13, require_confirmation=False),
+            "run_4c_10": lambda: self._start_named_task_real("4C刷取", 10, require_confirmation=False),
+            "run_4c_30": lambda: self._start_named_task_real("4C刷取", 30, require_confirmation=False),
+            "stop_task": self._stop,
+            "diagnose": self._diagnose_runtime,
+            "set_auto_shutdown_on": lambda: self._set_auto_shutdown_enabled(True),
+            "set_auto_shutdown_off": lambda: self._set_auto_shutdown_enabled(False),
+            "set_daily_heal_on": lambda: self._set_daily_heal_enabled(True),
+            "set_daily_heal_off": lambda: self._set_daily_heal_enabled(False),
+            "set_pointer_look_on": lambda: self._set_pet_look_enabled(True),
+            "set_pointer_look_off": lambda: self._set_pet_look_enabled(False),
+            "set_auto_jump_on": lambda: self._set_pet_auto_jump_enabled(True),
+            "set_auto_jump_off": lambda: self._set_pet_auto_jump_enabled(False),
+        }
+        action = actions.get(tool)
+        if action is None:
+            self._pet_feedback("failed", "这个操作不在允许列表中，我不能执行。", 5200)
+            return
+        self._log(f"{self.pet_name}本地 Agent 调用白名单操作：{tool}")
+
+        if tool.startswith("set_"):
+            action()
+            return
+
+        def release_then_run() -> None:
+            self.cartethyia_agent.unload()
+            self.root.after(0, action)
+
+        threading.Thread(
+            target=release_then_run,
+            name="cartethyia-agent-release-before-task",
+            daemon=True,
+        ).start()
 
     def _apply_pet_size(self, _event=None) -> None:
         percent = self._normalize_pet_size_percent(self.pet_size.get())
@@ -3217,6 +3947,40 @@ class App:
             return False
 
     @staticmethod
+    def _load_auto_shutdown_enabled() -> bool:
+        try:
+            saved = json.loads(APP_SETTINGS_CONFIG.read_text(encoding="utf-8"))
+            return saved.get("shutdown_after_task") is True
+        except (OSError, ValueError, json.JSONDecodeError):
+            return False
+
+    def _save_auto_shutdown_setting(self) -> None:
+        APP_SETTINGS_CONFIG.write_text(
+            json.dumps(
+                {"shutdown_after_task": bool(self.auto_shutdown_enabled.get())},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    def _apply_auto_shutdown_setting(self) -> None:
+        self._save_auto_shutdown_setting()
+        state = "开启" if self.auto_shutdown_enabled.get() else "关闭"
+        self.status.set(f"任务完成后自动关机：{state}")
+        self._log(f"任务正常完成后自动关机已{state}。")
+
+    def _set_auto_shutdown_enabled(self, enabled: bool) -> None:
+        self.auto_shutdown_enabled.set(bool(enabled))
+        self._apply_auto_shutdown_setting()
+
+    def _set_daily_heal_enabled(self, enabled: bool) -> None:
+        self.daily_heal_enabled.set(bool(enabled))
+        self._save_combat_settings(announce=False)
+        state = "开启" if enabled else "关闭"
+        self.status.set(f"日常三号位回血：{state}")
+
+    @staticmethod
     def _load_daily_zone() -> str:
         try:
             selected = str(json.loads(DAILY_CONFIG.read_text(encoding="utf-8")).get("zone", ""))
@@ -3256,7 +4020,7 @@ class App:
             "ESC": "Esc",
         }.get(normalized, normalized)
 
-    def _save_combat_settings(self) -> None:
+    def _save_combat_settings(self, announce: bool = True) -> None:
         try:
             normalized_skill = ClientWindowController.normalize_input_binding(self.combat_skill_key.get())
             normalized_ultimate = ClientWindowController.normalize_input_binding(self.combat_ultimate_key.get())
@@ -3282,12 +4046,13 @@ class App:
             f"4C技能键位已保存为：{normalized_skill}；大招键位：{normalized_ultimate}；"
             f"日常三号位回血：{heal_text}。"
         )
-        messagebox.showinfo(
-            "已保存",
-            f"4C技能键位：{normalized_skill}\n4C大招键位：{normalized_ultimate}"
-            f"\n日常三号位回血：{heal_text}",
-            parent=self.root,
-        )
+        if announce:
+            messagebox.showinfo(
+                "已保存",
+                f"4C技能键位：{normalized_skill}\n4C大招键位：{normalized_ultimate}"
+                f"\n日常三号位回血：{heal_text}",
+                parent=self.root,
+            )
 
     def _theme_status_text(self) -> str:
         if self.theme_id in THEME_DEFINITIONS:
@@ -3834,9 +4599,10 @@ class App:
         Button(theme_actions, text="使用达妮娅主题", command=lambda: self._select_theme("daniya")).pack(side=LEFT, padx=(10, 0))
         Button(theme_actions, text="使用爱弥斯主题", command=lambda: self._select_theme("aemeath")).pack(side=LEFT, padx=(10, 0))
         Button(theme_actions, text="使用景燃主题", command=lambda: self._select_theme("jingran")).pack(side=LEFT, padx=(10, 0))
+        Button(theme_actions, text="使用卡提希娅主题", command=lambda: self._select_theme("cartethyia")).pack(side=LEFT, padx=(10, 0))
         Label(
             theme_box,
-            text="角色主题会自动绑定同名桌宠；原版简约主题不强制更换角色。切换后会自动重启程序。",
+            text="选择角色主题时会切换到同名桌宠；之后仍可单独改选桌宠。切换主题后会自动重启程序。",
             fg=COLORS["muted"],
             bg=COLORS["panel_alt"],
         ).pack(anchor="w", pady=(10, 0))
@@ -3857,9 +4623,10 @@ class App:
         Button(pet_actions, text="使用达妮娅", command=lambda: self._select_pet("daniya")).pack(side=LEFT)
         Button(pet_actions, text="使用爱弥斯", command=lambda: self._select_pet("aemeath")).pack(side=LEFT, padx=(10, 0))
         Button(pet_actions, text="使用景燃", command=lambda: self._select_pet("jingran")).pack(side=LEFT, padx=(10, 0))
+        Button(pet_actions, text="使用卡提希娅", command=lambda: self._select_pet("cartethyia")).pack(side=LEFT, padx=(10, 0))
         Label(
             pet_select_box,
-            text="选择桌宠会同时切换对应角色主题；三款桌宠使用相同功能、右键菜单和排版。",
+            text="选择桌宠不会改变程序主题；四款桌宠使用相同功能、右键菜单和排版。",
             fg=COLORS["muted"],
             bg=COLORS["panel_alt"],
         ).pack(anchor="w", pady=(10, 0))
@@ -3881,6 +4648,82 @@ class App:
             fg=COLORS["muted"],
             bg=COLORS["panel_alt"],
         ).pack(side=LEFT)
+        pet_behavior_row = Frame(pet_select_box, bg=COLORS["panel_alt"])
+        pet_behavior_row.pack(fill=X, pady=(10, 0))
+        behavior_state = "normal" if self.pet_supports_look_controls else "disabled"
+        Checkbutton(
+            pet_behavior_row,
+            text="盯鼠标",
+            variable=self.pet_look_enabled,
+            command=self._apply_pet_look_setting,
+            state=behavior_state,
+            bg=COLORS["panel_alt"],
+        ).pack(side=LEFT)
+        Checkbutton(
+            pet_behavior_row,
+            text="定时跳跃（每45至90秒尝试一次）",
+            variable=self.pet_auto_jump_enabled,
+            command=self._apply_pet_auto_jump_setting,
+            state=behavior_state,
+            bg=COLORS["panel_alt"],
+        ).pack(side=LEFT, padx=(16, 0))
+        Label(
+            pet_behavior_row,
+            text="仅景燃与卡提希娅可用，设置自动保存",
+            fg=COLORS["muted"],
+            bg=COLORS["panel_alt"],
+        ).pack(side=LEFT, padx=(16, 0))
+
+        agent_box = Frame(
+            self.settings_tab,
+            padx=16,
+            pady=14,
+            bg=COLORS["panel_alt"],
+            highlightthickness=1,
+            highlightbackground=COLORS["line_soft"],
+        )
+        agent_box.pack(fill=X, pady=(0, 14))
+        Label(
+            agent_box,
+            text="桌宠本地 Agent（达妮娅 / 爱弥斯 / 景燃 / 卡提希娅）",
+            font=(FONT_FAMILY, 11, "bold"),
+            bg=COLORS["panel_alt"],
+        ).pack(anchor="w")
+        Checkbutton(
+            agent_box,
+            text="启用本地 Agent",
+            variable=self.cartethyia_agent_enabled,
+            bg=COLORS["panel_alt"],
+            activebackground=COLORS["panel_alt"],
+        ).pack(anchor="w", pady=(8, 4))
+        endpoint_row = Frame(agent_box, bg=COLORS["panel_alt"])
+        endpoint_row.pack(fill=X, pady=3)
+        Label(endpoint_row, text="服务地址", width=12, anchor="w", bg=COLORS["panel_alt"]).pack(side=LEFT)
+        Entry(endpoint_row, textvariable=self.cartethyia_agent_endpoint, width=42).pack(side=LEFT, padx=(0, 10))
+        Label(endpoint_row, text="默认兼容 Ollama /api/chat", fg=COLORS["muted"], bg=COLORS["panel_alt"]).pack(side=LEFT)
+        model_row = Frame(agent_box, bg=COLORS["panel_alt"])
+        model_row.pack(fill=X, pady=3)
+        Label(model_row, text="模型名称", width=12, anchor="w", bg=COLORS["panel_alt"]).pack(side=LEFT)
+        Entry(model_row, textvariable=self.cartethyia_agent_model, width=42).pack(side=LEFT, padx=(0, 10))
+        Label(model_row, text="填写本机已经部署的模型名", fg=COLORS["muted"], bg=COLORS["panel_alt"]).pack(side=LEFT)
+        agent_actions = Frame(agent_box, bg=COLORS["panel_alt"])
+        agent_actions.pack(fill=X, pady=(9, 3))
+        Button(agent_actions, text="保存 Agent 设置", command=self._save_cartethyia_agent_settings).pack(side=LEFT)
+        Button(agent_actions, text="检测本地模型", command=self._test_cartethyia_agent).pack(side=LEFT, padx=(10, 0))
+        Label(
+            agent_box,
+            textvariable=self.cartethyia_agent_status,
+            fg=COLORS["muted"],
+            bg=COLORS["panel_alt"],
+        ).pack(anchor="w", pady=(7, 0))
+        Label(
+            agent_box,
+            text="四位桌宠共享本地模型设置，并分别载入自己的完整人格。普通聊天闲置60秒后释放，执行自动任务前立即释放。",
+            fg=COLORS["muted"],
+            bg=COLORS["panel_alt"],
+            wraplength=980,
+            justify=LEFT,
+        ).pack(anchor="w", pady=(5, 0))
 
         mode_row = Frame(self.settings_tab)
         mode_row.pack(fill=X, pady=5)
@@ -3936,6 +4779,21 @@ class App:
         Label(
             daily_heal_row,
             text="勾选后点击上方“保存键位”；日常战斗会定时切三号位并自动切回一号位",
+            fg="#697386",
+        ).pack(side=LEFT)
+
+        shutdown_row = Frame(self.settings_tab)
+        shutdown_row.pack(fill=X, pady=5)
+        Label(shutdown_row, text="任务完成关机", width=12, anchor="w").pack(side=LEFT)
+        Checkbutton(
+            shutdown_row,
+            text="自动任务正常完成后关机（默认关闭）",
+            variable=self.auto_shutdown_enabled,
+            command=self._apply_auto_shutdown_setting,
+        ).pack(side=LEFT, padx=6)
+        Label(
+            shutdown_row,
+            text="手动停止、执行失败和预演不会关机；触发后有30秒取消时间",
             fg="#697386",
         ).pack(side=LEFT)
 
@@ -4109,12 +4967,14 @@ class App:
     def _show_update_notice(self) -> None:
         messagebox.showinfo(
             f"wwbs {APP_VERSION} 更新公告",
-            "1.4.8 正式版\n\n"
-            '- 修复日常完成后索拉指南自动切换到周度游历时的衔接超时。\n'
-            '- 修复日常诊断错误提示缺少 menu1.png，分别检查日常与周常模板。\n'
-            '- 管理员模式自动重启后跳过更新公告，仅记录“检测到未开启管理员模式，已通过管理员模式打开”。\n'
-            '- 日常战斗结束检查改为每1秒一次，不再将白色怪物或技能特效作为奖励光球结束信号。\n'
-            '- 加长目标消失复核间隔；奖励搜索发现清怪目标仍在时恢复战斗，减少误判打断。\n',
+            "1.5.0 正式版\n\n"
+            '- 新增卡提希娅桌宠、主题、完整人格与16向鼠标注视。\n'
+            '- 四位桌宠均可通过右键菜单使用本地 Agent 聊天和执行白名单任务。\n'
+            '- 可通过聊天开关三号位回血、任务完成自动关机、盯鼠标和定时跳跃；任务开始时会明确复述任务名。\n'
+            '- 打开输入框时后台预热模型，回复完成前不再显示无关的等待气泡。\n'
+            '- 身份与年龄等角色事实使用专属回答，不再出现不同问题重复同一句。\n'
+            '- 景燃与卡提希娅跳跃时持续保持空中姿态，落地蹲姿更自然。\n'
+            '- 修复全部大小档位的桌宠边缘、长名字遮挡和日常转周常误报。\n',
             parent=self.root,
         )
 
@@ -4132,7 +4992,7 @@ class App:
                 ),
                 commands={
                     "diagnose": self._diagnose_runtime,
-                    "check_target": self._check_target,
+                    "chat": self._open_cartethyia_chat,
                     "run_rewards": lambda: self._start_enabled_real(15, require_confirmation=False),
                     "run_astrite": lambda: self._start_enabled_real(13, require_confirmation=False),
                     "run_daily": lambda: self._start_daily_routine(require_confirmation=False),
@@ -4150,8 +5010,24 @@ class App:
                 idle_line_factory=self.pet_definition["idle_line"],
                 bubble_palette=self.pet_definition["bubble_palette"],
                 look_spritesheet=self.pet_definition.get("look_spritesheet"),
+                alpha_cutoff=self.pet_definition.get("alpha_cutoff"),
+                look_enabled=(
+                    bool(self.pet_look_enabled.get())
+                    if self.pet_supports_look_controls
+                    else False
+                ),
+                auto_jump_enabled=(
+                    bool(self.pet_auto_jump_enabled.get())
+                    if self.pet_supports_look_controls
+                    else None
+                ),
+                forward_jump_enabled=self.pet_supports_look_controls,
                 visible=self.pet_visible,
                 on_visibility_changed=self._save_pet_visibility,
+                on_look_enabled_changed=self._save_pet_look_from_menu,
+                on_auto_jump_enabled_changed=self._save_pet_auto_jump_from_menu,
+                speak_on_interact=self.pet_id == "jingran",
+                chatter_delay_range=(12000, 24000) if self.pet_id == "jingran" else None,
             )
             self.log_queue.put(f"{self.pet_name}已启动：拖动移动，双击互动，右键执行功能或运行诊断。")
             welcome_factory = self.pet_definition.get("welcome_dialogue")
@@ -5152,6 +6028,7 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             return
         self._last_started_tasks = list(tasks)
         self._last_task_started_at = time.monotonic()
+        self._manual_stop_requested = False
         if len(tasks) == 1:
             task = tasks[0]
             self.template_status.set(
@@ -5188,7 +6065,10 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             for task in tasks:
                 runner.run_task(task)
             self._log("执行结束。")
-            self.root.after(0, lambda: self._pet_feedback("review", self._event_line("task_complete")))
+            if self._manual_stop_requested:
+                self._log("任务由用户手动停止，不会触发自动关机。")
+            else:
+                self.root.after(0, self._handle_successful_task_completion)
         except Exception as exc:
             error_text = str(exc)
             self._log(f"执行失败: {error_text}")
@@ -5196,6 +6076,32 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         finally:
             self.max_cycles = None
             self.root.after(0, lambda: self._set_pet_working(False))
+
+    def _handle_successful_task_completion(self) -> None:
+        self._pet_feedback("review", self._event_line("task_complete"))
+        if (
+            not self.auto_shutdown_enabled.get()
+            or self.dry_run.get()
+            or self._manual_stop_requested
+        ):
+            return
+        self._log("任务正常完成，已请求 Windows 在30秒后自动关机。")
+        self._pet_feedback("review", "任务已经完成。电脑将在30秒后自动关机。", 9000)
+        try:
+            subprocess.Popen(
+                [
+                    "shutdown.exe",
+                    "/s",
+                    "/t",
+                    "30",
+                    "/c",
+                    "wwbs 自动任务已完成，电脑将在30秒后关机。",
+                ],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError as exc:
+            self._log(f"自动关机请求失败: {exc}")
+            self._pet_feedback("failed", f"任务已经完成，但自动关机请求失败：{exc}", 7200)
 
     def _is_due(self, task: WeeklyTask) -> bool:
         if task.weekday == "any":
@@ -5318,6 +6224,7 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             self._ensure_template_task(template_name, self._template_group_key(self.template_group.get()))
 
     def _stop(self) -> None:
+        self._manual_stop_requested = True
         self.stop_event.set()
         self._pet_feedback("waiting", self._event_line("stop_requested"))
         self._log("正在请求停止...")

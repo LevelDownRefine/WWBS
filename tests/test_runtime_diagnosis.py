@@ -207,6 +207,35 @@ class RuntimeDiagnosisTests(unittest.TestCase):
 
         app._request_admin_restart.assert_not_called()
 
+    @staticmethod
+    def _shutdown_app(enabled=True, dry_run=False, manually_stopped=False) -> App:
+        app = App.__new__(App)
+        app.auto_shutdown_enabled = Mock()
+        app.auto_shutdown_enabled.get.return_value = enabled
+        app.dry_run = Mock()
+        app.dry_run.get.return_value = dry_run
+        app._manual_stop_requested = manually_stopped
+        app._pet_feedback = Mock()
+        app._event_line = Mock(return_value="任务完成")
+        app._log = Mock()
+        return app
+
+    def test_successful_real_task_schedules_shutdown(self) -> None:
+        app = self._shutdown_app()
+        with patch.object(app_module.subprocess, "Popen") as popen:
+            app._handle_successful_task_completion()
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:4], ["shutdown.exe", "/s", "/t", "30"])
+        app._log.assert_any_call("任务正常完成，已请求 Windows 在30秒后自动关机。")
+
+    def test_preview_and_manual_stop_never_schedule_shutdown(self) -> None:
+        for dry_run, manually_stopped in ((True, False), (False, True)):
+            with self.subTest(dry_run=dry_run, manually_stopped=manually_stopped):
+                app = self._shutdown_app(dry_run=dry_run, manually_stopped=manually_stopped)
+                with patch.object(app_module.subprocess, "Popen") as popen:
+                    app._handle_successful_task_completion()
+                popen.assert_not_called()
+
     def test_native_windows_icon_is_sent_to_taskbar_window(self) -> None:
         window = Mock()
         window.winfo_id.return_value = 111

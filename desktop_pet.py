@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random
 from pathlib import Path
-from tkinter import Canvas, Menu, Toplevel
+from tkinter import BooleanVar, Canvas, Menu, Toplevel
 from typing import Callable
 
 from PIL import Image, ImageTk
@@ -17,15 +17,22 @@ class DesktopPet:
         "running-left": 85,
         "waving": 260,
         "jumping": 105,
+        "landing": 150,
         "failed": 145,
         "waiting": 185,
         "running": 120,
         "review": 165,
     }
-    ONE_SHOT_REPEATS = {"waving": 2, "jumping": 1, "failed": 1, "review": 1, "waiting": 1}
+    ONE_SHOT_REPEATS = {
+        "waving": 2,
+        "jumping": 1,
+        "landing": 4,
+        "failed": 1,
+        "review": 1,
+        "waiting": 1,
+    }
     CHATTER_ACTIONS = ("waving", "jumping", "review", "waiting")
     COMMAND_LABELS = (
-        ("检测游戏窗口", "check_target"),
         ("周常拿满奖励", "run_rewards"),
         ("周常拿满星声", "run_astrite"),
         ("一键日常（2轮双倍）", "run_daily"),
@@ -46,8 +53,16 @@ class DesktopPet:
         idle_line_factory: Callable[[], object] | None = None,
         bubble_palette: dict[str, str] | None = None,
         look_spritesheet: Path | None = None,
+        alpha_cutoff: int | None = None,
+        look_enabled: bool = True,
+        auto_jump_enabled: bool | None = None,
+        forward_jump_enabled: bool = False,
         visible: bool = True,
         on_visibility_changed: Callable[[bool], None] | None = None,
+        on_look_enabled_changed: Callable[[bool], None] | None = None,
+        on_auto_jump_enabled_changed: Callable[[bool], None] | None = None,
+        speak_on_interact: bool = False,
+        chatter_delay_range: tuple[int, int] | None = None,
     ):
         self.root = root
         self.frames_dir = Path(frames_dir)
@@ -56,7 +71,19 @@ class DesktopPet:
         self.pet_name = pet_name
         self.idle_line_factory = idle_line_factory or (lambda: "漂泊者，要稍微休息一下吗？")
         self.look_spritesheet = Path(look_spritesheet) if look_spritesheet else None
+        self.alpha_cutoff = (
+            max(0, min(254, int(alpha_cutoff))) if alpha_cutoff is not None else None
+        )
+        self.look_enabled = bool(look_enabled)
+        self.auto_jump_enabled = (
+            None if auto_jump_enabled is None else bool(auto_jump_enabled)
+        )
+        self.forward_jump_enabled = bool(forward_jump_enabled)
         self.on_visibility_changed = on_visibility_changed
+        self.on_look_enabled_changed = on_look_enabled_changed
+        self.on_auto_jump_enabled_changed = on_auto_jump_enabled_changed
+        self.speak_on_interact = bool(speak_on_interact)
+        self.chatter_delay_range = chatter_delay_range
         self.visible = bool(visible)
         self.bubble_palette = {
             "shadow": "#d9acc5",
@@ -107,11 +134,33 @@ class DesktopPet:
         diagnose = self.commands.get("diagnose")
         if diagnose is not None:
             self.menu.add_command(label=f"{self.pet_name}帮我诊断", command=diagnose)
+        chat = self.commands.get("chat")
+        if chat is not None:
+            self.menu.add_command(label=f"和{self.pet_name}聊天", command=chat)
         for label, command_key in self.COMMAND_LABELS:
             command = self.commands.get(command_key)
             if command is not None:
                 self.menu.add_command(label=label, command=command)
         self.menu.add_separator()
+        self.look_enabled_var = None
+        self.auto_jump_enabled_var = None
+        if self.auto_jump_enabled is not None:
+            self.look_enabled_var = BooleanVar(master=self.window, value=self.look_enabled)
+            self.auto_jump_enabled_var = BooleanVar(
+                master=self.window,
+                value=self.auto_jump_enabled,
+            )
+            self.menu.add_checkbutton(
+                label="盯鼠标",
+                variable=self.look_enabled_var,
+                command=self._toggle_look_from_menu,
+            )
+            self.menu.add_checkbutton(
+                label="定时跳跃（每45至90秒尝试一次）",
+                variable=self.auto_jump_enabled_var,
+                command=self._toggle_auto_jump_from_menu,
+            )
+            self.menu.add_separator()
         self.menu.add_command(label="开启/关闭漫游", command=self.toggle_roaming)
         size_menu = Menu(self.menu, tearoff=False)
         for percent in (70, 85, 100, 115, 130, 150):
@@ -156,6 +205,14 @@ class DesktopPet:
         self._move_job = None
         self._bubble_job = None
         self._chatter_job = None
+        self._auto_jump_job = None
+        self._jump_motion_job = None
+        self._jump_origin = (0, 0)
+        self._jump_step = 0
+        self._jump_total_steps = 18
+        self._jump_height = 112
+        self._airborne = False
+        self._facing_direction = 1
         self._move_remaining = 0
         self._move_step = 0
 
@@ -168,7 +225,8 @@ class DesktopPet:
         if self.visible:
             self._animate()
             self._schedule_roam(4200)
-            self._schedule_chatter(random.randint(24000, 40000))
+            self._schedule_chatter(self._next_chatter_delay(24000, 40000))
+            self._schedule_auto_jump()
         else:
             self.window.withdraw()
 
@@ -187,20 +245,74 @@ class DesktopPet:
 
     def _load_frames(self):
         loaded = {}
+        landing_image = None
         for state in self.STATE_DELAYS:
+            if state == "landing":
+                continue
             paths = sorted((self.frames_dir / state).glob("*.png"))
             if not paths:
                 raise FileNotFoundError(f"桌宠动画帧缺失：{self.frames_dir / state}")
             state_frames = []
             for path in paths:
                 with Image.open(path) as source:
-                    image = source.convert("RGBA")
-                    target = (round(image.width * self.scale), round(image.height * self.scale))
-                    if target != image.size:
-                        image = image.resize(target, Image.Resampling.LANCZOS)
+                    target = (round(source.width * self.scale), round(source.height * self.scale))
+                    image = self._scale_and_prepare_image(source, target)
                     state_frames.append(ImageTk.PhotoImage(image, master=self.window))
+                    if state == "jumping" and landing_image is None:
+                        landing_image = self._scale_and_prepare_landing_image(source, target)
             loaded[state] = state_frames
+        if landing_image is not None:
+            loaded["landing"] = [ImageTk.PhotoImage(landing_image, master=self.window)]
         return loaded
+
+    def _prepare_image(self, source: Image.Image) -> Image.Image:
+        """Prepare RGBA art for Tk's color-keyed transparent windows.
+
+        Windows/Tk composites partially transparent pixels against the window's
+        transparent color before applying ``-transparentcolor``. That creates
+        dark, fuzzy fringes on detailed light-colored sprites. Character packs
+        may opt into a binary alpha edge so their clean source RGB reaches the
+        desktop without that intermediate matte.
+        """
+        image = source.convert("RGBA")
+        if self.alpha_cutoff is None:
+            return image
+        alpha = image.getchannel("A").point(
+            lambda value: 255 if value > self.alpha_cutoff else 0
+        )
+        image.putalpha(alpha)
+        return image
+
+    def _scale_and_prepare_image(
+        self,
+        source: Image.Image,
+        target: tuple[int, int],
+    ) -> Image.Image:
+        """Resize first, then remove partial alpha introduced by resampling."""
+        image = source.convert("RGBA")
+        if target != image.size:
+            image = image.resize(target, Image.Resampling.LANCZOS)
+        return self._prepare_image(image)
+
+    def _scale_and_prepare_landing_image(
+        self,
+        source: Image.Image,
+        target: tuple[int, int],
+        factor: float = 0.94,
+    ) -> Image.Image:
+        """Make a subtly compressed landing pose while keeping its feet grounded."""
+        image = source.convert("RGBA")
+        landing_size = (
+            max(1, round(target[0] * factor)),
+            max(1, round(target[1] * factor)),
+        )
+        image = image.resize(landing_size, Image.Resampling.LANCZOS)
+        canvas = Image.new("RGBA", target, (0, 0, 0, 0))
+        canvas.alpha_composite(
+            image,
+            ((target[0] - landing_size[0]) // 2, target[1] - landing_size[1]),
+        )
+        return self._prepare_image(canvas)
 
     def _load_look_frames(self):
         """Load the v2 atlas' 16 clockwise look directions (0 degrees is up)."""
@@ -225,8 +337,7 @@ class DesktopPet:
                     )
                 )
                 target = (round(cell_width * self.scale), round(cell_height * self.scale))
-                if target != image.size:
-                    image = image.resize(target, Image.Resampling.LANCZOS)
+                image = self._scale_and_prepare_image(image, target)
                 loaded.append(ImageTk.PhotoImage(image, master=self.window))
         return loaded
 
@@ -239,7 +350,13 @@ class DesktopPet:
         return int((degrees + 11.25) // 22.5) % 16
 
     def _pointer_look_frame(self):
-        if not self.look_frames or self.state != "idle" or self.dragging or self.working:
+        if (
+            not self.look_enabled
+            or not self.look_frames
+            or self.state != "idle"
+            or self.dragging
+            or self.working
+        ):
             return None
         center_x = self.window.winfo_rootx() + self.width / 2
         head_y = self.window.winfo_rooty() + self.height * 0.36
@@ -256,6 +373,7 @@ class DesktopPet:
             return
 
         self.window.update_idletasks()
+        self._cancel_forward_jump(restore_ground=True)
         old_center_x = self.window.winfo_x() + self.width // 2
         old_bottom_y = self.window.winfo_y() + self.height
         self.scale = new_scale
@@ -284,21 +402,35 @@ class DesktopPet:
             return
         sequence = self.frames[self.state]
         look_frame = self._pointer_look_frame()
+        airborne_frame = (
+            sequence[len(sequence) // 2]
+            if self.state == "jumping" and self._airborne
+            else None
+        )
         self.canvas.itemconfigure(
             self.image_item,
-            image=look_frame if look_frame is not None else sequence[self.frame_index],
+            image=(
+                look_frame
+                if look_frame is not None
+                else airborne_frame if airborne_frame is not None else sequence[self.frame_index]
+            ),
         )
-        self.frame_index += 1
+        if airborne_frame is None:
+            self.frame_index += 1
         if self.frame_index >= len(sequence):
             self.frame_index = 0
             self.state_cycles += 1
             required_cycles = self.ONE_SHOT_REPEATS.get(self.state)
             if required_cycles is not None and self.state_cycles >= required_cycles and not self.dragging:
-                self.state = "idle"
-                self.state_cycles = 0
+                if not (self.state == "jumping" and self._airborne):
+                    self.state = "idle"
+                    self.state_cycles = 0
         self._animation_job = self.window.after(self.STATE_DELAYS[self.state], self._animate)
 
     def play(self, state: str):
+        if state == "jumping" and self.forward_jump_enabled and not self._airborne:
+            if self._begin_forward_jump():
+                return
         if state not in self.frames:
             return
         if state == self.state:
@@ -333,6 +465,11 @@ class DesktopPet:
             x1, y1 + radius, x1, y1,
         ]
 
+    @staticmethod
+    def _name_badge_width(name: str) -> int:
+        """Leave enough room for four-character names without crowding the badge."""
+        return max(76, min(160, 28 + len(name) * 16))
+
     def _draw_bubble(self, text: str):
         canvas = self.bubble_canvas
         palette = self.bubble_palette
@@ -351,7 +488,7 @@ class DesktopPet:
         canvas.delete(probe)
 
         width = 300
-        body_top = 9
+        body_top = 13
         body_bottom = body_top + max(78, text_height + 51)
         height = body_bottom + 24
         self.bubble_size = (width, height)
@@ -385,9 +522,18 @@ class DesktopPet:
             width=2,
         )
 
-        badge = self._rounded_rect_points(17, 1, 88, 28, 12)
+        badge_width = self._name_badge_width(self.pet_name)
+        badge_left = 17
+        badge_right = badge_left + badge_width
+        badge = self._rounded_rect_points(badge_left, 4, badge_right, 32, 12)
         canvas.create_polygon(badge, smooth=True, splinesteps=20, fill=palette["badge"], outline=palette["badge_outline"], width=1)
-        canvas.create_text(52, 14, text=self.pet_name, fill="#ffffff", font=("Microsoft YaHei UI", 9, "bold"))
+        canvas.create_text(
+            (badge_left + badge_right) // 2,
+            18,
+            text=self.pet_name,
+            fill="#ffffff",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
         canvas.create_polygon(
             width - 25, 14,
             width - 19, 22,
@@ -432,21 +578,186 @@ class DesktopPet:
                 self.window.after_cancel(self._chatter_job)
             except Exception:
                 pass
-        wait_ms = delay if delay is not None else random.randint(32000, 62000)
+        wait_ms = delay if delay is not None else self._next_chatter_delay(32000, 62000)
         self._chatter_job = self.window.after(wait_ms, self._chatter_tick)
+
+    def _next_chatter_delay(self, default_low: int, default_high: int) -> int:
+        if self.chatter_delay_range is None:
+            return random.randint(default_low, default_high)
+        low, high = self.chatter_delay_range
+        low = max(1000, int(low))
+        high = max(low, int(high))
+        return random.randint(low, high)
 
     def _chatter_tick(self):
         self._chatter_job = None
         if self.visible and self.state == "idle" and not self.dragging and self._bubble_job is None:
-            generated = self.idle_line_factory()
-            text = str(getattr(generated, "text", generated))
-            action = str(getattr(generated, "action", random.choice(self.CHATTER_ACTIONS)))
-            if action in self.frames and action != "idle":
-                self.play(action)
-            self.say(text, 4600)
-        self._schedule_chatter()
+            self._speak_generated_line()
+            self._schedule_chatter()
+            return
+        retry_delay = random.randint(4000, 8000) if self.chatter_delay_range else None
+        self._schedule_chatter(retry_delay)
+
+    def _speak_generated_line(self, play_action: bool = True) -> None:
+        generated = self.idle_line_factory()
+        text = str(getattr(generated, "text", generated))
+        action = str(getattr(generated, "action", random.choice(self.CHATTER_ACTIONS)))
+        if action == "jumping" and self.auto_jump_enabled is False:
+            action = random.choice(("waving", "review", "waiting"))
+        if play_action and action in self.frames and action != "idle":
+            self.play(action)
+        self.say(text, 4600)
+
+    def _schedule_auto_jump(self, delay: int | None = None) -> None:
+        self._cancel_auto_jump()
+        if (
+            self.auto_jump_enabled is True
+            and self.visible
+            and not self.working
+        ):
+            wait_ms = delay if delay is not None else random.randint(45000, 90000)
+            self._auto_jump_job = self.window.after(wait_ms, self._auto_jump_tick)
+
+    def _auto_jump_tick(self) -> None:
+        self._auto_jump_job = None
+        if (
+            self.auto_jump_enabled is True
+            and self.visible
+            and not self.working
+            and self.state == "idle"
+            and not self.dragging
+            and self._bubble_job is None
+        ):
+            self.play("jumping")
+        self._schedule_auto_jump()
+
+    def _begin_forward_jump(self) -> bool:
+        if (
+            not self.visible
+            or self.working
+            or self.dragging
+            or self.state != "idle"
+            or self._jump_motion_job is not None
+        ):
+            return False
+        self._cancel_roam()
+        self._cancel_move()
+        screen_width = self.root.winfo_screenwidth()
+        x = self.window.winfo_x()
+        y = self.window.winfo_y()
+        direction = self._facing_direction
+        if x < 84:
+            direction = 1
+        elif x + self.width > screen_width - 84:
+            direction = -1
+        self._facing_direction = direction
+        self._jump_origin = (x, y)
+        self._jump_step = 0
+        self._airborne = True
+        self.state = "jumping"
+        self.frame_index = 0
+        self.state_cycles = 0
+        self._show_airborne_pose()
+        self._jump_motion_tick()
+        return True
+
+    def _show_airborne_pose(self) -> None:
+        """Keep the jump pose visible for every moment before touchdown."""
+        jump_frames = getattr(self, "frames", {}).get("jumping", [])
+        if not jump_frames or not hasattr(self, "canvas"):
+            return
+        self.canvas.itemconfigure(
+            self.image_item,
+            image=jump_frames[len(jump_frames) // 2],
+        )
+
+    def _jump_motion_tick(self) -> None:
+        self._jump_motion_job = None
+        if not self._airborne or not self.visible or self.working or self.dragging:
+            self._cancel_forward_jump(restore_ground=True)
+            return
+        self._jump_step += 1
+        progress = min(1.0, self._jump_step / self._jump_total_steps)
+        origin_x, origin_y = self._jump_origin
+        screen_width = self.root.winfo_screenwidth()
+        travel = round(84 * progress) * self._facing_direction
+        lift = round(self._jump_height * 4 * progress * (1.0 - progress))
+        x = max(0, min(screen_width - self.width, origin_x + travel))
+        y = origin_y - lift
+        self.window.geometry(f"+{x}+{y}")
+        self._show_airborne_pose()
+        self._position_bubble()
+        if self._jump_step >= self._jump_total_steps:
+            self._finish_forward_jump(x, origin_y)
+            return
+        self._jump_motion_job = self.window.after(40, self._jump_motion_tick)
+
+    def _finish_forward_jump(self, x: int, ground_y: int) -> None:
+        self._jump_motion_job = None
+        self._airborne = False
+        self.window.geometry(f"+{x}+{ground_y}")
+        self.state = "landing" if "landing" in self.frames else "idle"
+        self.frame_index = 0
+        self.state_cycles = 0
+        if self.roaming and not self.working:
+            self._schedule_roam(1800)
+
+    def _cancel_forward_jump(self, restore_ground: bool) -> None:
+        if self._jump_motion_job:
+            try:
+                self.window.after_cancel(self._jump_motion_job)
+            except Exception:
+                pass
+            self._jump_motion_job = None
+        if self._airborne and restore_ground:
+            origin_y = self._jump_origin[1]
+            self.window.geometry(f"+{self.window.winfo_x()}+{origin_y}")
+        if self._airborne:
+            self._airborne = False
+            self.state = "idle"
+            self.frame_index = 0
+            self.state_cycles = 0
+
+    def _cancel_auto_jump(self) -> None:
+        if self._auto_jump_job:
+            try:
+                self.window.after_cancel(self._auto_jump_job)
+            except Exception:
+                pass
+            self._auto_jump_job = None
+
+    def set_look_enabled(self, enabled: bool) -> None:
+        self.look_enabled = bool(enabled)
+        look_variable = getattr(self, "look_enabled_var", None)
+        if look_variable is not None:
+            look_variable.set(self.look_enabled)
+
+    def set_auto_jump_enabled(self, enabled: bool) -> None:
+        self.auto_jump_enabled = bool(enabled)
+        jump_variable = getattr(self, "auto_jump_enabled_var", None)
+        if jump_variable is not None:
+            jump_variable.set(self.auto_jump_enabled)
+        if self.auto_jump_enabled:
+            self._schedule_auto_jump()
+        else:
+            self._cancel_auto_jump()
+
+    def _toggle_look_from_menu(self) -> None:
+        if getattr(self, "look_enabled_var", None) is None:
+            return
+        self.look_enabled = bool(self.look_enabled_var.get())
+        if self.on_look_enabled_changed is not None:
+            self.on_look_enabled_changed(self.look_enabled)
+
+    def _toggle_auto_jump_from_menu(self) -> None:
+        if getattr(self, "auto_jump_enabled_var", None) is None:
+            return
+        self.set_auto_jump_enabled(bool(self.auto_jump_enabled_var.get()))
+        if self.on_auto_jump_enabled_changed is not None:
+            self.on_auto_jump_enabled_changed(bool(self.auto_jump_enabled))
 
     def _start_drag(self, event):
+        self._cancel_forward_jump(restore_ground=True)
         self.dragging = True
         self._drag_offset = (event.x_root - self.window.winfo_x(), event.y_root - self.window.winfo_y())
         self._cancel_move()
@@ -456,7 +767,8 @@ class DesktopPet:
         y = event.y_root - self._drag_offset[1]
         self.window.geometry(f"+{x}+{y}")
         self._position_bubble()
-        self.play("running-right" if event.x_root >= self.window.winfo_x() + self.width // 2 else "running-left")
+        self._facing_direction = 1 if event.x_root >= self.window.winfo_x() + self.width // 2 else -1
+        self.play("running-right" if self._facing_direction > 0 else "running-left")
 
     def _stop_drag(self, _event):
         self.dragging = False
@@ -464,6 +776,16 @@ class DesktopPet:
         self._schedule_roam(3500)
 
     def _interact(self, _event=None):
+        if self.forward_jump_enabled:
+            if self.speak_on_interact:
+                self._speak_generated_line(play_action=False)
+                self._schedule_chatter()
+            self.play("jumping")
+            return
+        if self.speak_on_interact:
+            self._speak_generated_line()
+            self._schedule_chatter()
+            return
         self.play(random.choice(("waving", "jumping", "review")))
 
     def _popup_menu(self, event):
@@ -488,10 +810,14 @@ class DesktopPet:
             return
         self.working = working
         if working:
+            self._cancel_forward_jump(restore_ground=True)
             self._cancel_roam()
             self._cancel_move()
-        elif self.visible and self.roaming and not self.dragging:
-            self._schedule_roam(3500)
+            self._cancel_auto_jump()
+        elif self.visible:
+            if self.roaming and not self.dragging:
+                self._schedule_roam(3500)
+            self._schedule_auto_jump()
 
     def _schedule_roam(self, delay=5000):
         self._cancel_roam()
@@ -510,6 +836,7 @@ class DesktopPet:
         elif x + self.width > screen_w - 35:
             direction = -1
         self._move_step = 4 * direction
+        self._facing_direction = direction
         self._move_remaining = random.randint(22, 48)
         self.play("running-right" if direction > 0 else "running-left")
         self._move_tick()
@@ -552,7 +879,8 @@ class DesktopPet:
         self._animate()
         if not self.working:
             self._schedule_roam(2500)
-        self._schedule_chatter(random.randint(18000, 34000))
+        self._schedule_chatter(self._next_chatter_delay(18000, 34000))
+        self._schedule_auto_jump()
         self._notify_visibility_changed()
 
     def hide(self):
@@ -561,6 +889,8 @@ class DesktopPet:
         self.visible = False
         self._cancel_roam()
         self._cancel_move()
+        self._cancel_auto_jump()
+        self._cancel_forward_jump(restore_ground=True)
         self._hide_bubble()
         if self._chatter_job:
             try:
@@ -589,6 +919,8 @@ class DesktopPet:
         self.visible = False
         self._cancel_roam()
         self._cancel_move()
+        self._cancel_auto_jump()
+        self._cancel_forward_jump(restore_ground=True)
         if self._chatter_job:
             try:
                 self.window.after_cancel(self._chatter_job)
