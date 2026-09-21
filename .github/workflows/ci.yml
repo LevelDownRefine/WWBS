@@ -1,0 +1,45 @@
+# WWBS CI：单元测试
+#
+# 必须跑在 Windows 上：windows_client.py 依赖 `from ctypes import wintypes`，
+# 该模块只在 Windows 存在；app.py 还在模块级 import tkinter。
+# 不要改成 ubuntu-latest —— 会在 import 阶段直接失败。
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: unittest / Python ${{ matrix.python-version }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 是 README 声明的下限，3.13 是当前开发版
+        python-version: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      # tests/ 不是包（没有 __init__.py），所以 -t 必须指向 tests 本身，
+      # 同时靠 PYTHONPATH 让测试文件能 import 到仓库根目录下的 app.py。
+      - name: 运行单元测试
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m unittest discover -s tests -t tests -v
