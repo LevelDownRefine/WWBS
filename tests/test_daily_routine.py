@@ -34,7 +34,7 @@ class DailyRoutineTests(unittest.TestCase):
         self.assertEqual(labels["周常拿满星声"], "run_astrite")
         self.assertEqual(labels["一键日常（2轮双倍）"], "run_daily")
         self.assertEqual(labels["4C刷取（10次）"], "run_4c_10")
-        self.assertEqual(labels["4C刷取（30次）"], "run_4c_30")
+        self.assertEqual(labels["4C刷取（自定义次数）"], "run_4c_custom")
         self.assertNotIn("检测游戏窗口", labels)
         self.assertNotIn("4C刷取（5次）", labels)
         self.assertNotIn("启动（拿满奖励）", labels)
@@ -87,13 +87,33 @@ class DailyRoutineTests(unittest.TestCase):
         for template_name in DAILY_ZONE_TEMPLATES.values():
             self.assertTrue((Path(__file__).parents[1] / "templates" / "daily" / template_name).exists())
 
+    def test_battle_tab_template_resolves_inside_daily_group(self):
+        runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
+        runner.matcher.templates_dir = app.TEMPLATES_DIR / "daily"
+        with Image.open(app.TEMPLATES_DIR / "daily" / "guide_battle_tab.png") as icon:
+            reference = icon.convert("RGB")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            screenshot = Path(temp_dir) / "guide.png"
+            canvas = Image.new("RGB", (1920, 1080), (20, 25, 32))
+            canvas.paste(reference, (51, 293))
+            canvas.save(screenshot)
+            match = runner._find_daily_template(
+                "guide_battle_tab.png", threshold=0.78,
+                region=(29, 108, 182, 950), scales=[1.0], screenshot=screenshot,
+            )
+        self.assertIsNotNone(match)
+        self.assertEqual((match.x, match.y), (51, 293))
+
     def test_zone_search_uses_mouse_wheel_to_find_lower_rows(self):
         controller = Mock()
         controller.screenshot_to_client = lambda x, y: (x, y)
         runner = TaskRunner(controller, lambda _message: None, dry_run=False)
         runner.daily_zone_name = "荒石高地无音区 I"
         runner._open_terminal_destination = Mock()
+        runner._daily_activity_still_pending = Mock(return_value=True)
+        runner._select_daily_tacet_section = Mock()
         runner._tap_ratio = Mock()
+        runner._click_daily_template = Mock()
         runner._capture_size = Mock(return_value=(Path("screen.png"), 1920, 1080))
         runner._daily_row_button_ready = Mock(return_value=True)
         attempts = iter((None, None, Mock(score=0.9, center=(900, 500))))
@@ -247,10 +267,82 @@ class DailyRoutineTests(unittest.TestCase):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
         runner._open_terminal_destination = Mock()
         runner._daily_activity_still_pending = Mock(return_value=False)
+        runner._weekly_travel_page_present = Mock(return_value=True)
         runner._tap_ratio = Mock()
 
         self.assertFalse(runner._open_daily_tacet_field("zone_hukou_shanmai.png"))
         runner._tap_ratio.assert_not_called()
+
+    def test_daily_returns_from_last_selected_material_page_before_battle(self):
+        runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
+        runner._open_terminal_destination = Mock()
+        runner._daily_activity_still_pending = Mock(side_effect=(False, True))
+        runner._weekly_travel_page_present = Mock(return_value=False)
+        runner._click_daily_template = Mock()
+        runner._select_daily_tacet_section = Mock()
+        runner._tap_ratio = Mock()
+        runner._sleep_interruptible = Mock()
+        runner._capture_size = Mock(return_value=(Path("screen.png"), 1920, 1080))
+        runner._find_daily_template = Mock(return_value=Mock(score=0.99, center=(900, 500)))
+        runner._daily_row_button_ready = Mock(return_value=True)
+
+        self.assertTrue(runner._open_daily_tacet_field("zone.png"))
+
+        tapped = [call.args[:2] for call in runner._tap_ratio.call_args_list]
+        self.assertEqual(tapped[0], (0.04, 0.18))
+        runner._select_daily_tacet_section.assert_called_once()
+        runner._click_daily_template.assert_called_once()
+
+    def test_daily_finds_battle_tab_instead_of_fixed_left_menu_position(self):
+        runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
+        runner._open_terminal_destination = Mock()
+        runner._daily_activity_still_pending = Mock(return_value=True)
+        runner._click_daily_template = Mock()
+        runner._select_daily_tacet_section = Mock()
+        runner._tap_ratio = Mock()
+        runner._sleep_interruptible = Mock()
+        runner._capture_size = Mock(return_value=(Path("screen.png"), 1920, 1080))
+        runner._find_daily_template = Mock(return_value=Mock(score=0.99, center=(900, 500)))
+        runner._daily_row_button_ready = Mock(return_value=True)
+
+        runner._open_daily_tacet_field("zone.png")
+
+        runner._click_daily_template.assert_called_once_with(
+            "guide_battle_tab.png",
+            "索拉指南左侧战斗按钮",
+            timeout=8.0,
+            threshold=0.78,
+            region_ratio=(0.015, 0.10, 0.095, 0.88),
+        )
+        self.assertNotIn((0.060, 0.302), [call.args[:2] for call in runner._tap_ratio.call_args_list])
+        runner._select_daily_tacet_section.assert_called_once()
+
+    def test_tacet_section_click_uses_label_and_confirms_selected_row(self):
+        runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
+        runner._capture_size = Mock(return_value=(Path("screen.png"), 1920, 1080))
+        runner._capture_for_matching = Mock()
+        runner._guide_tacet_section_selected = Mock(side_effect=(False, True))
+        runner._find_daily_template = Mock(return_value=Mock(score=0.96, center=(370, 770)))
+        runner._tap_ratio = Mock()
+
+        runner._select_daily_tacet_section()
+
+        args = runner._tap_ratio.call_args.args
+        self.assertEqual(args[0], 0.22)
+        self.assertAlmostEqual(args[1], 786 / 1080)
+        self.assertNotAlmostEqual(args[1], 0.695)
+        runner._find_daily_template.assert_called_once()
+
+    def test_tacet_section_confirmation_rejects_dark_unselected_row(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "guide.png"
+            image = np.zeros((1080, 1920, 3), dtype=np.uint8)
+            image[730:835, 200:660] = (40, 46, 53)
+            Image.fromarray(image).save(path)
+            self.assertFalse(TaskRunner._guide_tacet_section_selected(path, 788))
+            image[730:835, 200:660] = (220, 226, 231)
+            Image.fromarray(image).save(path)
+            self.assertTrue(TaskRunner._guide_tacet_section_selected(path, 788))
 
     def test_daily_completed_notice_is_sent_to_the_customer(self):
         notice = Mock()
@@ -532,6 +624,43 @@ class DailyRoutineTests(unittest.TestCase):
         selected_cards = [x for x, y in taps if abs(y - 0.455) < 0.001]
         self.assertEqual(selected_cards, [0.403, 0.505])
         self.assertNotIn(0.587, selected_cards)
+
+    def test_claim_retries_refill_when_green_was_consumed_but_still_not_enough(self):
+        runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
+        runner._click_daily_template = Mock()
+        runner._wait_daily_claim_state = Mock(side_effect=("refill", "refill", "success"))
+        runner._safe_refill_daily_stamina = Mock(side_effect=(True, True))
+        runner._tap_ratio = Mock()
+
+        runner._claim_daily_double_reward(1)
+
+        self.assertEqual(runner._safe_refill_daily_stamina.call_count, 2)
+        self.assertEqual(runner._click_daily_template.call_count, 3)
+
+    def test_visible_refill_chooser_wins_over_consumption_success_toast(self):
+        runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
+        runner._capture_for_matching = Mock()
+        runner._fast_scales = Mock(return_value=[1.0])
+        runner._sleep_interruptible = Mock()
+        runner._find_daily_template = Mock(return_value=object())
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Image.new("RGB", (1920, 1080), "white").save(Path(temp_dir) / "_runtime_screenshot.png")
+            with patch.object(app, "APP_DIR", Path(temp_dir)):
+                self.assertEqual(runner._wait_daily_refill_result(), "still_short")
+
+    def test_consumption_success_is_accepted_after_chooser_closes(self):
+        runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
+        runner._capture_for_matching = Mock()
+        runner._fast_scales = Mock(return_value=[1.0])
+        runner._sleep_interruptible = Mock()
+        runner._daily_refill_chooser_present = Mock(return_value=False)
+        runner._find_daily_template = Mock(
+            side_effect=lambda name, **_kwargs: None if name == "refill_dialog.png" else object()
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Image.new("RGB", (1920, 1080), "black").save(Path(temp_dir) / "_runtime_screenshot.png")
+            with patch.object(app, "APP_DIR", Path(temp_dir)):
+                self.assertEqual(runner._wait_daily_refill_result(), "success")
 
     def test_refill_skips_monomer_when_green_card_shows_red_zero(self):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)

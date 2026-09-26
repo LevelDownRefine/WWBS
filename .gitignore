@@ -32,4 +32,10 @@ _diagnostic_preview.png
 1.3.7-beta/
 1.3.9-beta/
 _release-work/
+app-settings.json
+cartethyia-agent-settings.json
+pet-chat-history.json
+pet-chat-history.tmp
+.wwbs-update-backup-*/
 pet-runs/
+wwbs-sillytavern-kit.zip

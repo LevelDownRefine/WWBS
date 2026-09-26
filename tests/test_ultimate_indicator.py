@@ -30,8 +30,8 @@ class UltimateIndicatorTests(unittest.TestCase):
     def test_special_complete_gray_blue_ring_is_not_ready(self):
         self.assertFalse(self._classify("not-ready-4-special.png"))
 
-    def test_check_interval_is_five_seconds(self):
-        self.assertEqual(TaskRunner.ULTIMATE_READY_CHECK_INTERVAL, 5.0)
+    def test_combat_uses_timed_ultimate_interval(self):
+        self.assertEqual(TaskRunner.COMBAT_ULTIMATE_INTERVAL, 10.0)
 
     def test_full_screenshot_uses_configured_lower_right_region(self):
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)

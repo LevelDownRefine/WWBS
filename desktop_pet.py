@@ -37,7 +37,7 @@ class DesktopPet:
         ("周常拿满星声", "run_astrite"),
         ("一键日常（2轮双倍）", "run_daily"),
         ("4C刷取（10次）", "run_4c_10"),
-        ("4C刷取（30次）", "run_4c_30"),
+        ("4C刷取（自定义次数）", "run_4c_custom"),
         ("停止当前任务", "stop_task"),
     )
 
@@ -63,6 +63,7 @@ class DesktopPet:
         on_auto_jump_enabled_changed: Callable[[bool], None] | None = None,
         speak_on_interact: bool = False,
         chatter_delay_range: tuple[int, int] | None = None,
+        allow_generated_speech: Callable[[], bool] | None = None,
     ):
         self.root = root
         self.frames_dir = Path(frames_dir)
@@ -70,6 +71,7 @@ class DesktopPet:
         self.commands = commands or {}
         self.pet_name = pet_name
         self.idle_line_factory = idle_line_factory or (lambda: "漂泊者，要稍微休息一下吗？")
+        self.allow_generated_speech = allow_generated_speech or (lambda: True)
         self.look_spritesheet = Path(look_spritesheet) if look_spritesheet else None
         self.alpha_cutoff = (
             max(0, min(254, int(alpha_cutoff))) if alpha_cutoff is not None else None
@@ -137,6 +139,8 @@ class DesktopPet:
         chat = self.commands.get("chat")
         if chat is not None:
             self.menu.add_command(label=f"和{self.pet_name}聊天", command=chat)
+        if self.commands.get("chat_history") is not None:
+            self.menu.add_command(label="查看聊天记录", command=self.commands["chat_history"])
         for label, command_key in self.COMMAND_LABELS:
             command = self.commands.get(command_key)
             if command is not None:
@@ -599,6 +603,8 @@ class DesktopPet:
         self._schedule_chatter(retry_delay)
 
     def _speak_generated_line(self, play_action: bool = True) -> None:
+        if not getattr(self, "allow_generated_speech", lambda: True)():
+            return
         generated = self.idle_line_factory()
         text = str(getattr(generated, "text", generated))
         action = str(getattr(generated, "action", random.choice(self.CHATTER_ACTIONS)))

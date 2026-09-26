@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, call
+from unittest.mock import Mock, call, patch
 
 from PIL import Image, ImageDraw
 
@@ -13,7 +13,7 @@ class Combat4CTests(unittest.TestCase):
     def test_updated_rotation_and_reward_search_timing(self):
         self.assertEqual(app.TaskRunner.HEAL_ROTATION_INTERVAL, 9.0)
         self.assertEqual(app.TaskRunner.MAIN_Q_INTERVAL, 20.0)
-        self.assertEqual(app.TaskRunner.ULTIMATE_READY_CHECK_INTERVAL, 5.0)
+        self.assertEqual(app.TaskRunner.COMBAT_ULTIMATE_INTERVAL, 10.0)
         self.assertEqual(app.TaskRunner.REWARD_SEARCH_TURN_PIXELS, 190 * 5)
         self.assertLess(app.TaskRunner.REWARD_INITIAL_CHECK_DELAY, 0.2)
         self.assertGreaterEqual(app.TaskRunner.REWARD_SEARCH_TIMEOUT, 90.0)
@@ -160,6 +160,69 @@ class Combat4CTests(unittest.TestCase):
 
         self.assertEqual(controller.left_click.call_count, 4)
 
+    def test_continuous_attack_inserts_one_heavy_after_nine_clicks(self):
+        controller = Mock()
+        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
+        runner.MAIN_ATTACK_CLICK_INTERVAL = 0.001
+        enabled = app.threading.Event()
+        finished = app.threading.Event()
+        enabled.set()
+        controller.hold_left_button.side_effect = lambda _duration: finished.set()
+
+        runner._run_4c_continuous_attack(enabled, finished, app.threading.Lock())
+
+        self.assertEqual(controller.left_click.call_count, 9)
+        controller.hold_left_button.assert_called_once_with(800)
+
+    def test_timed_ultimate_pauses_attacks_while_pressing_binding(self):
+        controller = Mock()
+        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
+        runner._sleep_interruptible = Mock()
+        enabled = app.threading.Event()
+        enabled.set()
+        controller.press_binding.side_effect = lambda *_args: self.assertFalse(enabled.is_set())
+
+        runner._cast_timed_ultimate("R", enabled, app.threading.Lock())
+
+        controller.press_binding.assert_called_once_with("R", 120)
+        self.assertTrue(enabled.is_set())
+
+    def test_4c_battle_casts_ultimate_on_timer_without_indicator(self):
+        controller = Mock()
+        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
+        runner._sleep_interruptible = Mock()
+        runner._inspect_4c_boss_header = Mock(return_value=True)
+        runner._perform_4c_heal_rotation = Mock(return_value=True)
+        runner._run_4c_continuous_attack = Mock()
+        runner._ultimate_indicator_ready = Mock(side_effect=AssertionError("unused"))
+        controller.press_binding.side_effect = lambda key, _duration: runner.stop_event.set() if key == "R" else None
+        ticks = iter(range(1, 200))
+
+        with patch.object(app.time, "monotonic", side_effect=lambda: next(ticks)):
+            runner._run_4c_battle(Mock(timeout=100), "E", "R", 1)
+
+        controller.press_binding.assert_any_call("R", 120)
+        runner._ultimate_indicator_ready.assert_not_called()
+
+    def test_daily_battle_casts_ultimate_on_timer_without_indicator(self):
+        controller = Mock()
+        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
+        runner._sleep_interruptible = Mock()
+        runner._select_daily_slot_one_after_loading = Mock()
+        runner._daily_reward_stage_present = Mock(return_value=False)
+        runner._daily_battle_task_present = Mock(return_value=True)
+        runner._capture_for_matching = Mock()
+        runner._run_4c_continuous_attack = Mock()
+        runner._ultimate_indicator_ready = Mock(side_effect=AssertionError("unused"))
+        controller.press_binding.side_effect = lambda key, _duration: runner.stop_event.set() if key == "R" else None
+        ticks = iter(range(1, 200))
+
+        with patch.object(app.time, "monotonic", side_effect=lambda: next(ticks)):
+            runner._run_daily_battle(Mock(timeout=100), "E", "R", 1)
+
+        controller.press_binding.assert_any_call("R", 120)
+        runner._ultimate_indicator_ready.assert_not_called()
+
     def test_heal_rotation_spaces_attacks_and_waits_before_return(self):
         controller = Mock()
         runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
@@ -174,9 +237,11 @@ class Combat4CTests(unittest.TestCase):
         self.assertGreater(app.TaskRunner.HEAL_ATTACK_CLICK_INTERVAL, 0.10)
         self.assertIn(app.TaskRunner.HEAL_RETURN_DELAY, waits)
         controller.press_key.assert_any_call("3", 65)
-        controller.press_key.assert_any_call("Q", 65)
+        controller.press_key.assert_any_call("Q", 120)
         controller.press_key.assert_any_call("1", 65)
         self.assertEqual(controller.press_key.call_args_list.count(call("SPACE", 50)), 2)
+        self.assertIn(app.TaskRunner.HEAL_ATTACK_TO_Q_DELAY, waits)
+        self.assertIn(app.TaskRunner.HEAL_Q_TO_RETURN_DELAY, waits)
 
     def test_heal_rotation_stops_sending_keys_after_stop_request(self):
         controller = Mock()

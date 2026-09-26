@@ -163,6 +163,19 @@ class ClientWindowController:
         finally:
             self._send_mouse_button(MOUSEEVENTF_LEFTUP)
 
+    def hold_left_button(self, duration_ms: int = 800) -> None:
+        """Hold basic attack for a charged attack, always releasing the button."""
+        self._ensure_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            self._focus_window()
+        if user32.GetForegroundWindow() != self.hwnd:
+            raise RuntimeError("游戏窗口未获得焦点，已取消重击操作。")
+        try:
+            self._send_mouse_button(MOUSEEVENTF_LEFTDOWN)
+            time.sleep(max(0.1, min(duration_ms, 2000) / 1000.0))
+        finally:
+            self._send_mouse_button(MOUSEEVENTF_LEFTUP)
+
     def middle_click(self) -> None:
         """Click the middle mouse button once to lock the current combat target."""
         self._ensure_window()

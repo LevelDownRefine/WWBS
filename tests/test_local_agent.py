@@ -96,6 +96,13 @@ class LocalAgentTests(unittest.TestCase):
                 self.assertIn(character, identity.text)
                 self.assertIn("没有公开", age.text)
 
+    def test_aemeath_school_answer_preserves_timeline(self) -> None:
+        reply = persona_fact_reply("你在哪里上学？", "爱弥斯")
+        self.assertIsNotNone(reply)
+        self.assertIn("以前在星炬学院", reply.text)
+        self.assertIn("电子幽灵", reply.text)
+        self.assertNotIn("理工大学", reply.text)
+
     def test_agent_answers_character_facts_without_calling_model(self) -> None:
         config = LocalAgentConfig(True, "http://127.0.0.1:11434", "qwen3:4b")
         agent = LocalCartethyiaAgent(config, "卡提希娅人格")

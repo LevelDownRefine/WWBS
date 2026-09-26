@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
 import urllib.error
 import urllib.request
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
+
+from sillytavern_bridge import SillyTavernBridge
 
 
 ALLOWED_TOOLS = {
@@ -76,7 +81,7 @@ PERSONA_FACT_REPLIES: dict[str, dict[str, str]] = {
         "age": "年龄可没有公开的准确数字，我也不会随便编一个。你只要记得，我是达妮娅就好。",
     },
     "爱弥斯": {
-        "identity": "我是爱弥斯！喜欢音乐、校园生活和新鲜的小发明，也很高兴能像现在这样陪着你。",
+        "identity": "我是爱弥斯！曾是星炬学院拉贝尔学部的隧者适格者，现在是电子幽灵。还能像这样陪着你，我很高兴。",
         "age": "我的年龄没有公开的准确数字，所以不能随便报一个啦。不过，我已经是能够照顾你的爱弥斯了！",
     },
     "景燃": {
@@ -116,6 +121,8 @@ def persona_fact_reply(message: str, character_name: str) -> AgentReply | None:
         return AgentReply(facts["age"])
     if any(pattern in text for pattern in ("你是谁", "介绍一下你自己", "自我介绍")):
         return AgentReply(facts["identity"])
+    if character_name == "爱弥斯" and any(pattern in text for pattern in ("在哪里上学", "在哪上学", "哪个学校", "什么学校", "哪所学校", "哪个大学")):
+        return AgentReply("我以前在星炬学院。现在嘛，已经是你能看见的电子幽灵啦。")
     return None
 
 
@@ -124,6 +131,9 @@ class LocalAgentConfig:
     enabled: bool = False
     endpoint: str = "http://127.0.0.1:11434"
     model: str = ""
+    provider: str = "ollama"
+    api_key: str = field(default="", repr=False)
+    bridge_token: str = field(default="", repr=False)
 
     @classmethod
     def load(cls, path: Path) -> "LocalAgentConfig":
@@ -138,13 +148,108 @@ class LocalAgentConfig:
             enabled=saved.get("enabled") is True,
             endpoint=endpoint,
             model=str(saved.get("model", "")).strip(),
+            provider=saved.get("provider") if saved.get("provider") in {"openai", "deepseek", "sillytavern"} else "ollama",
+            bridge_token=str(saved.get("bridge_token", "")).strip(),
         )
 
     def save(self, path: Path) -> None:
+        saved = asdict(self)
+        saved.pop("api_key", None)  # Keys are session-only; never write plaintext credentials.
         path.write_text(
-            json.dumps(asdict(self), ensure_ascii=False, indent=2),
+            json.dumps(saved, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+
+def service_base(config: LocalAgentConfig) -> str:
+    if config.provider == "sillytavern":
+        raise ValueError("酒馆模式通过本机桥接扩展连接，无需填写模型服务地址。")
+    endpoint = config.endpoint.strip().rstrip("/")
+    parsed = urlsplit(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("服务地址应为 http(s) 地址，不要在地址中填写密钥或查询参数。")
+    suffixes = ("/chat/completions", "/models") if config.provider != "ollama" else ("/api/chat", "/api/tags", "/api/generate")
+    for suffix in suffixes:
+        if endpoint.endswith(suffix):
+            endpoint = endpoint[:-len(suffix)]
+            break
+    if config.provider == "openai" and not urlsplit(endpoint).path.strip("/"):
+        endpoint += "/v1"
+    return endpoint
+
+
+def request_headers(config: LocalAgentConfig) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if config.provider != "ollama" and config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+    return headers
+
+
+def list_service_models(config: LocalAgentConfig, timeout: float = 5.0) -> list[str]:
+    suffix = "/models" if config.provider != "ollama" else "/api/tags"
+    request = urllib.request.Request(service_base(config) + suffix, headers=request_headers(config))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        key, name_key = ("data", "id") if config.provider != "ollama" else ("models", "name")
+        return sorted({item[name_key] for item in payload[key] if isinstance(item, dict) and isinstance(item.get(name_key), str) and item[name_key]})
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"读取模型列表失败（HTTP {exc.code}），请检查地址、密钥和服务权限。") from None
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError("无法读取模型列表，请确认服务已启动，或手动填写模型名。") from None
+
+
+@dataclass(frozen=True)
+class DiscoveredModel:
+    model: str
+    provider: str
+    endpoint: str
+    source: str
+    available: bool = True
+
+    @property
+    def label(self) -> str:
+        return f"{self.source} · {self.model}" + ("" if self.available else "（需启动服务/载入模型）")
+
+
+def discover_local_models() -> list[DiscoveredModel]:
+    """Probe known loopback services and bounded model directories; never load weights."""
+    services = (("Ollama", "ollama", "http://127.0.0.1:11434"),
+                ("LM Studio", "openai", "http://127.0.0.1:1234/v1"))
+    def probe(service):
+        source, provider, endpoint = service
+        try:
+            return [DiscoveredModel(name, provider, endpoint, source) for name in
+                    list_service_models(LocalAgentConfig(endpoint=endpoint, provider=provider), timeout=2.0)]
+        except (RuntimeError, ValueError):
+            return []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        found = [model for result in pool.map(probe, services) for model in result]
+    known = {(item.provider, item.model) for item in found}
+    manifest_root = Path(os.environ.get("OLLAMA_MODELS") or str(Path.home() / ".ollama" / "models")) / "manifests"
+    try:
+        for path in manifest_root.glob("*/*/*/*"):
+            if not path.is_file():
+                continue
+            registry, namespace, name, tag = path.relative_to(manifest_root).parts
+            model = f"{name}:{tag}" if namespace == "library" else f"{namespace}/{name}:{tag}"
+            if registry != "registry.ollama.ai":
+                model = f"{registry}/{model}"
+            if ("ollama", model) not in known:
+                found.append(DiscoveredModel(model, "ollama", services[0][2], "Ollama", False))
+                known.add(("ollama", model))
+    except OSError:
+        pass
+    try:
+        root = Path.home() / ".lmstudio" / "models"
+        for path in root.glob("*/*/*.gguf"):
+            model = path.parent.name
+            if ("openai", model) not in known and not any(model in item.model for item in found if item.provider == "openai"):
+                found.append(DiscoveredModel(model, "openai", services[1][2], "LM Studio 文件", False))
+                known.add(("openai", model))
+    except OSError:
+        pass
+    return found
 
 
 @dataclass(frozen=True)
@@ -242,19 +347,24 @@ class LocalCartethyiaAgent:
         persona_prompt: str,
         character_name: str = "卡提希娅",
         fallback_reply: Callable[[str], str] | None = None,
+        bridge: SillyTavernBridge | None = None,
     ) -> None:
         self.config = config
         self.persona_prompt = persona_prompt
         self.character_name = character_name
         self.fallback_reply = fallback_reply
+        self.bridge = bridge
         self.history: deque[dict[str, str]] = deque(maxlen=6)
 
     def update_config(self, config: LocalAgentConfig) -> None:
+        if config != self.config:
+            self.history.clear()
         self.config = config
 
-    def _chat_url(self) -> str:
-        endpoint = self.config.endpoint.rstrip("/")
-        return endpoint if endpoint.endswith("/api/chat") else f"{endpoint}/api/chat"
+    def _chat_url(self, config: LocalAgentConfig | None = None) -> str:
+        config = config or self.config
+        suffix = "/chat/completions" if config.provider != "ollama" else "/api/chat"
+        return service_base(config) + suffix
 
     def _system_prompt(self) -> str:
         return (
@@ -273,16 +383,25 @@ class LocalCartethyiaAgent:
         timeout: float = 180.0,
         keep_alive: str | int = "60s",
     ) -> AgentReply:
-        fact = persona_fact_reply(message, self.character_name)
+        config = self.config
+        fact = persona_fact_reply(message, self.character_name) if config.provider != "sillytavern" else None
         if fact is not None:
             return fact
         routed = direct_command(message, self.character_name)
         if routed is not None:
             return routed
-        if not self.config.enabled:
-            raise RuntimeError("卡提希娅本地 Agent 尚未启用。")
-        if not self.config.model:
-            raise RuntimeError("请先在设置中填写已部署的本地模型名称。")
+        if not config.enabled:
+            raise RuntimeError("桌宠 Agent 尚未启用。")
+        if config.provider == "sillytavern":
+            if self.bridge is None:
+                raise RuntimeError("酒馆桥接服务尚未启动。")
+            result = AgentReply(self.bridge.ask(message, self.character_name, list(self.history), timeout))
+            if self.config == config:
+                self.history.append({"role": "user", "content": message})
+                self.history.append({"role": "assistant", "content": result.text})
+            return result
+        if not config.model:
+            raise RuntimeError("请先在设置中选择模型。")
         messages = [{"role": "system", "content": self._system_prompt()}]
         messages.extend(self.history)
         # Qwen3 model variants also recognize the prompt-level switch even when
@@ -290,7 +409,7 @@ class LocalCartethyiaAgent:
         messages.append({"role": "user", "content": f"{message}\n/no_think"})
         body = json.dumps(
             {
-                "model": self.config.model,
+                "model": config.model,
                 "messages": messages,
                 "stream": False,
                 "format": {
@@ -309,43 +428,56 @@ class LocalCartethyiaAgent:
             },
             ensure_ascii=False,
         ).encode("utf-8")
+        if config.provider != "ollama":
+            messages[-1]["content"] = message
+            api_body = {"model": config.model, "messages": messages, "stream": False, "max_tokens": 256}
+            if config.provider == "deepseek":
+                api_body["thinking"] = {"type": "disabled"}
+            body = json.dumps(api_body, ensure_ascii=False).encode("utf-8")
         request = urllib.request.Request(
-            self._chat_url(),
+            self._chat_url(config),
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=request_headers(config),
             method="POST",
+        )
+        timeout_message = (
+            "本地模型响应超时。大型模型首次载入可能需要1至3分钟，请稍后重试；若持续超时，请确认内存充足或改用更小的模型。"
+            if config.provider == "ollama" else "API 服务响应超时，请检查网络或稍后重试。"
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"模型服务请求失败（HTTP {exc.code}），请检查服务地址、密钥、模型名或额度。") from None
         except (TimeoutError, socket.timeout) as exc:
-            raise RuntimeError(
-                "本地模型响应超时。大型模型首次载入可能需要1至3分钟，请稍后重试；"
-                "若持续超时，请确认内存充足或改用更小的模型。"
-            ) from exc
+            raise RuntimeError(timeout_message) from exc
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, (TimeoutError, socket.timeout)):
-                raise RuntimeError(
-                    "本地模型响应超时。大型模型首次载入可能需要1至3分钟，请稍后重试；"
-                    "若持续超时，请确认内存充足或改用更小的模型。"
-                ) from exc
-            raise RuntimeError(f"无法连接本地模型服务：{exc.reason}") from exc
+                raise RuntimeError(timeout_message) from exc
+            raise RuntimeError("无法连接模型服务，请检查服务地址、网络或服务是否启动。") from None
         except (OSError, ValueError, json.JSONDecodeError) as exc:
-            raise RuntimeError(f"本地模型返回了无法读取的数据：{exc}") from exc
-        content = str(payload.get("message", {}).get("content", ""))
+            raise RuntimeError("模型服务返回了无法读取的数据，请检查接口格式。") from None
+        try:
+            content = (payload["choices"][0]["message"]["content"] if config.provider != "ollama"
+                       else payload["message"]["content"])
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("empty response")
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise RuntimeError("模型没有返回有效的文字回复，请检查模型和接口格式。") from None
         result = _parse_model_reply(content)
         # Explicit commands have already returned through ``direct_command``;
         # model chat is always text-only and can never invoke a tool.
         result = AgentReply(result.text)
         if _looks_like_internal_reasoning(result.text, message) and self.fallback_reply is not None:
             result = AgentReply(self.fallback_reply(message).strip() or "我在听。")
-        self.history.append({"role": "user", "content": message})
-        self.history.append({"role": "assistant", "content": result.text})
+        if self.config == config:
+            self.history.append({"role": "user", "content": message})
+            self.history.append({"role": "assistant", "content": result.text})
         return result
 
     def test_connection(self, timeout: float = 180.0) -> str:
-        if not self.config.model:
-            raise RuntimeError("请先填写模型名称。")
+        if self.config.provider != "sillytavern" and not self.config.model:
+            raise RuntimeError("请先选择模型。")
         reply = self.respond(
             "只回复一句简短的测试问候，不要调用任何工具。",
             timeout=timeout,
@@ -355,13 +487,12 @@ class LocalCartethyiaAgent:
 
     def warmup(self, timeout: float = 180.0, keep_alive: str | int = "60s") -> None:
         """Load model weights while the user is composing a message."""
-        if not self.config.enabled or not self.config.model:
+        config = self.config
+        if config.provider != "ollama" or not config.enabled or not config.model:
             return
-        endpoint = self.config.endpoint.rstrip("/")
-        if endpoint.endswith("/api/chat"):
-            endpoint = endpoint[: -len("/api/chat")]
+        endpoint = service_base(config)
         body = json.dumps(
-            {"model": self.config.model, "keep_alive": keep_alive},
+            {"model": config.model, "keep_alive": keep_alive},
             ensure_ascii=False,
         ).encode("utf-8")
         request = urllib.request.Request(
@@ -379,13 +510,12 @@ class LocalCartethyiaAgent:
 
     def unload(self, timeout: float = 15.0) -> None:
         """Ask Ollama to release this model immediately without generating text."""
-        if not self.config.model:
+        config = self.config
+        if config.provider != "ollama" or not config.model:
             return
-        endpoint = self.config.endpoint.rstrip("/")
-        if endpoint.endswith("/api/chat"):
-            endpoint = endpoint[: -len("/api/chat")]
+        endpoint = service_base(config)
         body = json.dumps(
-            {"model": self.config.model, "keep_alive": 0},
+            {"model": config.model, "keep_alive": 0},
             ensure_ascii=False,
         ).encode("utf-8")
         request = urllib.request.Request(
