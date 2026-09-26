@@ -4,10 +4,14 @@ from windows_client import ClientWindowController, DEFAULT_GAME_WINDOW_TITLES
 
 
 class WindowTitleDetectionTests(unittest.TestCase):
-    def test_auto_mode_supports_cn_and_global_titles(self):
+    def test_auto_mode_supports_simplified_traditional_and_global_titles(self):
         self.assertEqual(ClientWindowController._expand_title_keywords("自动"), DEFAULT_GAME_WINDOW_TITLES)
         self.assertEqual(ClientWindowController._expand_title_keywords("鸣潮"), DEFAULT_GAME_WINDOW_TITLES)
+        self.assertEqual(ClientWindowController._expand_title_keywords("鳴潮"), DEFAULT_GAME_WINDOW_TITLES)
         self.assertEqual(ClientWindowController._expand_title_keywords("Wuthering Waves"), DEFAULT_GAME_WINDOW_TITLES)
+
+        keywords = ClientWindowController._expand_title_keywords("自动")
+        self.assertEqual(ClientWindowController._title_match_kind("鳴潮", keywords), "exact")
 
     def test_global_steam_title_matches_case_insensitively(self):
         keywords = ClientWindowController._expand_title_keywords("自动")

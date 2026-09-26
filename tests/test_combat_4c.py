@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, call
+from unittest.mock import Mock, call, patch
 
 from PIL import Image, ImageDraw
 
@@ -13,12 +13,13 @@ class Combat4CTests(unittest.TestCase):
     def test_updated_rotation_and_reward_search_timing(self):
         self.assertEqual(app.TaskRunner.HEAL_ROTATION_INTERVAL, 9.0)
         self.assertEqual(app.TaskRunner.MAIN_Q_INTERVAL, 20.0)
-        self.assertEqual(app.TaskRunner.MAIN_ULTIMATE_INTERVAL, 20.0)
+        self.assertEqual(app.TaskRunner.COMBAT_ULTIMATE_INTERVAL, 10.0)
         self.assertEqual(app.TaskRunner.REWARD_SEARCH_TURN_PIXELS, 190 * 5)
         self.assertLess(app.TaskRunner.REWARD_INITIAL_CHECK_DELAY, 0.2)
         self.assertGreaterEqual(app.TaskRunner.REWARD_SEARCH_TIMEOUT, 90.0)
         self.assertEqual(app.TaskRunner.EMPTY_HEALTH_CONFIRMATIONS, 3)
-        self.assertEqual(app.TaskRunner.BOSS_HEADER_CHECK_INTERVAL, 2.0)
+        self.assertEqual(app.TaskRunner.BOSS_HEADER_CHECK_INTERVAL, 0.5)
+        self.assertEqual(app.TaskRunner.DAILY_BATTLE_END_CHECK_INTERVAL, 1.0)
 
     def test_dark_absorb_prompt_template_is_detectable(self):
         template = Path(app.TEMPLATES_DIR) / "4c" / "absorb_prompt_dark.png"
@@ -159,6 +160,69 @@ class Combat4CTests(unittest.TestCase):
 
         self.assertEqual(controller.left_click.call_count, 4)
 
+    def test_continuous_attack_inserts_one_heavy_after_nine_clicks(self):
+        controller = Mock()
+        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
+        runner.MAIN_ATTACK_CLICK_INTERVAL = 0.001
+        enabled = app.threading.Event()
+        finished = app.threading.Event()
+        enabled.set()
+        controller.hold_left_button.side_effect = lambda _duration: finished.set()
+
+        runner._run_4c_continuous_attack(enabled, finished, app.threading.Lock())
+
+        self.assertEqual(controller.left_click.call_count, 9)
+        controller.hold_left_button.assert_called_once_with(800)
+
+    def test_timed_ultimate_pauses_attacks_while_pressing_binding(self):
+        controller = Mock()
+        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
+        runner._sleep_interruptible = Mock()
+        enabled = app.threading.Event()
+        enabled.set()
+        controller.press_binding.side_effect = lambda *_args: self.assertFalse(enabled.is_set())
+
+        runner._cast_timed_ultimate("R", enabled, app.threading.Lock())
+
+        controller.press_binding.assert_called_once_with("R", 120)
+        self.assertTrue(enabled.is_set())
+
+    def test_4c_battle_casts_ultimate_on_timer_without_indicator(self):
+        controller = Mock()
+        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
+        runner._sleep_interruptible = Mock()
+        runner._inspect_4c_boss_header = Mock(return_value=True)
+        runner._perform_4c_heal_rotation = Mock(return_value=True)
+        runner._run_4c_continuous_attack = Mock()
+        runner._ultimate_indicator_ready = Mock(side_effect=AssertionError("unused"))
+        controller.press_binding.side_effect = lambda key, _duration: runner.stop_event.set() if key == "R" else None
+        ticks = iter(range(1, 200))
+
+        with patch.object(app.time, "monotonic", side_effect=lambda: next(ticks)):
+            runner._run_4c_battle(Mock(timeout=100), "E", "R", 1)
+
+        controller.press_binding.assert_any_call("R", 120)
+        runner._ultimate_indicator_ready.assert_not_called()
+
+    def test_daily_battle_casts_ultimate_on_timer_without_indicator(self):
+        controller = Mock()
+        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
+        runner._sleep_interruptible = Mock()
+        runner._select_daily_slot_one_after_loading = Mock()
+        runner._daily_reward_stage_present = Mock(return_value=False)
+        runner._daily_battle_task_present = Mock(return_value=True)
+        runner._capture_for_matching = Mock()
+        runner._run_4c_continuous_attack = Mock()
+        runner._ultimate_indicator_ready = Mock(side_effect=AssertionError("unused"))
+        controller.press_binding.side_effect = lambda key, _duration: runner.stop_event.set() if key == "R" else None
+        ticks = iter(range(1, 200))
+
+        with patch.object(app.time, "monotonic", side_effect=lambda: next(ticks)):
+            runner._run_daily_battle(Mock(timeout=100), "E", "R", 1)
+
+        controller.press_binding.assert_any_call("R", 120)
+        runner._ultimate_indicator_ready.assert_not_called()
+
     def test_heal_rotation_spaces_attacks_and_waits_before_return(self):
         controller = Mock()
         runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
@@ -173,9 +237,25 @@ class Combat4CTests(unittest.TestCase):
         self.assertGreater(app.TaskRunner.HEAL_ATTACK_CLICK_INTERVAL, 0.10)
         self.assertIn(app.TaskRunner.HEAL_RETURN_DELAY, waits)
         controller.press_key.assert_any_call("3", 65)
-        controller.press_key.assert_any_call("Q", 65)
+        controller.press_key.assert_any_call("Q", 120)
         controller.press_key.assert_any_call("1", 65)
         self.assertEqual(controller.press_key.call_args_list.count(call("SPACE", 50)), 2)
+        self.assertIn(app.TaskRunner.HEAL_ATTACK_TO_Q_DELAY, waits)
+        self.assertIn(app.TaskRunner.HEAL_Q_TO_RETURN_DELAY, waits)
+
+    def test_heal_rotation_stops_sending_keys_after_stop_request(self):
+        controller = Mock()
+        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
+
+        def stop_during_slot_switch(_seconds):
+            runner.stop_event.set()
+
+        runner._sleep_interruptible = Mock(side_effect=stop_during_slot_switch)
+
+        self.assertFalse(runner._perform_4c_heal_rotation("E"))
+        controller.press_key.assert_called_once_with("3", 65)
+        controller.press_binding.assert_not_called()
+        controller.left_click.assert_not_called()
 
     def test_ultimate_binding_defaults_to_r_and_supports_mouse_buttons(self):
         runner = app.TaskRunner(Mock(), lambda _message: None, dry_run=False)
@@ -241,6 +321,22 @@ class Combat4CTests(unittest.TestCase):
             draw = ImageDraw.Draw(image)
             draw.rectangle((1250, 160, 1420, 520), fill=(210, 137, 45))
             draw.polygon(((1250, 160), (1420, 160), (1370, 520), (1280, 520)), fill=(235, 169, 65))
+            image.save(target)
+
+            ratio, x, y = app.TaskRunner._gold_target_location(target)
+
+            self.assertEqual(ratio, 0.0)
+            self.assertIsNone(x)
+            self.assertIsNone(y)
+
+    def test_gold_target_location_rejects_ring_below_wide_billboard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "billboard-ring.png"
+            image = Image.new("RGB", (1920, 1080), (18, 24, 30))
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((930, 220, 1390, 480), fill=(220, 153, 45))
+            draw.ellipse((1030, 610, 1110, 690), fill=(210, 155, 58))
+            draw.ellipse((1048, 628, 1092, 672), fill=(18, 24, 30))
             image.save(target)
 
             ratio, x, y = app.TaskRunner._gold_target_location(target)
@@ -331,7 +427,7 @@ class Combat4CTests(unittest.TestCase):
 
         result = runner._approach_4c_gold_target(-440, 1920)
 
-        controller.press_keys.assert_called_once_with(("W", "A"), 220)
+        controller.press_keys.assert_called_once_with(("W", "A"), 400)
         controller.move_mouse_relative.assert_not_called()
         self.assertIn("左侧", result)
 
@@ -343,7 +439,7 @@ class Combat4CTests(unittest.TestCase):
 
         turn = controller.move_mouse_relative.call_args.args[0]
         self.assertGreater(turn, 0)
-        controller.press_keys.assert_called_once_with(("W",), 180)
+        controller.press_keys.assert_called_once_with(("W",), 360)
         self.assertIn("右侧", result)
 
     def test_health_bar_detection_accounts_for_window_titlebar(self):

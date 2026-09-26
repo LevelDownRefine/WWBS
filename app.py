@@ -6,6 +6,7 @@ import os
 import queue
 import random
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -26,13 +27,52 @@ import numpy as np
 from image_matcher import TemplateMatcher
 from windows_client import ClientWindowController
 from desktop_pet import DesktopPet
-from daniya_persona import event_line as daniya_event_line, idle_line as daniya_idle_line
+from chat_history import ChatHistory
+from update_manager import prepare_update, install_script, signal_update_ready
+from weekly_rewards import WeeklyLimitReached, WeeklyRewardsVision
+from daniya_persona import (
+    CHARACTER_PROMPT as daniya_character_prompt,
+    DIALOGUE_PROMPT as daniya_dialogue_prompt,
+    PERSONALITY_PROMPT as daniya_personality_prompt,
+    SYSTEM_PROMPT as daniya_system_prompt,
+    event_line as daniya_event_line,
+    idle_line as daniya_idle_line,
+    respond_to_user as daniya_respond_to_user,
+)
 from aemeath_persona import (
+    CHARACTER_PROMPT as aemeath_character_prompt,
+    DIALOGUE_PROMPT as aemeath_dialogue_prompt,
+    PERSONALITY_PROMPT as aemeath_personality_prompt,
+    SYSTEM_PROMPT as aemeath_system_prompt,
     event_line as aemeath_event_line,
     idle_dialogue as aemeath_idle_dialogue,
     record_departure as record_aemeath_departure,
+    respond_to_user as aemeath_respond_to_user,
     welcome_dialogue as aemeath_welcome_dialogue,
 )
+from jingran_persona import (
+    CHARACTER_PROMPT as jingran_character_prompt,
+    DIALOGUE_PROMPT as jingran_dialogue_prompt,
+    PERSONALITY_PROMPT as jingran_personality_prompt,
+    SYSTEM_PROMPT as jingran_system_prompt,
+    event_line as jingran_event_line,
+    idle_line as jingran_idle_line,
+    respond_to_user as jingran_respond_to_user,
+    welcome_dialogue as jingran_welcome_dialogue,
+)
+from cartethyia_persona import (
+    CHARACTER_PROMPT as cartethyia_character_prompt,
+    DIALOGUE_PROMPT as cartethyia_dialogue_prompt,
+    PERSONALITY_PROMPT as cartethyia_personality_prompt,
+    SYSTEM_PROMPT as cartethyia_system_prompt,
+    event_line as cartethyia_event_line,
+    idle_line as cartethyia_idle_line,
+    respond_to_user as cartethyia_respond_to_user,
+    welcome_dialogue as cartethyia_welcome_dialogue,
+)
+from local_agent import (AgentReply, LocalAgentConfig, LocalCartethyiaAgent,
+                         discover_local_models, list_service_models, service_base)
+from sillytavern_bridge import PORT as SILLYTAVERN_BRIDGE_PORT, SillyTavernBridge
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -41,13 +81,78 @@ TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.3.9"
+APP_VERSION = "1.5.1"
+RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
+RUN_NOTICES = {
+    "daily": (
+        "一键日常启动页面",
+        RUN_NOTICE_DIR / "daily-start.jpg",
+    ),
+    "weekly": (
+        "一键周常启动页面",
+        RUN_NOTICE_DIR / "weekly-start.jpg",
+    ),
+    "combat_4c": (
+        "4C刷取启动页面",
+        RUN_NOTICE_DIR / "combat-4c-start.jpg",
+    ),
+}
+
+
+def is_running_as_admin() -> bool:
+    """Return whether the current Windows process is elevated."""
+    if os.name != "nt":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def apply_windows_taskbar_icon(window, icon_path: Path) -> bool:
+    """Apply an .ico to the real top-level HWND used by the Windows taskbar."""
+    if os.name != "nt" or not icon_path.exists():
+        return False
+    try:
+        window.update_idletasks()
+        child_hwnd = int(window.winfo_id())
+        parent_hwnd = int(ctypes.windll.user32.GetParent(child_hwnd))
+        hwnd = parent_hwnd or child_hwnd
+        image_icon = 1
+        load_from_file = 0x0010
+        wm_seticon = 0x0080
+        handles = []
+        for size, slot in ((16, 0), (32, 1)):
+            handle = ctypes.windll.user32.LoadImageW(
+                None,
+                str(icon_path),
+                image_icon,
+                size,
+                size,
+                load_from_file,
+            )
+            if handle:
+                ctypes.windll.user32.SendMessageW(hwnd, wm_seticon, slot, handle)
+                handles.append(handle)
+        if handles:
+            # Windows needs these handles to remain alive for the lifetime of the window.
+            window._wwbs_native_icon_handles = handles
+            return True
+    except Exception:
+        pass
+    return False
 THEME_CONFIG = APP_DIR / "theme-settings.json"
 PET_CONFIG = APP_DIR / "pet-settings.json"
 PET_DISPLAY_CONFIG = APP_DIR / "pet-display-settings.json"
 COMBAT_CONFIG = APP_DIR / "combat-settings.json"
+DAILY_CONFIG = APP_DIR / "daily-settings.json"
+UI_CONFIG = APP_DIR / "ui-settings.json"
+APP_SETTINGS_CONFIG = APP_DIR / "app-settings.json"
+CARTETHYIA_AGENT_CONFIG = APP_DIR / "cartethyia-agent-settings.json"
 DANIYA_THEME_PACK = APP_DIR / "optional-themes" / "daniya-theme.wwbstheme"
 AEMEATH_THEME_PACK = APP_DIR / "optional-themes" / "aemeath-theme.wwbstheme"
+JINGRAN_THEME_PACK = APP_DIR / "optional-themes" / "jingran-theme.wwbstheme"
+CARTETHYIA_THEME_PACK = APP_DIR / "optional-themes" / "cartethyia-theme.wwbstheme"
 UPDATE_API_URL = "https://api.github.com/repos/ybpan34-prog/WWBS/releases/latest"
 UPDATE_ASSET_NAME = "wwbs-exe.zip"
 ABOUT_BILIBILI_URL = "https://www.bilibili.com/video/BV1aPuo6uE9r/"
@@ -63,6 +168,158 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    ("v1.5.1", """v1.5.1 更新内容
+- 新增 SillyTavern 酒馆桥接扩展和四位桌宠角色卡，保留角色剧情与项目原有后续关系设定。
+- 桌宠 Agent 增加 DeepSeek API 与 OpenAI 兼容 API；填写密钥后获取服务模型，在下拉框直接选择。
+- 增加本机模型检测：发现 Ollama、LM Studio 常用本地服务与默认模型目录，区分可用模型和需启动服务的模型。
+- 检测结果可直接选用并填入连接信息，模型名仍可手动填写；原有 Ollama 设置保持兼容。
+- API Key 仅在本次运行中保留，不写入配置文件；API 模式不会发送 Ollama 预热或卸载请求。
+- 聊天输入框显示历史消息，桌宠右键可查看记录；按角色在本机保留最近500条，重启后仍可查看。
+- 开启 Agent 时停止随机自言自语，只回复聊天与任务消息；关闭后恢复原有主动发言。
+- 4C“30次”入口改为自定义次数，自动记住上次输入；保留10次快捷入口。
+- 移除面向用户的 ADB、设备ID、任务配置路径与调试工具控件，内部使用默认配置。
+- 周常识别“已达到上限”后返回主页、关闭游园并返回周度游历；从右向左选择带红点的发光宝箱，领取后确认对勾，跳过已领取宝箱。
+- 一键日常改为在索拉指南左侧栏精确识别交叉武器“战斗”按钮，新手日志等额外入口不会再造成固定位置错点。
+- 修复索拉指南记住上次“素材获取”页面时，一键日常误以为活跃度已完成并跳过无音区的问题。
+- 进入“战斗”分类后按文字定位并复核“无音清剿”子菜单，避免固定点击落在行边缘。
+- 修复圆角下拉菜单贴近屏幕底部时跑出可视区域并拦截其他控件；现可向上展开、点外部关闭。
+- 快捷任务卡拖动时跟随光标显示，列表保留落点提示；左侧三点使用小手光标。
+- 4C技能、大招、日常回血和完成后关机移动到开始页左侧任务设置；移除“保存键位”按钮，修改后自动保存并在重启后恢复。
+- 修复绿色结晶材料已消耗但体力仍不足时不继续黄色材料的问题；补充窗口仍存在就继续第二种安全材料，始终不使用星声。
+- 4C 和日常战斗改为每10秒尝试施放大招，持续普攻每10次穿插一次长按重击；三号位按Q前后增加收招时间，避免过早切人。
+- “快捷任务”页改为圆角整行可点击卡片、细滚动条、扁平导航与紧凑状态栏；右侧实时截图和运行状态分卡呈现，预览缩小，主题颜色保持不变。
+- 更新器修复中文路径脚本编码；安装前校验并解压完整运行库，替换前备份，失败保留日志并尝试回滚，不覆盖用户配置和聊天记录。
+"""),
+    ("v1.5.0", """v1.5.0 更新内容
+- 新增卡提希娅Q版桌宠、专属冰蓝潮汐主题、16向鼠标注视和完整人格对话，桌宠与程序主题可独立切换。
+- 本地 Agent 正式扩展到达妮娅、爱弥斯、景燃与卡提希娅；右键桌宠即可聊天，四位分别载入自己的完整人格并用桌宠气泡回复。
+- 支持用明确自然语言启动日常、周常、周常星声、4C、停止与诊断白名单任务，回复会明确说明正在执行的目标。
+- 桌宠聊天可安全修改三号位回血、任务完成自动关机，以及景燃/卡提希娅的盯鼠标和定时跳跃开关。
+- 新增“任务正常完成后自动关机”选项，默认关闭；手动停止、执行失败和预演不会关机，触发时保留30秒取消时间。
+- 输入框打开时后台预热 Ollama 模型，移除发送后的等待占位气泡；连续聊天复用模型60秒，自动任务开始前立即释放显存。
+- “你是谁”“年龄多少”等稳定角色事实改为专属本地回答，避免小模型把不同问题重复成同一句或编造年龄。
+- 景燃与卡提希娅新增鼠标注视、定时向前跳跃及右键开关；空中持续保持跳跃姿态，落地蹲姿延长并轻微缩小。
+- 修复四款桌宠所有大小档位的透明边缘与缩放毛边，并修复长角色名气泡徽章遮挡。
+- 修复一键日常结束后的周常页面判断，未进入周度游历页时按本周已完成处理，不再误报。
+"""),
+    ("v1.4.13", """v1.4.13 更新内容
+- 本地 Agent 扩展到达妮娅、爱弥斯、景燃与卡提希娅四位桌宠；四位均可从右键菜单直接聊天，并通过自己的桌宠气泡回复。
+- 四位桌宠分别载入历史版本中已经建立的人格文本，聊天时不会串角色；达妮娅补齐完整的系统、角色、性格与对话四层提示词。
+- 为四位桌宠分别制作日常、周常、周常星声、4C、停止与诊断回复，任务气泡会明确说明正在处理的目标。
+- 聊天输入框会随当前角色切换专属配色、标题与开场提示；四位共享同一套 Ollama 地址、模型和显存释放策略。
+"""),
+    ("v1.4.12", """v1.4.12 更新内容
+- 将系统默认聊天输入框替换为卡提希娅冰蓝主题对话框，使用完整中文标题与“发送/取消”按钮，支持回车发送、Shift+Enter换行，并自动显示在桌宠附近。
+- 优化 qwen3:4b 回复速度：关闭思考模式、限制短回复长度、缩短短期历史，并让连续聊天复用模型60秒。
+- 首次聊天以及模型重新载入时，都会自动携带完整的卡提希娅角色设定；连续聊天保留最近三轮上下文。
+- 日常、周常与4C等任务开始前仍会立即卸载模型，避免与《鸣潮》争抢显存；连接检测结束后同样立即释放。
+"""),
+    ("v1.4.11", """v1.4.11 更新内容
+- 本地 Agent 每次回复后立即卸载 Ollama 模型，执行日常、周常、4C等任务前也会再次释放，避免与《鸣潮》争抢显存。
+- 移除独立的 Agent 聊天窗口和设置页“打开聊天”按钮；现在从卡提希娅桌宠右键选择聊天，输入后由桌宠气泡直接回复。
+- 调整任务指令回复，使卡提希娅明确说出正在执行的日常、周常、星声或4C目标，不再使用含糊的通用开场白。
+"""),
+    ("v1.4.10", """v1.4.10 更新内容
+- 修复 qwen3.5:9b 等大型本地模型首次冷启动时，检测按钮20秒即误报 timed out 的问题；检测与聊天现在最多等待180秒。
+- Ollama 对话成功后让模型保持热加载30分钟，减少连续聊天时反复载入造成的等待。
+- 本地 Agent 超时提示改为中文，并明确给出首次加载、内存和小模型排查建议。
+- 卡提希娅聊天窗口改为微信风格：角色消息左侧白色气泡、用户消息右侧绿色气泡，系统提示居中显示，并支持滚动浏览。
+"""),
+    ("v1.4.9", """v1.4.9 更新内容
+- 新增卡提希娅Q版桌宠、16向鼠标注视、专属台词与冰蓝潮汐主题。
+- 修复四款桌宠在 Windows 透明窗口中的黑边、杂色与缩放边缘模糊，覆盖全部大小档位。
+- 修复单独切换桌宠后被当前主题强制改回的问题，桌宠与程序主题现在可独立选择。
+- 景燃与卡提希娅新增“盯鼠标”和“定时跳跃”开关，设置页与桌宠右键菜单双向同步。
+- 跳跃会沿当前朝向向前腾空，空中保持跳跃动画，接地后播放落地缓冲动作。
+- 定时跳跃首次使用默认开启，每45至90秒尝试触发一次；已经保存的开关选择保持不变。
+- 精简桌宠右键菜单，移除“检测游戏窗口”；主程序原有窗口检测功能保持不变。
+- 完善卡提希娅人格、分级称呼、亲密与守护对话，并严格区分日常卡提希娅与低频芙露德莉斯形态。
+- 重做景燃人格与对话：强化寻幽客、怪谈讲述、《寻幽记》写作及剧情后的同行者关系，危险时会切换为简短可靠的表达。
+- 提高景燃主动说话频率，双击会立即说出台词；景燃与卡提希娅双击高跳时，腾空阶段固定使用真正的跳跃姿态。
+- 新增卡提希娅本地 Agent 试用：用户可选择是否连接自行部署的 Ollama 兼容模型，通过聊天调用受限的日常、周常、4C、停止与诊断白名单。
+- 修复一键日常结束后的周常检查：未自动进入周度游历页时直接判定周常已完成，不再等待错误页面并报错。
+- 桌宠气泡姓名徽章改为自适应宽度与顶部留白，修复“卡提希娅”等长名字被遮挡。
+"""),
+    ("v1.4.8", """v1.4.8 更新内容
+- 修复日常完成后索拉指南自动切换到周度游历时的衔接超时。
+- 修复日常诊断错误提示缺少 menu1.png，分别检查日常与周常模板。
+- 管理员模式自动重启后跳过更新公告，仅记录“检测到未开启管理员模式，已通过管理员模式打开”。
+- 日常战斗结束检查改为每1秒一次，不再将白色怪物或技能特效作为奖励光球结束信号。
+- 加长目标消失复核间隔；奖励搜索发现清怪目标仍在时恢复战斗，减少误判打断。
+"""),
+    (
+        "v1.4.7",
+        """v1.4.7 更新内容
+- 4C刷取次数调整为10次和30次。
+- 桌宠隐藏状态会自动保存并在下次启动时恢复，自动任务反馈不再强制显示桌宠。
+- 日常战斗新增奖励光球/领取提示结束判定，修复目标文字残留时一直攻击的问题；三号位回血也不再阻塞收尾。
+- 大招改为每5秒检查右下角状态，只在彩色完整亮环就绪时施放；灰蓝完整圈、暗圈、残缺圈和倒计时均不会触发。
+""",
+    ),
+    (
+        "v1.4.6",
+        """v1.4.6 更新内容
+- 新增景燃深色青金主题，使用专属头图与角色台词。
+- 新增景燃Q版桌宠及完整基础动作；空闲动作随机轮播并支持16向视线。
+- 景燃桌宠支持一键日常、周常拿满奖励、周常拿满星声、4C刷取与运行诊断。
+- 原版简约主题保持默认，选择桌宠不再连带修改程序主题。
+""",
+    ),
+    (
+        "v1.4.5",
+        """v1.4.5 更新内容
+- 任务执行报错且检测到程序未使用管理员权限时，自动请求管理员权限并重启。
+- 修复部分 Windows 环境中底部任务栏仍显示 Tk 羽毛图标的问题。
+- 4C刷取按钮固定使用内置4C模板，不再需要手动切换模板组。
+- 日常奖励光球最低置信度由0.25提高到0.65，减少误判。
+- 周本祝福只以“＋ / 选择祝福”判断空槽；任意已装备祝福均可直接开始，不再要求第一个祝福。
+""",
+    ),
+    (
+        "v1.4.4",
+        """v1.4.4 更新内容
+- 活跃度已满时跳过无音区，但仍会继续检查并执行尚未完成的周度游历。
+- 修复“＋ / 选择祝福”空槽被误判为已有技能的问题，单独周常与日常衔接周常均生效。
+""",
+    ),
+    (
+        "v1.4.3",
+        """v1.4.3 更新内容
+- 一键日常完成领奖后会检查周度游历，未完成时自动进入幻梦游园并执行15轮周常。
+- 一键日常、一键周常和4C刷取按钮旁新增圆圈问号，可查看16:9启动页面示例。
+- 修复桌宠及底部任务栏图标显示异常。
+""",
+    ),
+    (
+        "v1.4.2",
+        """v1.4.2 更新内容
+1. 修复第二轮挑战结束后点击“退出副本”，卡在“确认离开”二次提示的问题。
+2. 程序会验证中央白色弹窗与左右两个黑色按钮同时存在，再点击右侧“确认”。
+3. 未出现二次提示时不会盲点固定坐标，会继续按原流程等待返回大世界。
+4. 修复补充体力界面加载稍慢时未识别绿色结晶单质为0、没有及时切换黄色结晶溶剂的问题。
+5. 进入补充界面后会多帧确认资源数量；绿色为0或确认后仍停留在补充界面时立即改用黄色，仍绝不选择星声。""",
+    ),
+    (
+        "v1.4.1",
+        """v1.4.1 更新内容
+1. 修复日常战斗结束后镜头过低、水平转向仍找不到奖励光球的问题。
+2. 奖励搜索改为分层扫描：先保持当前高度寻找，连续未找到才逐级抬高，最后恢复初始高度，避免正常视角被抬得过高。
+3. 设置页新增“日常战斗回血”，默认关闭；开启后定时切换三号位执行回血连段，并自动切回一号位继续战斗。
+4. 日常回血会暂停一号位持续普攻，连段完成后再恢复，避免角色切换期间产生误操作。""",
+    ),
+    (
+        "v1.4.0",
+        """v1.4.0 更新内容
+1. “一键日常”转为正式功能：滑动选择指定无音区，自动完成两轮挑战与双倍领取。
+2. 体力不足时仅按顺序使用结晶单质、结晶溶剂；绿色资源为0或补充后仍不足时自动改用溶剂，绝不消耗星声。
+3. 优化无音区列表滚动、进入战斗后一号位确认、战斗结束复核、奖励光球搜索与靠近逻辑。
+4. 奖励光球最低置信度提高至0.65；靠近后置信度未提升会立即转向重新寻找。
+5. 自动领取活跃度100宝箱及先约电台免费奖励，并完善大世界、终端与页面切换确认。
+6. 优化日常流程的界面识别区域与轮询速度，识别成功后立即执行下一步，同时保留加载超时保护。
+7. 改进4C声骸搜索与吸收验证，排除广告牌等相似目标，并在目标停滞时主动换向。
+8. 修复角色开大时误判战斗结束，以及全局 Ctrl + Alt + S 停止快捷键失效的问题。
+9. 桌宠可直接启动周常拿满奖励、周常拿满星声和一键日常。""",
+    ),
     (
         "v1.3.9",
         """v1.3.9 更新内容
@@ -144,10 +401,8 @@ UPDATE_HISTORY = [
 ]
 LOCAL_TZ = timezone(timedelta(hours=8))
 PREVIEW_ASPECT = 16 / 9
-PREVIEW_MAX_HEIGHT = 520
-PREVIEW_MIN_HEIGHT = 320
-START_CONTENT_SIDE_PADDING = 28
-ACTION_PANEL_WIDTH = 360
+PREVIEW_MAX_HEIGHT = 300
+PREVIEW_MIN_HEIGHT = 170
 THEME_BANNER_HEIGHT = 176
 STOP_HOTKEY_ID = 0xB136
 STOP_HOTKEY_LABEL = "Ctrl + Alt + S"
@@ -155,6 +410,8 @@ MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_NOREPEAT = 0x4000
 VK_S = 0x53
+VK_CONTROL = 0x11
+VK_ALT = 0x12
 WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
 CLICK_EDGE_MARGIN_RATIO = 0.10
@@ -162,6 +419,7 @@ CLICK_JITTER_RATIO = 0.25
 CLICK_DELAY_JITTER_SECONDS = 0.20
 CYCLE_MAX_MISSES = 5
 CYCLE_FALLBACK_MISS_COUNTS = (2, 4)
+DAILY_REWARD_ORB_MIN_CONFIDENCE = 0.65
 CYCLE_FINAL_MAX_RETRIES = 2
 DIAGNOSTIC_START_TEMPLATE = "menu1.png"
 FONT_FAMILY = "Microsoft YaHei UI"
@@ -205,6 +463,32 @@ AEMEATH_COLORS = {
     "danger": "#c84e78",
     "preview": "#252336",
 }
+JINGRAN_COLORS = {
+    "app_bg": "#0a1117",
+    "panel": "#101a22",
+    "panel_alt": "#15232c",
+    "line": "#31515c",
+    "line_soft": "#243a43",
+    "text": "#edf4f4",
+    "muted": "#9ab0b5",
+    "primary": "#42c8dc",
+    "primary_hover": "#6edbe8",
+    "danger": "#d17a58",
+    "preview": "#050a0f",
+}
+CARTETHYIA_COLORS = {
+    "app_bg": "#edf4ff",
+    "panel": "#f9fbff",
+    "panel_alt": "#e3edfb",
+    "line": "#9db6d8",
+    "line_soft": "#cbd9ec",
+    "text": "#1c2c4a",
+    "muted": "#587096",
+    "primary": "#315faf",
+    "primary_hover": "#4778ca",
+    "danger": "#9d5366",
+    "preview": "#09152b",
+}
 THEME_DEFINITIONS = {
     "daniya": {
         "pack": DANIYA_THEME_PACK,
@@ -230,12 +514,37 @@ THEME_DEFINITIONS = {
         "banner_muted": "#8a5d77",
         "focus_y": 0.24,
     },
+    "jingran": {
+        "pack": JINGRAN_THEME_PACK,
+        "manifest_id": "jingran-cyan-night",
+        "name": "景燃主题",
+        "colors": JINGRAN_COLORS,
+        "banner_title": "景燃",
+        "banner_subtitle": "行于阴阳未判之处，踏遍祸福未卜之途，借阴路而行，自也向死地而生。",
+        "banner_overlay": (3, 9, 15, 72),
+        "banner_text": "#f3f7f4",
+        "banner_muted": "#b9eaf0",
+        "focus_y": 0.48,
+    },
+    "cartethyia": {
+        "pack": CARTETHYIA_THEME_PACK,
+        "manifest_id": "cartethyia-fate-tide",
+        "name": "卡提希娅主题",
+        "colors": CARTETHYIA_COLORS,
+        "banner_title": "卡提希娅",
+        "banner_subtitle": "“即便身处命运的漩涡，我也有想要坚持的事。”——卡提希娅",
+        "banner_overlay": (4, 16, 42, 92),
+        "banner_text": "#f8fbff",
+        "banner_muted": "#d9e8ff",
+        "focus_y": 0.43,
+    },
 }
 PET_DEFINITIONS = {
     "daniya": {
         "name": "达妮娅",
         "frames": APP_DIR / "pet-assets" / "pink-lace-chibi" / "frames",
         "scale": 1.15,
+        "alpha_cutoff": 128,
         "event_line": daniya_event_line,
         "idle_line": daniya_idle_line,
         "bubble_palette": {},
@@ -244,6 +553,7 @@ PET_DEFINITIONS = {
         "name": "爱弥斯",
         "frames": APP_DIR / "pet-assets" / "aemeath-chibi" / "frames-sharp",
         "scale": 1.0,
+        "alpha_cutoff": 128,
         "event_line": aemeath_event_line,
         "idle_line": aemeath_idle_dialogue,
         "welcome_dialogue": aemeath_welcome_dialogue,
@@ -258,8 +568,126 @@ PET_DEFINITIONS = {
             "text": "#54384f",
         },
     },
+    "jingran": {
+        "name": "景燃",
+        "frames": APP_DIR / "pet-assets" / "jingran-chibi" / "frames",
+        "look_spritesheet": APP_DIR / "pet-assets" / "jingran-chibi" / "spritesheet.webp",
+        "scale": 1.0,
+        "alpha_cutoff": 128,
+        "event_line": jingran_event_line,
+        "idle_line": jingran_idle_line,
+        "welcome_dialogue": jingran_welcome_dialogue,
+        "bubble_palette": {
+            "shadow": "#071015",
+            "body": "#111d25",
+            "outline": "#4ac8d8",
+            "badge": "#b99455",
+            "badge_outline": "#d2b273",
+            "ornament": "#60d8e6",
+            "ornament_outline": "#2b9eb0",
+            "text": "#edf7f7",
+        },
+    },
+    "cartethyia": {
+        "name": "卡提希娅",
+        "frames": APP_DIR / "pet-assets" / "cartethyia-chibi" / "frames",
+        "look_spritesheet": APP_DIR / "pet-assets" / "cartethyia-chibi" / "spritesheet.webp",
+        "scale": 1.0,
+        "alpha_cutoff": 128,
+        "event_line": cartethyia_event_line,
+        "idle_line": cartethyia_idle_line,
+        "welcome_dialogue": cartethyia_welcome_dialogue,
+        "bubble_palette": {
+            "shadow": "#17233d",
+            "body": "#f8fbff",
+            "outline": "#6687c7",
+            "badge": "#315baf",
+            "badge_outline": "#d1b978",
+            "ornament": "#7fc9ee",
+            "ornament_outline": "#3e75bb",
+            "text": "#24324e",
+        },
+    },
 }
+
+PET_AGENT_PROMPT_LAYERS = {
+    "daniya": (daniya_system_prompt, daniya_character_prompt, daniya_personality_prompt, daniya_dialogue_prompt),
+    "aemeath": (aemeath_system_prompt, aemeath_character_prompt, aemeath_personality_prompt, aemeath_dialogue_prompt),
+    "jingran": (jingran_system_prompt, jingran_character_prompt, jingran_personality_prompt, jingran_dialogue_prompt),
+    "cartethyia": (
+        cartethyia_system_prompt,
+        cartethyia_character_prompt,
+        cartethyia_personality_prompt,
+        cartethyia_dialogue_prompt,
+    ),
+}
+
+PET_AGENT_FALLBACKS = {
+    "daniya": daniya_respond_to_user,
+    "aemeath": lambda message: aemeath_respond_to_user(message).text,
+    "jingran": lambda message: jingran_respond_to_user(message).text,
+    "cartethyia": lambda message: cartethyia_respond_to_user(message).text,
+}
+
+AGENT_TASK_LABELS = {
+    "run_daily": "一键日常（2轮双倍）",
+    "run_weekly_rewards": "周常拿满奖励（15轮）",
+    "run_weekly_astrite": "周常拿满星声（13轮）",
+    "run_4c_10": "4C刷取（10次）",
+    "run_4c_30": "4C刷取（30次）",
+    "stop_task": "停止当前任务",
+    "diagnose": "运行诊断",
+}
+
+PET_AGENT_DIALOG_THEMES = {
+    "daniya": {
+        "background": "#fff3fa", "header": "#f7dbea", "title": "#713954", "muted": "#9b6480",
+        "border": "#df8fbc", "editor": "#fffafd", "accent": "#d75f9d", "accent_active": "#bd4f89",
+        "cancel": "#f3e1eb", "cancel_text": "#765469", "subtitle": "嗯……想和我说什么？",
+    },
+    "aemeath": {
+        "background": "#f5fbff", "header": "#e4f6fb", "title": "#365b76", "muted": "#668ba2",
+        "border": "#70ddeb", "editor": "#ffffff", "accent": "#d75f9d", "accent_active": "#bd4f89",
+        "cancel": "#e3f2f7", "cancel_text": "#4e7187", "subtitle": "漂泊者，今天想和我聊什么？",
+    },
+    "jingran": {
+        "background": "#101a22", "header": "#162732", "title": "#edf7f7", "muted": "#8db3ba",
+        "border": "#4ac8d8", "editor": "#1b2b35", "accent": "#b99455", "accent_active": "#9f7b40",
+        "cancel": "#243640", "cancel_text": "#c2d7d9", "subtitle": "有话直说，我听着。",
+    },
+    "cartethyia": {
+        "background": "#eef7ff", "header": "#dceeff", "title": "#173d6b", "muted": "#56779d",
+        "border": "#8ab9e8", "editor": "#ffffff", "accent": "#4a91d2", "accent_active": "#397fbe",
+        "cancel": "#e5eef7", "cancel_text": "#476582", "subtitle": "义人，想和我说些什么？",
+    },
+}
+
 COLORS = dict(SIMPLE_COLORS)
+
+# “一键日常”无音区使用精确名称匹配。相似名称（尤其荒石高地 I / II）
+# 必须各自对应独立模板，避免滑动列表时误点相邻条目。
+DAILY_ZONE_TEMPLATES = {
+    "方擎西峰无音区": "zone_fangqing_xifeng.png",
+    "玄幽东岳无音区": "zone_xuanyou_dongyue.png",
+    "落日堤屿无音区": "zone_luori_diyu.png",
+    "冰原运输港无音区": "zone_bingyuan_yunshugang.png",
+    "加拉尔冠阶无音区": "zone_jialaer_guanxie.png",
+    "隐喙深腹无音区": "zone_yinhui_shenfu.png",
+    "陷足流川无音区": "zone_xianzu_liuchuan.png",
+    "哀恸谷无音区": "zone_aitong_gu.png",
+    "贝奥海域无音区": "zone_beiao_haiyu.png",
+    "黎乔利群岛无音区": "zone_liqiaoli_qundao.png",
+    "榄生半岛无音区": "zone_lansheng_bandao.png",
+    "悲叹墓岛无音区": "zone_beitan_mudao.png",
+    "中曲台地无音区": "zone_zhongqu_taidi.png",
+    "荒石高地无音区 I": "zone_huangshi_gaodi_1.png",
+    "虎口山脉无音区": "zone_hukou_shanmai.png",
+    "怨鸟泽无音区": "zone_yuanniao_ze.png",
+    "归墟港市无音区": "zone_guixu_gangshi.png",
+    "荒石高地无音区 II": "zone_huangshi_gaodi_2.png",
+    "无光之森无音区": "zone_wuguang_zhisen.png",
+}
+DAILY_ZONE_NAMES = tuple(DAILY_ZONE_TEMPLATES)
 
 
 @dataclass
@@ -390,19 +818,29 @@ class AdbClient:
 class TaskRunner:
     ATTACK_CLICK_INTERVAL = 0.150
     MAIN_ATTACK_CLICK_INTERVAL = ATTACK_CLICK_INTERVAL
+    HEAVY_ATTACK_EVERY = 10
+    HEAVY_ATTACK_HOLD_MS = 800
     MAIN_Q_INTERVAL = 20.0
-    MAIN_ULTIMATE_INTERVAL = 20.0
+    COMBAT_ULTIMATE_INTERVAL = 10.0
+    ULTIMATE_INDICATOR_REGION = (0.755, 0.74, 0.875, 0.95)
+    ULTIMATE_RING_MIN_SATURATION = 0.27
+    ULTIMATE_RING_MIN_COLOR_COVERAGE = 0.30
+    ULTIMATE_RING_MIN_BRIGHTNESS = 0.58
     HEAL_ROTATION_INTERVAL = 9.0
     HEAL_SWITCH_SETTLE_DELAY = 2.0
     HEAL_ATTACK_CLICK_INTERVAL = ATTACK_CLICK_INTERVAL
     HEAL_RETURN_DELAY = 1.0
-    HEAL_Q_TO_RETURN_DELAY = 0.12
+    HEAL_ATTACK_TO_Q_DELAY = 0.30
+    HEAL_Q_TO_RETURN_DELAY = 0.80
     REWARD_INITIAL_CHECK_DELAY = 0.15
     REWARD_SEARCH_TURN_PIXELS = 950
     REWARD_SEARCH_TIMEOUT = 90.0
     EMPTY_HEALTH_CONFIRMATIONS = 3
     EMPTY_HEALTH_CONFIRMATION_INTERVAL = 0.15
-    BOSS_HEADER_CHECK_INTERVAL = 2.0
+    BOSS_HEADER_CHECK_INTERVAL = 0.5
+    DAILY_BATTLE_END_CHECK_INTERVAL = 1.0
+    DAILY_TASK_MISSING_CONFIRMATIONS = 3
+    DAILY_TASK_MISSING_CONFIRMATION_INTERVAL = 0.75
     ABSORB_PROMPT_TEMPLATES = ("absorb_prompt_dark.png", "absorb_prompt.png")
     ABSORB_TEXT_CROPS = {
         "absorb_prompt_dark.png": (130, 19, 198, 69),
@@ -418,6 +856,9 @@ class TaskRunner:
         max_cycles: int | None = None,
         combat_skill_key: str = "E",
         combat_ultimate_key: str = "R",
+        daily_zone_name: str = "",
+        daily_heal_enabled: bool = False,
+        notice=None,
     ):
         self.controller = controller
         self.log = log
@@ -426,12 +867,30 @@ class TaskRunner:
         self.max_cycles = max_cycles
         self.combat_skill_key = combat_skill_key
         self.combat_ultimate_key = combat_ultimate_key
+        self.daily_zone_name = daily_zone_name
+        self.daily_heal_enabled = bool(daily_heal_enabled)
+        self.notice = notice or (lambda _message: None)
         self.matcher = TemplateMatcher(TEMPLATES_DIR)
         self.template_root = TEMPLATES_DIR
         self.debug_matches = False
         self.last_clicked_image_step: Step | None = None
+        self._weekly_monitoring = False
+        self.weekly_rewards_pending = False
 
     def run_task(self, task: WeeklyTask) -> None:
+        self._weekly_monitoring = task.template_group == "default" and task.name == DEFAULT_GROUP_NAME
+        try:
+            if self._weekly_monitoring and not self.dry_run:
+                screenshot = APP_DIR / "_runtime_screenshot.png"
+                self._capture_for_matching(screenshot)
+                self._check_weekly_cap(screenshot)
+            self._run_task_impl(task)
+        except WeeklyLimitReached:
+            self.log("周常已达到本周上限，已结束循环并返回周度游历。")
+        finally:
+            self._weekly_monitoring = False
+
+    def _run_task_impl(self, task: WeeklyTask) -> None:
         group_dir = TEMPLATES_DIR / task.template_group if task.template_group != "default" else TEMPLATES_DIR
         if not group_dir.exists():
             raise FileNotFoundError(f"模板组不存在: {task.template_group}")
@@ -439,6 +898,9 @@ class TaskRunner:
         self.matcher.templates_dir = group_dir
         self.log(f"使用模板组: {task.template_group}")
         self.log(f"开始任务: {task.name}")
+        if task.template_group == "default" and task.name == DEFAULT_GROUP_NAME and not self.dry_run:
+            self._wait_for_daily_template("menu1.png", timeout=8.0, threshold=0.78)
+            self._ensure_weekly_skill_selected()
         for index, step in enumerate(task.steps, start=1):
             if self.stop_event.is_set():
                 self.log("收到停止信号，任务已中断。")
@@ -490,6 +952,8 @@ class TaskRunner:
             self._run_visual_navigation(step)
         elif step.action == "combat_4c":
             self._run_4c_combat(step)
+        elif step.action == "daily_routine":
+            self._run_daily_routine(step)
         elif step.action == "swipe":
             if self.dry_run:
                 self.log("    干运行：跳过滑动。")
@@ -517,7 +981,9 @@ class TaskRunner:
             "press_key",
             "press_binding",
             "left_click",
+            "hold_left_button",
             "middle_click",
+            "wheel_at",
             "move_mouse_relative",
             "release_keys",
         )
@@ -530,7 +996,7 @@ class TaskRunner:
             self.log(
                 f"    干运行：计划执行 {cycle_count} 轮；每轮开打先按鼠标中键锁定敌人，"
                 f"再由独立攻击节奏以0.15秒间隔不间断普攻并接近敌人，每10秒按 {skill_key}，"
-                f"一号位每20秒按Q并施放大招 {ultimate_key}；每9秒执行 "
+                f"一号位每20秒按Q，每10秒尝试施放一次 {ultimate_key}；每9秒执行 "
                 "3→等待2秒→技能→空格→左键×3→等待1秒→空格→左键×3→Q→1。"
             )
             return
@@ -566,7 +1032,7 @@ class TaskRunner:
         deadline = started + max(30.0, step.timeout)
         last_skill = started
         last_main_q = started
-        last_main_ultimate = started
+        last_ultimate = started
         last_heal = started
         last_approach = 0.0
         last_header_check = 0.0
@@ -638,9 +1104,15 @@ class TaskRunner:
                         "    每9秒切换三号位：等待2秒→技能→跳跃→普攻三次→"
                         "等待1秒→再次跳跃→普攻三次→Q→切回一号位。"
                     )
-                    self._perform_4c_heal_rotation(skill_key)
+                    if not self._perform_4c_heal_rotation(skill_key):
+                        return
                     last_heal = time.monotonic()
                     attack_enabled.set()
+                    continue
+                if now - last_ultimate >= self.COMBAT_ULTIMATE_INTERVAL:
+                    self.log(f"    一号位定时尝试施放大招：{ultimate_key}。")
+                    self._cast_timed_ultimate(ultimate_key, attack_enabled, attack_lock)
+                    last_ultimate = time.monotonic()
                     continue
                 if now - last_skill >= 10.0:
                     self.log(f"    一号位施放技能：{skill_key}。")
@@ -650,10 +1122,6 @@ class TaskRunner:
                     self.log("    一号位额外施放 Q。")
                     self.controller.press_key("Q", 65)
                     last_main_q = time.monotonic()
-                if now - last_main_ultimate >= self.MAIN_ULTIMATE_INTERVAL:
-                    self.log(f"    一号位施放大招：{ultimate_key}。")
-                    self.controller.press_binding(ultimate_key, 65)
-                    last_main_ultimate = time.monotonic()
                 if now - last_approach >= 0.75:
                     self.controller.press_keys(("W",), 90)
                     last_approach = time.monotonic()
@@ -694,6 +1162,7 @@ class TaskRunner:
         attack_lock: threading.Lock,
     ) -> None:
         """Attack on its own clock so screenshots and movement never form click bursts."""
+        attack_count = 0
         while not attack_finished.is_set() and not self.stop_event.is_set():
             if not attack_enabled.wait(timeout=0.05):
                 continue
@@ -702,45 +1171,1416 @@ class TaskRunner:
             try:
                 with attack_lock:
                     if attack_enabled.is_set():
-                        self.controller.left_click()
+                        attack_count += 1
+                        if attack_count % self.HEAVY_ATTACK_EVERY == 0:
+                            self.controller.hold_left_button(self.HEAVY_ATTACK_HOLD_MS)
+                        else:
+                            self.controller.left_click()
             except Exception as exc:
                 self.log(f"    一号位持续普攻失败：{exc}")
                 self.stop_event.set()
                 return
             attack_finished.wait(self.MAIN_ATTACK_CLICK_INTERVAL)
 
+    def _run_daily_routine(self, step: Step) -> None:
+        """Run the two-round daily tacet-field flow with optional healing."""
+        required = (
+            "press_keys",
+            "press_key",
+            "press_binding",
+            "left_click",
+            "hold_left_button",
+            "middle_click",
+            "move_mouse_relative",
+            "release_keys",
+        )
+        if any(not hasattr(self.controller, name) for name in required):
+            raise RuntimeError("一键日常目前只支持 PC 客户端窗口。")
+        template_name = DAILY_ZONE_TEMPLATES.get(self.daily_zone_name)
+        if not template_name:
+            raise RuntimeError("请先在开始页滑动选择要挑战的无音区。")
+        if self.dry_run:
+            self.log(
+                f"    干运行：将精确寻找“{self.daily_zone_name}”，完成两轮战斗与双倍领取，"
+                "随后领取活跃度与先约电台奖励；周度游历未完成时继续执行15轮幻梦游园。"
+            )
+            return
+
+        skill_key = self.controller.normalize_input_binding(self.combat_skill_key)
+        ultimate_key = self.controller.normalize_input_binding(self.combat_ultimate_key)
+        self.log(f"    一键日常目标：{self.daily_zone_name}。")
+        self.log(
+            "    日常三号位回血已开启。"
+            if self.daily_heal_enabled
+            else "    日常三号位回血未开启，仅使用一号位战斗。"
+        )
+        try:
+            if not self._open_daily_tacet_field(template_name):
+                completed_message = "今日日常已经完成，不再挑战无音区。"
+                self.log(f"    【提示】检测到索拉指南已自动跳过活跃度页面，{completed_message}")
+                self.notice(completed_message)
+                self._continue_daily_from_open_guide_page()
+                self.log("    日常已完成后的周度游历检查结束。")
+                return
+            for cycle_index in (1, 2):
+                if self.stop_event.is_set():
+                    return
+                self.log(f"    === 一键日常第 {cycle_index}/2 轮 ===")
+                while not self.stop_event.is_set():
+                    self._run_daily_battle(step, skill_key, ultimate_key, cycle_index)
+                    if self.stop_event.is_set():
+                        return
+                    if self._collect_daily_reward(cycle_index):
+                        break
+                self._wait_for_daily_success(cycle_index)
+                if cycle_index == 1:
+                    self._click_daily_template("restart_challenge.png", "重新挑战", timeout=20.0)
+                    self._click_optional_daily_template(
+                        "insufficient_continue.png",
+                        "体力不足继续提示的确认",
+                        timeout=5.0,
+                    )
+                    self._sleep_interruptible(0.3)
+                else:
+                    self._click_daily_template("exit_instance.png", "退出副本", timeout=20.0)
+                    self._confirm_daily_exit_if_present()
+                    self._sleep_interruptible(0.3)
+            self._collect_daily_activity_rewards()
+            self._collect_daily_battlepass_rewards()
+            self._continue_daily_into_weekly_travel()
+            self.log("    一键日常与自动周常流程完成。")
+        finally:
+            try:
+                self.controller.release_keys(("W", "A", "S", "D", "SPACE", "1", "2", "3", "4"))
+            except Exception as exc:
+                self.log(f"    释放日常任务按键时遇到问题: {exc}")
+
+    def _capture_size(self, screenshot: Path | None = None) -> tuple[Path, int, int]:
+        target = screenshot or (APP_DIR / "_runtime_screenshot.png")
+        self._capture_for_matching(target)
+        with Image.open(target) as captured:
+            width, height = captured.size
+        return target, width, height
+
+    @staticmethod
+    def _daily_exit_confirmation_present(screenshot: Path) -> bool:
+        """Detect the white leave-confirmation panel and its two dark buttons."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+
+        def ratio(
+            box: tuple[float, float, float, float],
+            predicate,
+        ) -> float:
+            left, top, right, bottom = box
+            crop = image[
+                round(height * top):round(height * bottom),
+                round(width * left):round(width * right),
+            ]
+            if crop.size == 0:
+                return 0.0
+            return float(predicate(crop).mean())
+
+        bright_panel = ratio(
+            (0.22, 0.29, 0.78, 0.71),
+            lambda crop: crop.min(axis=2) > 205,
+        )
+        left_dark_button = ratio(
+            (0.24, 0.59, 0.43, 0.68),
+            lambda crop: crop.max(axis=2) < 90,
+        )
+        right_dark_button = ratio(
+            (0.56, 0.59, 0.76, 0.68),
+            lambda crop: crop.max(axis=2) < 90,
+        )
+        return bright_panel > 0.50 and left_dark_button > 0.28 and right_dark_button > 0.28
+
+    def _confirm_daily_exit_if_present(self, timeout: float = 3.0) -> bool:
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            self._capture_for_matching(screenshot)
+            if self._daily_exit_confirmation_present(screenshot):
+                with Image.open(screenshot) as captured:
+                    width, height = captured.size
+                self.log("    已识别“确认离开”二次提示，点击右侧确认。")
+                self.controller.tap(round(width * 0.657), round(height * 0.628))
+                self._sleep_interruptible(0.25)
+                return True
+            if self._overworld_hud_ready(screenshot):
+                return False
+            self._sleep_interruptible(0.10)
+        return False
+
+    def _tap_ratio(self, x_ratio: float, y_ratio: float, pause: float = 1.0) -> None:
+        _screenshot, width, height = self._capture_size()
+        self.controller.tap(round(width * x_ratio), round(height * y_ratio))
+        self._sleep_interruptible(pause)
+
+    def _swipe_ratio(
+        self,
+        x_ratio: float,
+        y_ratio: float,
+        x2_ratio: float,
+        y2_ratio: float,
+        duration_ms: int = 420,
+        pause: float = 0.6,
+    ) -> None:
+        _screenshot, width, height = self._capture_size()
+        start = (round(width * x_ratio), round(height * y_ratio))
+        end = (round(width * x2_ratio), round(height * y2_ratio))
+        if hasattr(self.controller, "screenshot_to_client"):
+            start = self.controller.screenshot_to_client(*start)
+            end = self.controller.screenshot_to_client(*end)
+        self.controller.swipe(*start, *end, duration_ms)
+        self._sleep_interruptible(pause)
+
+    def _find_daily_template(
+        self,
+        template_name: str,
+        *,
+        threshold: float = 0.72,
+        region: tuple[int, int, int, int] | None = None,
+        template_crop: tuple[int, int, int, int] | None = None,
+        scales: list[float] | None = None,
+        screenshot: Path | None = None,
+    ):
+        target = screenshot or (APP_DIR / "_runtime_screenshot.png")
+        if screenshot is None:
+            self._capture_for_matching(target)
+        best = None
+        for scale in scales or self._fast_scales():
+            try:
+                candidate = self.matcher.find_fast(
+                    target,
+                    template_name,
+                    threshold=-1.0,
+                    scale=scale,
+                    region=region,
+                    template_crop=template_crop,
+                )
+            except Exception:
+                continue
+            if best is None or candidate.score > best.score:
+                best = candidate
+            # The controller's first scale is the measured window scale. Once it
+            # already clears the threshold, scanning four nearby scales only adds
+            # seconds without changing the decision.
+            if candidate.score >= threshold:
+                return candidate
+        return best if best is not None and best.score >= threshold else None
+
+    def _wait_for_daily_template(
+        self,
+        template_name: str,
+        *,
+        timeout: float,
+        threshold: float = 0.72,
+        region_ratio: tuple[float, float, float, float] | None = None,
+    ):
+        deadline = time.monotonic() + timeout
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        attempt = 0
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            _path, width, height = self._capture_size(screenshot)
+            region = None
+            if region_ratio is not None:
+                region = (
+                    round(width * region_ratio[0]),
+                    round(height * region_ratio[1]),
+                    round(width * region_ratio[2]),
+                    round(height * region_ratio[3]),
+                )
+            match = self._find_daily_template(
+                template_name,
+                threshold=threshold,
+                region=region,
+                # The controller already knows the exact window scale. Use the
+                # wider scale sweep only occasionally as a compatibility fallback.
+                scales=None if attempt % 5 == 4 else [self._fast_scales()[0]],
+                screenshot=screenshot,
+            )
+            if match is not None:
+                return match
+            attempt += 1
+            self._sleep_interruptible(0.12)
+        if self.stop_event.is_set():
+            raise RuntimeError("一键日常已停止。")
+        raise RuntimeError(f"等待界面元素超时：{template_name}")
+
+    def _click_daily_template(
+        self,
+        template_name: str,
+        label: str,
+        *,
+        timeout: float = 10.0,
+        threshold: float = 0.72,
+        region_ratio: tuple[float, float, float, float] | None = None,
+    ) -> None:
+        match = self._wait_for_daily_template(
+            template_name,
+            timeout=timeout,
+            threshold=threshold,
+            region_ratio=region_ratio,
+        )
+        self.log(f"    已识别{label}，相似度 {match.score:.3f}。")
+        self.controller.tap(*match.center)
+        self._sleep_interruptible(0.18)
+
+    def _click_optional_daily_template(
+        self,
+        template_name: str,
+        label: str,
+        *,
+        timeout: float = 3.0,
+        threshold: float = 0.72,
+    ) -> bool:
+        try:
+            self._click_daily_template(
+                template_name,
+                label,
+                timeout=timeout,
+                threshold=threshold,
+            )
+            return True
+        except RuntimeError:
+            return False
+
+    def _open_terminal_destination(
+        self,
+        label: str,
+        x_ratio: float,
+        y_ratio: float,
+        *,
+        require_transition: bool = False,
+    ) -> None:
+        """Open the terminal from the overworld before entering a daily page."""
+        self._wait_for_overworld_hud(minimum_wait=1.2 if require_transition else 0.0)
+        self.log(f"    大世界按 Esc 打开终端，进入{label}。")
+        self.controller.press_key("ESC", 70)
+        self._sleep_interruptible(0.35)
+        self._tap_ratio(x_ratio, y_ratio, 0.45)
+
+    @staticmethod
+    def _overworld_hud_ready(screenshot: Path) -> bool:
+        """Recognize the normal game HUD and reject black/loading frames."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+
+        def bright_ratio(box: tuple[float, float, float, float]) -> float:
+            left, top, right, bottom = box
+            crop = image[
+                round(height * top):round(height * bottom),
+                round(width * left):round(width * right),
+            ]
+            if crop.size == 0:
+                return 0.0
+            bright = (crop[:, :, 0] > 205) & (crop[:, :, 1] > 205) & (crop[:, :, 2] > 205)
+            return float(bright.mean())
+
+        # Normal overworld HUD simultaneously has top-right menu icons, the party
+        # portraits on the right and action icons at the bottom-right.
+        return (
+            bright_ratio((0.70, 0.025, 0.985, 0.18)) >= 0.012
+            and bright_ratio((0.86, 0.16, 0.985, 0.64)) >= 0.008
+            and bright_ratio((0.72, 0.80, 0.985, 0.985)) >= 0.010
+        )
+
+    def _wait_for_overworld_hud(self, timeout: float = 25.0, minimum_wait: float = 0.0) -> None:
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        started = time.monotonic()
+        deadline = time.monotonic() + timeout
+        confirmations = 0
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            self._capture_for_matching(screenshot)
+            if self._overworld_hud_ready(screenshot):
+                confirmations += 1
+                if confirmations >= 2 and time.monotonic() - started >= minimum_wait:
+                    self.log("    已确认回到大世界。")
+                    return
+            else:
+                confirmations = 0
+            self._sleep_interruptible(0.22)
+        if self.stop_event.is_set():
+            raise RuntimeError("一键日常已停止。")
+        raise RuntimeError("退出副本后未确认回到大世界，已停止以避免在加载界面误按 Esc。")
+
+    @staticmethod
+    def _sola_guide_page_ready(screenshot: Path) -> bool:
+        """Require the stable Sola Guide chrome before classifying its current page."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+        close_button = image[
+            round(height * 0.02):round(height * 0.13),
+            round(width * 0.92):round(width * 0.98),
+        ]
+        if close_button.size == 0:
+            return False
+        return float((close_button.min(axis=2) > 180).mean()) > 0.025
+
+    @staticmethod
+    def _daily_activity_page_present(screenshot: Path) -> bool:
+        """The activity page is dominated by its large pale task rows."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+        task_rows = image[
+            round(height * 0.23):round(height * 0.80),
+            round(width * 0.10):round(width * 0.96),
+        ]
+        if task_rows.size == 0:
+            return False
+        return float((task_rows.min(axis=2) > 170).mean()) > 0.45
+
+    @staticmethod
+    def _weekly_travel_page_present(screenshot: Path) -> bool:
+        """Detect the pale selected weekly-travel tab after activity auto-skips."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+        weekly_tab = image[
+            round(height * 0.13):round(height * 0.19),
+            round(width * 0.255):round(width * 0.41),
+        ]
+        if weekly_tab.size == 0:
+            return False
+        return float((weekly_tab.min(axis=2) > 170).mean()) > 0.18
+
+    def _daily_activity_still_pending(self, timeout: float = 6.0) -> bool:
+        """Return false when Sola Guide skips activity because today's score is full."""
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        deadline = time.monotonic() + timeout
+        confirmations = 0
+        last_state: bool | None = None
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            self._capture_for_matching(screenshot)
+            if not self._sola_guide_page_ready(screenshot):
+                confirmations = 0
+                self._sleep_interruptible(0.15)
+                continue
+            state = self._daily_activity_page_present(screenshot)
+            confirmations = confirmations + 1 if state == last_state else 1
+            last_state = state
+            if confirmations >= 2:
+                return state
+            self._sleep_interruptible(0.15)
+        raise RuntimeError("进入索拉指南后未能确认当前页面，已停止以避免误打无音区。")
+
+    def _open_daily_tacet_field(self, zone_template: str) -> bool:
+        self.log("    打开索拉指南 → 素材获取 → 无音清剿。")
+        self._open_terminal_destination("索拉指南", 0.515, 0.671)
+        if not self._daily_activity_still_pending():
+            screenshot = APP_DIR / "_runtime_screenshot.png"
+            if self._weekly_travel_page_present(screenshot):
+                self.log("    索拉指南自动进入周度游历，今日日常已完成。")
+                return False
+            # The guide may reopen on its previously selected material page.
+            # That page is not evidence that the daily activity is complete.
+            self.log("    索拉指南未停留在活跃度页，尝试切回左侧活跃度入口。")
+            self._tap_ratio(0.04, 0.18, 0.45)
+            if not self._daily_activity_still_pending():
+                if self._weekly_travel_page_present(screenshot):
+                    self.log("    活跃度入口已自动跳转周度游历，今日日常已完成。")
+                    return False
+                raise RuntimeError("索拉指南未显示活跃度或周度游历页面，已停止以避免跳过日常。")
+        self._click_daily_template(
+            "guide_battle_tab.png",
+            "索拉指南左侧战斗按钮",
+            timeout=8.0,
+            threshold=0.78,
+            region_ratio=(0.015, 0.10, 0.095, 0.88),
+        )
+        self._sleep_interruptible(1.0)
+        self._select_daily_tacet_section()
+
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        found = None
+        numbered_huangshi = self.daily_zone_name in {
+            "荒石高地无音区 I",
+            "荒石高地无音区 II",
+        }
+        zone_threshold = 0.97 if numbered_huangshi else 0.90
+        zone_crop = (6, 18, 304, 64) if numbered_huangshi else (6, 18, 190, 64)
+        for page_index in range(32):
+            _path, width, height = self._capture_size(screenshot)
+            found = self._find_daily_template(
+                zone_template,
+                threshold=zone_threshold,
+                region=(round(width * 0.34), round(height * 0.12), round(width * 0.98), round(height * 0.92)),
+                template_crop=zone_crop,
+                scales=[self._fast_scales()[0]],
+                screenshot=screenshot,
+            )
+            if found is not None:
+                if not self._daily_row_button_ready(screenshot, found.center[1]):
+                    wheel_x, wheel_y = round(width * 0.91), round(height * 0.60)
+                    if hasattr(self.controller, "screenshot_to_client"):
+                        wheel_x, wheel_y = self.controller.screenshot_to_client(wheel_x, wheel_y)
+                    self.log(f"    已看到“{self.daily_zone_name}”，等待同一行按钮完整出现。")
+                    if found.center[1] > round(height * 0.68):
+                        self.controller.wheel_at(wheel_x, wheel_y, -360)
+                    self._sleep_interruptible(0.38)
+                    found = None
+                    continue
+                button_x = round(width * 0.895)
+                self._sleep_interruptible(0.32)
+                self.log(
+                    f"    精确找到“{self.daily_zone_name}”（第{page_index + 1}屏，相似度 {found.score:.3f}），"
+                    "点击同一行的直接挑战/前往。"
+                )
+                self.controller.tap(button_x, found.center[1])
+                self._sleep_interruptible(3.0)
+                break
+            wheel_x, wheel_y = round(width * 0.91), round(height * 0.60)
+            if hasattr(self.controller, "screenshot_to_client"):
+                wheel_x, wheel_y = self.controller.screenshot_to_client(wheel_x, wheel_y)
+            self.controller.wheel_at(wheel_x, wheel_y, -720)
+            self._sleep_interruptible(0.28)
+        if found is None:
+            raise RuntimeError(f"无音清剿列表中没有找到“{self.daily_zone_name}”。")
+        self.log("    队伍界面点击“开启挑战”，不修改队伍。")
+        self._tap_ratio(0.86, 0.92, 5.0)
+        return True
+
+    @staticmethod
+    def _guide_tacet_section_selected(screenshot: Path, row_y: int) -> bool:
+        """The selected sidebar row is pale; other material rows are dark."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+        top = max(0, row_y - round(height * 0.03))
+        bottom = min(height, row_y + round(height * 0.03))
+        row = image[top:bottom, round(width * 0.105):round(width * 0.34)]
+        return bool(row.size and float((row.min(axis=2) > 170).mean()) > 0.5)
+
+    def _select_daily_tacet_section(self) -> None:
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        for attempt in range(3):
+            _path, width, height = self._capture_size(screenshot)
+            if self._guide_tacet_section_selected(screenshot, round(height * 0.73)):
+                self.log("    已确认战斗分类中的“无音清剿”处于选中状态。")
+                return
+            match = self._find_daily_template(
+                "guide_tacet_section.png",
+                threshold=0.72,
+                region=(round(width * 0.10), round(height * 0.58),
+                        round(width * 0.36), round(height * 0.88)),
+                scales=[self._fast_scales()[0]],
+                screenshot=screenshot,
+            )
+            if match is None:
+                self._sleep_interruptible(0.4)
+                continue
+            # Click the row center, below the label. Its old hardcoded y=0.695
+            # landed on the upper edge and could leave the wrong category open.
+            click_y = min(height - 1, match.center[1] + round(height * 0.015))
+            self.log(f"    已找到“无音清剿”子菜单（相似度 {match.score:.3f}），点击并复核选中状态。")
+            self._tap_ratio(0.22, click_y / height, 0.65)
+            self._capture_for_matching(screenshot)
+            if self._guide_tacet_section_selected(screenshot, click_y):
+                return
+            self._sleep_interruptible(0.3)
+        raise RuntimeError("战斗分类中未能选中“无音清剿”，已停止以避免点击错误副本。")
+
+    @staticmethod
+    def _daily_row_button_ready(screenshot: Path, row_y: int) -> bool:
+        """Require the dark challenge button to be visible, not hidden by the footer."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+        top = max(0, int(row_y) - round(height * 0.035))
+        bottom = min(height, int(row_y) + round(height * 0.035))
+        left, right = round(width * 0.82), round(width * 0.96)
+        region = image[top:bottom, left:right]
+        if region.size == 0:
+            return False
+        dark = region.max(axis=2) < 75
+        return float(dark.mean()) > 0.12
+
+    def _daily_battle_task_present(self, screenshot: Path) -> bool:
+        with Image.open(screenshot) as captured:
+            width, height = captured.size
+        return self._find_daily_template(
+            "battle_task_text.png",
+            threshold=0.67,
+            region=(0, round(height * 0.15), round(width * 0.43), round(height * 0.42)),
+            scales=[self._fast_scales()[0]],
+            screenshot=screenshot,
+        ) is not None
+
+    def _select_daily_slot_one_after_loading(self, screenshot: Path) -> None:
+        """Wait for the battle HUD before forcing the active character to slot one."""
+        deadline = time.monotonic() + 15.0
+        hud_ready = False
+        while time.monotonic() < deadline:
+            if self.stop_event.is_set():
+                return
+            self._capture_for_matching(screenshot)
+            if self._daily_battle_task_present(screenshot):
+                hud_ready = True
+                break
+            self._sleep_interruptible(0.5)
+        self.controller.press_key("1", 65)
+        self._sleep_interruptible(0.35)
+        if hud_ready:
+            self.log("    战斗界面已加载，按 1 确保当前角色为一号位。")
+        else:
+            self.log("    等待战斗界面超时，仍按 1 强制切换至一号位。")
+
+    def _run_daily_battle(
+        self,
+        step: Step,
+        skill_key: str,
+        ultimate_key: str,
+        cycle_index: int,
+    ) -> None:
+        started = time.monotonic()
+        deadline = started + max(180.0, step.timeout)
+        last_skill = started
+        last_q = started
+        last_ultimate = started
+        last_heal = started
+        last_approach = 0.0
+        last_task_check = 0.0
+        task_seen = False
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        self._select_daily_slot_one_after_loading(screenshot)
+        if self.stop_event.is_set():
+            return
+        self.controller.middle_click()
+        self.log(
+            f"    第{cycle_index}轮：中键锁定后，"
+            f"{'按设置定时切三号位回血' if self.daily_heal_enabled else '仅使用一号位持续战斗'}。"
+        )
+
+        attack_enabled = threading.Event()
+        attack_finished = threading.Event()
+        attack_lock = threading.Lock()
+        attack_enabled.set()
+        attack_worker = threading.Thread(
+            target=self._run_4c_continuous_attack,
+            args=(attack_enabled, attack_finished, attack_lock),
+            name="wwbs-daily-continuous-attack",
+            daemon=True,
+        )
+        attack_worker.start()
+        try:
+            while time.monotonic() < deadline:
+                if self.stop_event.is_set():
+                    return
+                now = time.monotonic()
+                if now - last_task_check >= self.DAILY_BATTLE_END_CHECK_INTERVAL:
+                    self._capture_for_matching(screenshot)
+                    if self._daily_reward_stage_present(screenshot):
+                        attack_enabled.clear()
+                        with attack_lock:
+                            pass
+                        self.controller.release_keys()
+                        self.log("    已识别到领取奖励提示，停止战斗并进入奖励搜索。")
+                        return
+                    present = self._daily_battle_task_present(screenshot)
+                    last_task_check = time.monotonic()
+                    if present:
+                        task_seen = True
+                        if not attack_enabled.is_set():
+                            attack_enabled.set()
+                    elif task_seen:
+                        attack_enabled.clear()
+                        with attack_lock:
+                            pass
+                        self.controller.release_keys()
+                        if self._confirm_daily_battle_finished(screenshot):
+                            self.log("    左侧清理目标文字快速复核后仍消失，进入奖励获取阶段。")
+                            return
+                        attack_enabled.set()
+                        last_task_check = time.monotonic()
+                        continue
+                if (
+                    self.daily_heal_enabled
+                    and task_seen
+                    and now - last_heal >= self.HEAL_ROTATION_INTERVAL
+                ):
+                    attack_enabled.clear()
+                    with attack_lock:
+                        pass
+                    self.controller.release_keys()
+                    self._capture_for_matching(screenshot)
+                    if self._daily_reward_stage_present(screenshot):
+                        self.log("    回血前已识别到奖励阶段，跳过回血并停止战斗。")
+                        return
+                    if not self._daily_battle_task_present(screenshot):
+                        if self._confirm_daily_battle_finished(screenshot):
+                            self.log("    回血前确认战斗已经结束，跳过回血并进入奖励获取阶段。")
+                            return
+                        attack_enabled.set()
+                        last_task_check = time.monotonic()
+                        continue
+                    self.log(
+                        "    日常回血：切换三号位执行技能、跳跃与普攻连段，随后切回一号位。"
+                    )
+                    if not self._perform_4c_heal_rotation(skill_key):
+                        return
+                    last_heal = time.monotonic()
+                    self._capture_for_matching(screenshot)
+                    if self._daily_reward_stage_present(screenshot):
+                        self.log("    回血完成时已识别到奖励阶段，不再恢复持续攻击。")
+                        return
+                    if not self._daily_battle_task_present(screenshot):
+                        if self._confirm_daily_battle_finished(screenshot):
+                            self.log("    回血完成时确认战斗已经结束，停止攻击并进入奖励获取阶段。")
+                            return
+                    attack_enabled.set()
+                    last_task_check = time.monotonic()
+                    continue
+                if now - last_ultimate >= self.COMBAT_ULTIMATE_INTERVAL:
+                    self.log(f"    一号位定时尝试施放大招：{ultimate_key}。")
+                    self._cast_timed_ultimate(ultimate_key, attack_enabled, attack_lock)
+                    last_ultimate = time.monotonic()
+                    continue
+                if now - last_skill >= 10.0:
+                    self.controller.press_binding(skill_key, 65)
+                    last_skill = time.monotonic()
+                if now - last_q >= self.MAIN_Q_INTERVAL:
+                    self.controller.press_key("Q", 65)
+                    last_q = time.monotonic()
+                if now - last_approach >= 0.75:
+                    self.controller.press_keys(("W",), 90)
+                    last_approach = time.monotonic()
+                self._sleep_interruptible(0.025)
+            if not task_seen:
+                raise RuntimeError("没有识别到无音区清理目标文字，请确认已进入无音区挑战。")
+            raise RuntimeError("无音区单轮战斗达到安全时限，已自动停止。")
+        finally:
+            attack_enabled.clear()
+            attack_finished.set()
+            attack_worker.join(timeout=1.0)
+
+    @classmethod
+    def _ultimate_indicator_ready(cls, screenshot: Path) -> bool:
+        """Classify the lower-right ultimate icon without matching character art."""
+        with Image.open(screenshot) as source:
+            frame = np.asarray(source.convert("RGB"))
+        height, width = frame.shape[:2]
+        left, top, right, bottom = cls.ULTIMATE_INDICATOR_REGION
+        crop = frame[
+            round(height * top):round(height * bottom),
+            round(width * left):round(width * right),
+        ]
+        return cls._ultimate_indicator_crop_ready(crop, expected_radius=height * 0.034)
+
+    @classmethod
+    def _ultimate_indicator_crop_ready(
+        cls,
+        crop: np.ndarray,
+        expected_radius: float | None = None,
+    ) -> bool:
+        """Recognize a charged colorful ring while rejecting gray/partial/cooldown rings."""
+        image = np.asarray(crop, dtype=np.float32)
+        if image.ndim != 3 or image.shape[2] < 3:
+            return False
+        image = image[:, :, :3]
+        height, width = image.shape[:2]
+        minimum = min(height, width)
+        if minimum < 40:
+            return False
+
+        maximum = image.max(axis=2)
+        minimum_channel = image.min(axis=2)
+        saturation = (maximum - minimum_channel) / np.maximum(maximum, 1.0)
+        brightness = maximum / 255.0
+        angles = np.linspace(0.0, 2.0 * np.pi, 48, endpoint=False)
+        step = max(2, round(minimum / 40))
+        best: tuple[float, int, int, int] | None = None
+
+        if expected_radius is None:
+            radius_start = max(12, round(minimum * 0.22))
+            radius_stop = max(radius_start + 1, round(minimum * 0.43))
+        else:
+            radius_start = max(12, round(expected_radius * 0.72))
+            radius_stop = max(radius_start + 1, round(expected_radius * 1.28))
+        for radius in range(radius_start, radius_stop + 1, step):
+            for center_y in range(round(height * 0.15), round(height * 0.62) + 1, step):
+                for center_x in range(round(width * 0.25), round(width * 0.75) + 1, step):
+                    ring_values = []
+                    for radius_factor in (0.86, 1.0, 1.14):
+                        xs = np.clip(
+                            np.rint(center_x + np.cos(angles) * radius * radius_factor).astype(int),
+                            0,
+                            width - 1,
+                        )
+                        ys = np.clip(
+                            np.rint(center_y + np.sin(angles) * radius * radius_factor).astype(int),
+                            0,
+                            height - 1,
+                        )
+                        ring_values.append(brightness[ys, xs])
+                    sampled_brightness = np.concatenate(ring_values)
+                    bright_coverage = float((sampled_brightness > 0.55).mean())
+                    glyph_top = min(height, center_y + radius + 1)
+                    glyph_bottom = min(height, center_y + radius + round(radius * 0.8))
+                    glyph_left = max(0, center_x - round(radius * 0.3))
+                    glyph_right = min(width, center_x + round(radius * 0.3))
+                    glyph = brightness[glyph_top:glyph_bottom, glyph_left:glyph_right]
+                    glyph_coverage = float((glyph > 0.75).mean()) if glyph.size else 0.0
+                    score = (
+                        bright_coverage
+                        + 0.35 * glyph_coverage
+                        + 0.20 * float(sampled_brightness.mean())
+                    )
+                    if best is None or score > best[0]:
+                        best = (score, center_x, center_y, radius)
+
+        if best is None:
+            return False
+        _score, center_x, center_y, radius = best
+        yy, xx = np.ogrid[:height, :width]
+        distance = np.sqrt((xx - center_x) ** 2 + (yy - center_y) ** 2)
+        ring = (distance > radius * 0.78) & (distance < radius * 1.18)
+        if not ring.any():
+            return False
+        color_coverage = float(
+            ((brightness > 0.50) & (saturation > 0.25) & ring).sum() / ring.sum()
+        )
+        mean_saturation = float(saturation[ring].mean())
+        mean_brightness = float(brightness[ring].mean())
+        return (
+            color_coverage >= cls.ULTIMATE_RING_MIN_COLOR_COVERAGE
+            and mean_saturation >= cls.ULTIMATE_RING_MIN_SATURATION
+            and mean_brightness >= cls.ULTIMATE_RING_MIN_BRIGHTNESS
+        )
+
+    def _find_daily_reward_prompt(self, screenshot: Path):
+        with Image.open(screenshot) as captured:
+            width, height = captured.size
+        return self._find_daily_template(
+            "reward_prompt.png",
+            threshold=0.72,
+            region=(
+                round(width * 0.38),
+                round(height * 0.35),
+                round(width * 0.96),
+                round(height * 0.80),
+            ),
+            scales=[self._fast_scales()[0]],
+            screenshot=screenshot,
+        )
+
+    def _daily_reward_stage_present(self, screenshot: Path) -> bool:
+        # White enemies and skill effects are not evidence that combat ended.
+        # Colour navigation is only used after the battle-end confirmation.
+        return self._find_daily_reward_prompt(screenshot) is not None
+
+    @staticmethod
+    def _daily_reward_orb_location(screenshot: Path) -> tuple[int | None, int | None, float]:
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+        # Only inspect the 3D scene above the character. This excludes portraits,
+        # skill icons and most text HUD elements that can otherwise look white.
+        top, bottom = round(height * 0.13), round(height * 0.52)
+        left, right = round(width * 0.08), round(width * 0.84)
+        region = image[top:bottom, left:right]
+        red = region[:, :, 0].astype(np.int16)
+        green = region[:, :, 1].astype(np.int16)
+        blue = region[:, :, 2].astype(np.int16)
+        # Reward orb has a dense white core. The blue-black exit portal does not.
+        white = (red > 218) & (green > 218) & (blue > 225) & ((np.maximum.reduce((red, green, blue)) - np.minimum.reduce((red, green, blue))) < 48)
+        if not white.any():
+            return None, None, 0.0
+        block = 28
+        usable_h = (white.shape[0] // block) * block
+        usable_w = (white.shape[1] // block) * block
+        if usable_h < block or usable_w < block:
+            return None, None, 0.0
+        counts = white[:usable_h, :usable_w].reshape(usable_h // block, block, usable_w // block, block).sum(axis=(1, 3))
+        cell_y, cell_x = np.unravel_index(np.argmax(counts), counts.shape)
+        density = float(counts[cell_y, cell_x] / (block * block))
+        if density <= DAILY_REWARD_ORB_MIN_CONFIDENCE:
+            return None, None, density
+        return left + cell_x * block + block // 2, top + cell_y * block + block // 2, density
+
+    def _collect_daily_reward(self, cycle_index: int) -> bool:
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        deadline = time.monotonic() + 75.0
+        previous_forward_confidence: float | None = None
+        search_misses = 0
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            self._capture_for_matching(screenshot)
+            prompt = self._find_daily_reward_prompt(screenshot)
+            target_x, _target_y, density = self._daily_reward_orb_location(screenshot)
+            # A white object must never override evidence of ongoing combat.
+            if (
+                prompt is None
+                and self._daily_battle_task_present(screenshot)
+            ):
+                self.controller.release_keys()
+                self.log("    奖励搜索时发现左侧清理目标文字仍在，判定战斗尚未结束，继续攻击。")
+                return False
+            with Image.open(screenshot) as captured:
+                width, height = captured.size
+            if prompt is not None:
+                self.controller.release_keys()
+                self.controller.press_key("F", 100)
+                self.log(f"    第{cycle_index}轮：识别到“领取奖励”，已按 F。")
+                self._sleep_interruptible(0.2)
+                self._claim_daily_double_reward(cycle_index)
+                return True
+            if target_x is None or density <= DAILY_REWARD_ORB_MIN_CONFIDENCE:
+                search_misses += 1
+                vertical_adjustment = self._daily_reward_vertical_adjustment(search_misses)
+                self.controller.move_mouse_relative(260, vertical_adjustment)
+                if vertical_adjustment < 0:
+                    height_action = "抬高一档并"
+                elif vertical_adjustment > 0:
+                    height_action = "恢复初始高度并"
+                else:
+                    height_action = ""
+                self.log(
+                    f"    奖励光球置信度 {density:.2f} 未超过"
+                    f"{DAILY_REWARD_ORB_MIN_CONFIDENCE:.2f}，"
+                    f"{height_action}向右转动搜索。"
+                )
+                previous_forward_confidence = None
+            elif self._daily_reward_movement_stalled(previous_forward_confidence, density):
+                self.controller.move_mouse_relative(260, 0)
+                self.log(
+                    f"    靠近后光球置信度未提升（{previous_forward_confidence:.2f} → {density:.2f}），"
+                    "停止直走并转向重新寻找。"
+                )
+                previous_forward_confidence = None
+            else:
+                search_misses = 0
+                offset = target_x - width * 0.5
+                if abs(offset) > width * 0.05:
+                    self.controller.move_mouse_relative(int(max(-300, min(300, offset * 0.40))), 0)
+                self.controller.press_keys(("W",), 500)
+                self.log(f"    已定位白色奖励光球（核心密度 {density:.2f}），正在靠近。")
+                previous_forward_confidence = density
+            self._sleep_interruptible(0.22)
+        raise RuntimeError("奖励阶段未找到“领取奖励”提示，已停止以避免误操作。")
+
+    @staticmethod
+    def _daily_reward_movement_stalled(previous: float | None, current: float) -> bool:
+        return previous is not None and current <= previous
+
+    @staticmethod
+    def _daily_reward_vertical_adjustment(search_misses: int) -> int:
+        """Sweep several camera heights and always return to the starting pitch."""
+        phase = max(1, int(search_misses)) % 18
+        if phase in {5, 11}:
+            return -180
+        if phase == 17:
+            return 360
+        return 0
+
+    def _claim_daily_double_reward(self, cycle_index: int) -> None:
+        self._click_daily_template(
+            "double_claim.png",
+            "双倍领取",
+            timeout=12.0,
+            threshold=0.68,
+            region_ratio=(0.50, 0.54, 0.80, 0.75),
+        )
+        state = self._wait_daily_claim_state(8.0)
+        if state == "success":
+            return
+        if state != "refill":
+            raise RuntimeError("点击双倍领取后没有进入奖励或体力补充界面。")
+        self.log("    体力不足：只允许使用结晶单质或结晶溶剂，绝不选择星声。")
+        # A successful resource-consumption toast does not prove that the total
+        # stamina is sufficient. Retry the claim and, if the chooser reopens,
+        # continue with the next safe resource (green -> yellow).
+        for refill_pass in range(2):
+            if not self._safe_refill_daily_stamina():
+                raise RuntimeError("结晶单质和结晶溶剂均不可用，已停止；不会使用星声兑换体力。")
+            self._tap_ratio(0.14, 0.84, 0.35)  # 安全空白，不触碰物品卡。
+            self._click_daily_template(
+                "double_claim.png",
+                "补充体力后的双倍领取",
+                timeout=10.0,
+                threshold=0.68,
+                region_ratio=(0.50, 0.54, 0.80, 0.75),
+            )
+            state = self._wait_daily_claim_state(10.0)
+            if state == "success":
+                return
+            if state == "refill" and refill_pass == 0:
+                self.log("    已使用一种补充材料但体力仍不足，继续选择下一种安全材料。")
+                continue
+            break
+        raise RuntimeError(f"第{cycle_index}轮使用绿色与黄色材料后体力仍不足，已停止且不会使用星声。")
+
+    def _wait_daily_claim_state(self, timeout: float) -> str:
+        deadline = time.monotonic() + timeout
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            self._capture_for_matching(screenshot)
+            with Image.open(screenshot) as captured:
+                width, height = captured.size
+            exact_scale = [self._fast_scales()[0]]
+            if self._find_daily_template(
+                "challenge_success.png",
+                threshold=0.66,
+                region=(round(width * 0.31), round(height * 0.20), round(width * 0.69), round(height * 0.43)),
+                scales=exact_scale,
+                screenshot=screenshot,
+            ):
+                return "success"
+            if self._find_daily_template(
+                "refill_dialog.png",
+                threshold=0.62,
+                region=(round(width * 0.14), round(height * 0.16), round(width * 0.48), round(height * 0.33)),
+                scales=exact_scale,
+                screenshot=screenshot,
+            ):
+                return "refill"
+            self._sleep_interruptible(0.08)
+        return ""
+
+    def _safe_refill_daily_stamina(self) -> bool:
+        # Left and middle cards are the only permitted resources. The star card is
+        # at the right and is never selected, even as a fallback.
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        resources = [("结晶单质", 0.403), ("结晶溶剂", 0.505)]
+        if self._daily_monomer_empty_after_settle(screenshot):
+            self.log("    结晶单质数量为0，跳过绿色卡片，直接使用结晶溶剂。")
+            resources = resources[1:]
+        for label, x_ratio in resources:
+            self.log(f"    尝试使用{label}，数量由游戏自动计算。")
+            self._tap_ratio(x_ratio, 0.455, 0.25)
+            # First confirmation enters the exchange screen; the game has already
+            # calculated the required amount, so never touch its slider or MAX.
+            self._tap_ratio(0.695, 0.745, 0.65)
+            self._tap_ratio(0.695, 0.745, 0.75)
+            state = self._wait_daily_refill_result()
+            if state == "success":
+                self.log(f"    {label}补充成功。")
+                return True
+            if state == "still_short":
+                if label == "结晶单质":
+                    self.log("    使用结晶单质后仍不足，继续改用结晶溶剂。")
+                continue
+            # An unknown screen must not be treated as a successful refill. Doing
+            # so could make the next click land on the forbidden star-currency card.
+            self.log(f"    无法确认{label}补充结果，停止以避免误用星声。")
+            return False
+        self._tap_ratio(0.30, 0.745, 0.5)
+        return False
+
+    def _daily_monomer_empty_after_settle(self, screenshot: Path, timeout: float = 0.7) -> bool:
+        """Wait briefly for the resource counts to finish appearing before deciding."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            self._capture_for_matching(screenshot)
+            if self._daily_monomer_empty(screenshot):
+                return True
+            self._sleep_interruptible(0.10)
+        return False
+
+    @staticmethod
+    def _daily_monomer_empty(screenshot: Path) -> bool:
+        """Detect the red zero at the lower-right of the green resource card."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+        crop = image[
+            round(height * 0.46):round(height * 0.58),
+            round(width * 0.400):round(width * 0.455),
+        ]
+        if crop.size == 0:
+            return False
+        red = crop[:, :, 0].astype(np.int16)
+        green = crop[:, :, 1].astype(np.int16)
+        blue = crop[:, :, 2].astype(np.int16)
+        unavailable_red = (
+            (red > 100)
+            & (green < 125)
+            & (blue < 125)
+            & ((red - green) > 30)
+            & ((red - blue) > 20)
+        )
+        return int(unavailable_red.sum()) >= 4
+
+    @staticmethod
+    def _daily_refill_chooser_present(screenshot: Path) -> bool:
+        """Recognize the refill chooser geometrically when its title template shifts."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+
+        def crop(box: tuple[float, float, float, float]) -> np.ndarray:
+            left, top, right, bottom = box
+            return image[
+                round(height * top):round(height * bottom),
+                round(width * left):round(width * right),
+            ]
+
+        panel = crop((0.17, 0.16, 0.83, 0.80))
+        cards = crop((0.35, 0.34, 0.64, 0.59))
+        buttons = crop((0.20, 0.68, 0.80, 0.79))
+        if not panel.size or not cards.size or not buttons.size:
+            return False
+        bright_panel = float((panel.min(axis=2) > 205).mean())
+        dark_cards = float((cards.max(axis=2) < 180).mean())
+        dark_buttons = float((buttons.max(axis=2) < 100).mean())
+        return bright_panel > 0.42 and dark_cards > 0.20 and dark_buttons > 0.22
+
+    def _wait_daily_refill_result(self, timeout: float = 3.5) -> str:
+        """Wait until refill succeeds or the refill chooser is visibly still open."""
+        deadline = time.monotonic() + timeout
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        attempt = 0
+        chooser_confirmations = 0
+        success_confirmations = 0
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            self._capture_for_matching(screenshot)
+            with Image.open(screenshot) as captured:
+                width, height = captured.size
+            scales = None if attempt == 3 else [self._fast_scales()[0]]
+            # The title moves slightly when the game adds the "still insufficient"
+            # banner. The chooser takes priority over the temporary "successfully
+            # consumed" toast: the latter does not mean stamina is sufficient.
+            chooser_visible = bool(self._find_daily_template(
+                "refill_dialog.png",
+                threshold=0.56,
+                region=(round(width * 0.14), round(height * 0.16), round(width * 0.48), round(height * 0.33)),
+                scales=scales,
+                screenshot=screenshot,
+            )) or (attempt >= 2 and self._daily_refill_chooser_present(screenshot))
+            chooser_confirmations = chooser_confirmations + 1 if chooser_visible else 0
+            if chooser_confirmations >= 2:
+                return "still_short"
+            success_visible = bool(self._find_daily_template(
+                "refill_success.png",
+                threshold=0.60,
+                region=(round(width * 0.30), round(height * 0.16), round(width * 0.70), round(height * 0.34)),
+                scales=scales,
+                screenshot=screenshot,
+            ))
+            success_confirmations = success_confirmations + 1 if success_visible and not chooser_visible else 0
+            if success_confirmations >= 2:
+                return "success"
+            attempt += 1
+            self._sleep_interruptible(0.08)
+        return ""
+
+    def _wait_for_daily_success(self, cycle_index: int) -> None:
+        match = self._wait_for_daily_template(
+            "challenge_success.png",
+            timeout=15.0,
+            threshold=0.64,
+            region_ratio=(0.31, 0.20, 0.69, 0.43),
+        )
+        self.log(f"    第{cycle_index}轮挑战成功，相似度 {match.score:.3f}。")
+
+    @staticmethod
+    def _yellow_claim_rows(screenshot: Path) -> list[int]:
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+        left, right = round(width * 0.78), round(width * 0.97)
+        top, bottom = round(height * 0.14), round(height * 0.84)
+        region = image[top:bottom, left:right]
+        red = region[:, :, 0].astype(np.int16)
+        green = region[:, :, 1].astype(np.int16)
+        blue = region[:, :, 2].astype(np.int16)
+        yellow = (red > 215) & (green > 190) & (blue < 190) & ((red - blue) > 45)
+        row_counts = yellow.sum(axis=1)
+        active = row_counts > max(12, region.shape[1] * 0.08)
+        rows: list[int] = []
+        start = None
+        for index, present in enumerate(active):
+            if present and start is None:
+                start = index
+            elif not present and start is not None:
+                if index - start >= 4:
+                    rows.append(top + (start + index - 1) // 2)
+                start = None
+        if start is not None and len(active) - start >= 4:
+            rows.append(top + (start + len(active) - 1) // 2)
+        return rows
+
+    def _dismiss_reward_overlay_safely(self) -> None:
+        # Both the stamina exchange success and item reward overlays explicitly
+        # allow a blank-area click. Bottom-left is outside every item card.
+        self._tap_ratio(0.13, 0.86, 0.18)
+
+    def _collect_daily_activity_rewards(self) -> None:
+        self.log("    返回大世界后，经终端进入索拉指南领取活跃度奖励；只点击黄色“领取”，不点击“前往”。")
+        self._open_terminal_destination("索拉指南", 0.515, 0.671, require_transition=True)
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        for _ in range(12):
+            self._capture_for_matching(screenshot)
+            rows = self._yellow_claim_rows(screenshot)
+            if not rows:
+                break
+            with Image.open(screenshot) as captured:
+                width = captured.width
+            self.controller.tap(round(width * 0.88), rows[0])
+            self._sleep_interruptible(0.25)
+            self._dismiss_reward_overlay_safely()
+
+        self._capture_for_matching(screenshot)
+        full = self._find_daily_template("activity_full.png", threshold=0.62, screenshot=screenshot)
+        if full is None:
+            self.log("    未确认活跃度达到100，跳过里程碑宝箱，避免误领。")
+        else:
+            self.log("    已确认活跃度100，只点击100宝箱，其余里程碑奖励由游戏一并领取。")
+            self._tap_ratio(0.945, 0.868, 0.25)
+            self._dismiss_reward_overlay_safely()
+        self._tap_ratio(0.957, 0.058, 0.4)
+
+    def _collect_daily_battlepass_rewards(self) -> None:
+        self.log("    退出活跃指南后已在终端，直接进入先约电台；只领取免费内容，不点击购买或解锁寰宇频道。")
+        self._tap_ratio(0.744, 0.257, 0.7)
+        self._tap_ratio(0.062, 0.296, 0.45)
+        if self._click_optional_daily_template("one_click_claim.png", "电台任务一键领取", timeout=5.0, threshold=0.66):
+            self._dismiss_reward_overlay_safely()
+        self._tap_ratio(0.061, 0.192, 0.45)
+        if self._click_optional_daily_template("one_click_claim.png", "大众频道一键领取", timeout=5.0, threshold=0.66):
+            self._dismiss_reward_overlay_safely()
+        self._tap_ratio(0.957, 0.058, 0.8)
+
+    @staticmethod
+    def _weekly_travel_completed(screenshot: Path) -> bool:
+        """Detect the check mark on the inactive weekly-travel tab."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+        region = image[
+            round(height * 0.151):round(height * 0.187),
+            round(width * 0.385):round(width * 0.405),
+        ]
+        if region.size == 0:
+            return False
+        high = region.max(axis=2)
+        low = region.min(axis=2)
+        neutral_check = ((high - low) < 35) & (high > 110)
+        return float(neutral_check.mean()) > 0.15
+
+    @staticmethod
+    def _weekly_skill_slot_empty(screenshot: Path) -> bool:
+        """Detect the sparse cream plus sign shown by an empty blessing slot."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB"))
+        height, width = image.shape[:2]
+        slot = image[
+            round(height * 0.735):round(height * 0.845),
+            round(width * 0.445):round(width * 0.507),
+        ]
+        if slot.size == 0:
+            return False
+        red = slot[:, :, 0].astype(np.int16)
+        green = slot[:, :, 1].astype(np.int16)
+        blue = slot[:, :, 2].astype(np.int16)
+        cream = (red > 220) & (green > 195) & (blue > 120) & ((red - green) < 45)
+        density = float(cream.mean())
+        widest_row = int(cream.sum(axis=1).max(initial=0)) / max(1, cream.shape[1])
+        tallest_column = int(cream.sum(axis=0).max(initial=0)) / max(1, cream.shape[0])
+        return 0.015 < density < 0.11 and widest_row > 0.25 and tallest_column > 0.25
+
+    @staticmethod
+    def _weekly_skill_equipped(screenshot: Path) -> bool:
+        """Any known weekly slot without the explicit plus sign is equipped."""
+        return not TaskRunner._weekly_skill_slot_empty(screenshot)
+
+    def _ensure_weekly_skill_selected(self) -> None:
+        """Use one shared empty-slot rule for standalone and daily-triggered weekly runs."""
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        self._capture_for_matching(screenshot)
+        if self._weekly_skill_equipped(screenshot):
+            self.log("    已装备幻梦祝福，保留当前技能，不重复打开选择界面。")
+            return
+        self.log("    检测到“＋ / 选择祝福”空槽，打开技能选择并固定选择第一个技能。")
+        self._tap_ratio(0.496, 0.768, 0.18)
+        self._wait_for_weekly_skill_dialog()
+        self._tap_ratio(0.371, 0.505, 0.18)
+        self._tap_ratio(0.826, 0.858, 0.55)
+        self._wait_for_daily_template("menu1.png", timeout=8.0, threshold=0.78)
+
+    @staticmethod
+    def _weekly_skill_dialog_present(screenshot: Path) -> bool:
+        """Confirm that the four-card blessing selector is fully visible."""
+        with Image.open(screenshot) as source:
+            image = np.asarray(source.convert("RGB")).astype(np.float32)
+        height, width = image.shape[:2]
+        title = image[
+            round(height * 0.20):round(height * 0.32),
+            round(width * 0.43):round(width * 0.82),
+        ]
+        body = image[
+            round(height * 0.30):round(height * 0.78),
+            round(width * 0.27):round(width * 0.97),
+        ]
+        if title.size == 0 or body.size == 0:
+            return False
+        green_title = (
+            (title[:, :, 1] > 100)
+            & (title[:, :, 1] > title[:, :, 0] * 1.03)
+            & (title[:, :, 1] > title[:, :, 2] * 1.12)
+        )
+        bright_body = body.max(axis=2) > 190
+        return float(green_title.mean()) > 0.30 and float(bright_body.mean()) > 0.65
+
+    def _wait_for_weekly_skill_dialog(self, timeout: float = 5.0) -> None:
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            self._capture_for_matching(screenshot)
+            if self._weekly_skill_dialog_present(screenshot):
+                return
+            self._sleep_interruptible(0.12)
+        raise RuntimeError("点击祝福技能槽后未出现四技能选择界面，已停止以避免误点。")
+
+    def _run_default_weekly_from_daily(self) -> None:
+        """Reuse the established menu template chain for the 15-round reward run."""
+        self._weekly_monitoring = True
+        self.template_root = TEMPLATES_DIR
+        self.matcher.templates_dir = TEMPLATES_DIR
+        self.max_cycles = 15
+        start_step = Step(
+            action="tap_image",
+            label="点击幻梦游园开始游戏",
+            template="menu1.png",
+            threshold=0.82,
+            timeout=12.0,
+            offset_x=80,
+            seconds=0.15,
+        )
+        cycle_step = Step(
+            action="tap_image_cycle",
+            label="自动执行15轮幻梦游园",
+            templates=self._numbered_templates("menu", 2, 99),
+            loop=True,
+            threshold=0.82,
+            timeout=1.0,
+            seconds=0.15,
+        )
+        self._run_step(start_step)
+        self._run_image_cycle(cycle_step)
+
+    def _start_weekly_travel_from_selected_page(self) -> None:
+        """Enter Dream Park from an already selected unfinished weekly page."""
+        self._tap_ratio(0.247, 0.505, 0.8)
+        self.template_root = TEMPLATES_DIR
+        self.matcher.templates_dir = TEMPLATES_DIR
+        self._wait_for_daily_template("menu1.png", timeout=12.0, threshold=0.78)
+        self._ensure_weekly_skill_selected()
+        self.log("    小漂泊者界面准备完成，接续周常拿满奖励（15轮）。")
+        self._run_default_weekly_from_daily()
+
+    def _continue_daily_from_open_guide_page(self) -> None:
+        """After activity auto-skips, run weekly only when weekly is the selected page."""
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        self._capture_for_matching(screenshot)
+        if not self._weekly_travel_page_present(screenshot):
+            self.log("    索拉指南已自动跳过周度游历，判定本周周常也已完成。")
+            self._tap_ratio(0.957, 0.058, 0.35)
+            return
+        self.log("    日常已完成，但周度游历仍未完成；进入幻梦游园继续执行周常。")
+        self._start_weekly_travel_from_selected_page()
+
+    def _continue_daily_into_weekly_travel(self) -> None:
+        """Run weekly only when Sola Guide automatically selects its unfinished page."""
+        self.log("    回到终端后再次进入索拉指南，检查周度游历。")
+        self._tap_ratio(0.515, 0.671, 0.65)
+        screenshot = APP_DIR / "_runtime_screenshot.png"
+        self._capture_for_matching(screenshot)
+        if self._weekly_travel_page_present(screenshot):
+            self.log("    索拉指南已选中未完成的周度游历，直接进入幻梦游园。")
+            self._start_weekly_travel_from_selected_page()
+            return
+        self.log("    索拉指南未自动进入周度游历页，判定本周周常已经完成；本次跳过幻梦游园。")
+        self._tap_ratio(0.957, 0.058, 0.35)
+
     def _perform_4c_main_attack(self) -> None:
         """Keep a steady main-character attack rhythm matching the healer clicks."""
         self.controller.left_click()
         self._sleep_interruptible(self.MAIN_ATTACK_CLICK_INTERVAL)
 
-    def _perform_4c_heal_rotation(self, skill_key: str) -> None:
+    def _cast_timed_ultimate(
+        self,
+        ultimate_key: str,
+        attack_enabled: threading.Event,
+        attack_lock: threading.Lock,
+    ) -> None:
+        """Give the ultimate input a quiet window without competing attack clicks."""
+        attack_enabled.clear()
+        with attack_lock:
+            pass
+        try:
+            if self.stop_event.is_set():
+                return
+            self.controller.press_binding(ultimate_key, 120)
+            self._sleep_interruptible(0.80)
+        finally:
+            if not self.stop_event.is_set():
+                attack_enabled.set()
+
+    def _confirm_daily_battle_finished(self, screenshot: Path) -> bool:
+        """Confirm an initial missing task marker before sending more combat input."""
+        for _ in range(1, self.DAILY_TASK_MISSING_CONFIRMATIONS):
+            self._sleep_interruptible(self.DAILY_TASK_MISSING_CONFIRMATION_INTERVAL)
+            if self.stop_event.is_set():
+                return True
+            self._capture_for_matching(screenshot)
+            if self._daily_battle_task_present(screenshot):
+                return False
+        return True
+
+    def _perform_4c_heal_rotation(self, skill_key: str) -> bool:
         """Third-slot heal combo with short attack spacing and a clear return delay."""
+        if self.stop_event.is_set():
+            return False
         self.controller.press_key("3", 65)
         self._sleep_interruptible(self.HEAL_SWITCH_SETTLE_DELAY)
+        if self.stop_event.is_set():
+            return False
         self.controller.press_binding(skill_key, 65)
         self._sleep_interruptible(0.08)
+        if self.stop_event.is_set():
+            return False
         self.controller.press_key("SPACE", 50)
         self._sleep_interruptible(0.035)
         for click_index in range(3):
+            if self.stop_event.is_set():
+                return False
             self.controller.left_click()
             if click_index < 2:
                 self._sleep_interruptible(self.HEAL_ATTACK_CLICK_INTERVAL)
         self._sleep_interruptible(self.HEAL_RETURN_DELAY)
+        if self.stop_event.is_set():
+            return False
         self.controller.press_key("SPACE", 50)
         self._sleep_interruptible(0.035)
         for click_index in range(3):
+            if self.stop_event.is_set():
+                return False
             self.controller.left_click()
             if click_index < 2:
                 self._sleep_interruptible(self.HEAL_ATTACK_CLICK_INTERVAL)
-        self.controller.press_key("Q", 65)
+        if self.stop_event.is_set():
+            return False
+        self._sleep_interruptible(self.HEAL_ATTACK_TO_Q_DELAY)
+        if self.stop_event.is_set():
+            return False
+        self.controller.press_key("Q", 120)
         self._sleep_interruptible(self.HEAL_Q_TO_RETURN_DELAY)
+        if self.stop_event.is_set():
+            return False
         self.controller.press_key("1", 65)
         self._sleep_interruptible(0.22)
+        return not self.stop_event.is_set()
 
     def _collect_4c_reward(self, cycle_index: int) -> None:
         screenshot = APP_DIR / "_runtime_screenshot.png"
         deadline = time.monotonic() + self.REWARD_SEARCH_TIMEOUT
+        last_target_x: int | None = None
+        best_target_confidence = 0.0
+        stalled_target_checks = 0
         self._sleep_interruptible(self.REWARD_INITIAL_CHECK_DELAY)
         while time.monotonic() < deadline:
             if self.stop_event.is_set():
@@ -761,7 +2601,28 @@ class TaskRunner:
             gold_ratio, target_x, _target_y = self._gold_target_location(screenshot)
             with Image.open(screenshot) as captured:
                 width = captured.width
-            if target_x is not None:
+            if target_x is not None and gold_ratio > 0.10:
+                if last_target_x is not None and abs(target_x - last_target_x) <= width * 0.10:
+                    if gold_ratio > best_target_confidence + 0.012:
+                        best_target_confidence = gold_ratio
+                        stalled_target_checks = 0
+                    else:
+                        stalled_target_checks += 1
+                else:
+                    best_target_confidence = gold_ratio
+                    stalled_target_checks = 0
+                last_target_x = target_x
+                if stalled_target_checks >= 8:
+                    self.controller.move_mouse_relative(self.REWARD_SEARCH_TURN_PIXELS, 0)
+                    self.log(
+                        f"    第{cycle_index}轮：同一金色目标连续多次没有变得更清晰且仍无吸收提示，"
+                        "按固定场景物体处理并转向继续搜索。"
+                    )
+                    last_target_x = None
+                    best_target_confidence = 0.0
+                    stalled_target_checks = 0
+                    self._sleep_interruptible(0.14)
+                    continue
                 offset_x = target_x - width * 0.5
                 movement = self._approach_4c_gold_target(offset_x, width)
                 self.log(
@@ -769,9 +2630,12 @@ class TaskRunner:
                     f"{movement}。"
                 )
             else:
+                last_target_x = None
+                best_target_confidence = 0.0
+                stalled_target_checks = 0
                 self.controller.move_mouse_relative(self.REWARD_SEARCH_TURN_PIXELS, 0)
                 self.log(
-                    f"    第{cycle_index}轮：目标不在视野中，固定向右大幅转动 "
+                    f"    第{cycle_index}轮：目标置信度 {gold_ratio:.3f} 未超过0.1，固定向右大幅转动 "
                     f"{self.REWARD_SEARCH_TURN_PIXELS} 搜索。"
                 )
             self._sleep_interruptible(0.14)
@@ -783,14 +2647,14 @@ class TaskRunner:
         if offset_x < -centre_tolerance:
             # Keep the camera direction stable and strafe toward a visible target;
             # a full rightward wrap used to throw left-side echoes out of view.
-            self.controller.press_keys(("W", "A"), 220)
+            self.controller.press_keys(("W", "A"), 400)
             return "目标在左侧，向左前方靠近"
         if offset_x > centre_tolerance:
             turn = int(max(110, min(360, offset_x * 0.40)))
             self.controller.move_mouse_relative(turn, 0)
-            self.controller.press_keys(("W",), 180)
+            self.controller.press_keys(("W",), 360)
             return "目标在右侧，向右微调并靠近"
-        self.controller.press_keys(("W",), 260)
+        self.controller.press_keys(("W",), 500)
         return "目标已在中央，直线靠近"
 
     def _find_4c_absorb_prompt(self, screenshot: Path, scale: float):
@@ -959,6 +2823,7 @@ class TaskRunner:
         visited = np.zeros(expanded.shape, dtype=bool)
         best_points: list[tuple[int, int]] = []
         best_score = 0.0
+        best_confidence = 0.0
         rows, columns = expanded.shape
         for start_y, start_x in zip(*np.nonzero(expanded & ~visited)):
             if visited[start_y, start_x]:
@@ -982,10 +2847,22 @@ class TaskRunner:
             aspect = max(component_width / component_height, component_height / component_width)
             compactness = len(points) / max(1, component_width * component_height)
             component_center_y = (sum(ys) / len(ys)) * sample_step + top
+            component_center_x = (sum(xs) / len(xs)) * sample_step
             minimum_compactness = 0.68 if component_center_y > height * 0.60 else 0.43
             valid_shape = aspect <= 2.05 or (
                 component_width > component_height and aspect <= 2.80
             )
+            # A common false positive is the small gold ring mounted beneath the
+            # large yellow MILITECH billboard. Reject a candidate when a broad,
+            # dense gold panel occupies the area well above it. Real echoes do not
+            # have a billboard-sized gold slab suspended over their position.
+            overhead = gold[
+                max(0, round(component_center_y - top - height * 0.40)):
+                max(1, round(component_center_y - top - height * 0.10)),
+                max(0, round(component_center_x - width * 0.16)):
+                min(gold.shape[1], round(component_center_x + width * 0.16)),
+            ]
+            overhead_gold_ratio = float(overhead.mean()) if overhead.size else 0.0
             # Distant echoes form a medium-sized compact cluster. Tiny golden UI
             # marks and large billboards sit outside this range; a very close echo
             # is handled by the F/absorb prompt before colour navigation runs.
@@ -994,20 +2871,21 @@ class TaskRunner:
                 or len(points) > 1400
                 or not valid_shape
                 or compactness < minimum_compactness
+                or overhead_gold_ratio > 0.055
             ):
                 continue
             score = len(points) * compactness
             if score > best_score:
                 best_score = score
                 best_points = points
+                best_confidence = compactness
 
         if not best_points:
             return float(len(best_points) / max(1, expanded.size)), None, None
         ys = np.fromiter((point[0] for point in best_points), dtype=np.float32)
         xs = np.fromiter((point[1] for point in best_points), dtype=np.float32)
-        ratio = float(len(best_points) / expanded.size)
         return (
-            ratio,
+            float(best_confidence),
             round(float(xs.mean()) * sample_step + left),
             round(float(ys.mean()) * sample_step + top),
         )
@@ -1166,6 +3044,8 @@ class TaskRunner:
         while not self.stop_event.is_set():
             try:
                 return self._find_image(step)
+            except WeeklyLimitReached:
+                raise
             except Exception as exc:
                 misses += 1
                 if (
@@ -1192,6 +3072,8 @@ class TaskRunner:
         )
         try:
             x, y, score = self._find_image(probe)
+        except WeeklyLimitReached:
+            raise
         except Exception as exc:
             self.log(f"    回退验证：上一张已不在画面，继续等待 {expected_template}: {exc}")
             return False
@@ -1225,6 +3107,8 @@ class TaskRunner:
         for retry_index in range(CYCLE_FINAL_MAX_RETRIES + 1):
             try:
                 x, y, score = self._find_image(probe)
+            except WeeklyLimitReached:
+                raise
             except Exception:
                 self.log(f"    最终轮验证通过：{final_step.template} 已离开当前画面。")
                 return
@@ -1284,6 +3168,8 @@ class TaskRunner:
                 raise RuntimeError("已停止模板识别。")
             screenshot = APP_DIR / "_runtime_screenshot.png"
             self._capture_for_matching(screenshot)
+            if self._weekly_monitoring and not self.dry_run:
+                self._check_weekly_cap(screenshot)
             try:
                 scales = self._fast_scales()
                 match = self.matcher.find(screenshot, step.template, step.threshold, scales)
@@ -1303,6 +3189,60 @@ class TaskRunner:
                 last_error = exc
                 time.sleep(0.6)
         raise RuntimeError(str(last_error) if last_error else f"识别超时: {step.template}")
+
+    def _check_weekly_cap(self, screenshot: Path) -> None:
+        vision = WeeklyRewardsVision(TEMPLATES_DIR / "weekly")
+        page = vision.cap_page(screenshot)
+        if page is None:
+            return
+        if self.stop_event.is_set():
+            raise RuntimeError("周常收尾已停止。")
+        self.log("识别到本周游历值已达到上限，不再点击重新挑战。")
+
+        def wait_for(predicate, label):
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                if self.stop_event.is_set():
+                    raise RuntimeError("周常收尾已停止。")
+                self._capture_for_matching(screenshot)
+                if predicate(screenshot):
+                    return
+                self._sleep_interruptible(0.25)
+            raise RuntimeError(f"周常收尾等待{label}超时，已停止点击。")
+
+        if page == "result":
+            self._tap_ratio(0.664, 0.848, 0.4)
+            wait_for(lambda path: vision.cap_page(path) == "home", "幻梦游园主页")
+        if self.stop_event.is_set():
+            raise RuntimeError("周常收尾已停止。")
+        self._tap_ratio(0.940, 0.0565, 0.4)
+        wait_for(vision.weekly_page, "周度游历页面")
+        claimed_any = False
+        for _ in range(6):
+            if self.stop_event.is_set():
+                raise RuntimeError("周常领奖已停止。")
+            if vision.all_claimed(screenshot):
+                self.log("所有周常宝箱均已领取，跳过点击。")
+                raise WeeklyLimitReached()
+            target = vision.rightmost_claimable(screenshot)
+            if target is None:
+                if claimed_any:
+                    self.log("已确认宝箱变为已领取状态，当前没有其他发光宝箱。")
+                    raise WeeklyLimitReached()
+                break
+            self.log(f"领取当前最右侧可领取宝箱：{target}。")
+            self.controller.tap(*target)
+            self._sleep_interruptible(0.6)
+            self._dismiss_reward_overlay_safely()
+            wait_for(vision.weekly_page, "领奖后的周度游历页面")
+            wait_for(lambda path: vision.claimed_at(path, target), "宝箱领取状态确认")
+            claimed_any = True
+        if claimed_any and vision.rightmost_claimable(screenshot) is None:
+            raise WeeklyLimitReached()
+        self.weekly_rewards_pending = True
+        self.log("本周游历已达上限；暂无法确认可领取宝箱，请手动检查，本次不会自动关机。")
+        self.notice("周常已达到上限，已回到周度游历。无法确认宝箱领取状态，请检查是否需要手动领取；本次不会自动关机。")
+        raise WeeklyLimitReached()
 
     @staticmethod
     def _random_click_point(match, offset_x: int, offset_y: int) -> tuple[int, int]:
@@ -1326,7 +3266,9 @@ class TaskRunner:
 
     def _fast_scales(self) -> list[float]:
         if hasattr(self.controller, "template_scales"):
-            return self.controller.template_scales()
+            scales = self.controller.template_scales()
+            if isinstance(scales, (list, tuple)) and scales:
+                return [float(scale) for scale in scales]
         return [1.0]
 
     def _save_match_debug(self, screenshot: Path, template_name: str, match, click_x: int, click_y: int) -> None:
@@ -1439,18 +3381,25 @@ class TemplateCropper:
 class App:
     def __init__(self, root: Tk):
         self.root = root
-        self.pet_id = self._load_pet_preference()
+        preferred_pet_id = self._load_pet_preference()
         self.theme_id = self._load_theme_preference()
-        if self.theme_id in PET_DEFINITIONS and self.pet_id != self.theme_id:
-            self.pet_id = self.theme_id
-            PET_CONFIG.write_text(json.dumps({"pet": self.pet_id}, ensure_ascii=False), encoding="utf-8")
+        self.pet_id = self._select_startup_pet(preferred_pet_id, self.theme_id)
         self.pet_definition = PET_DEFINITIONS[self.pet_id]
         self.pet_name = str(self.pet_definition["name"])
         COLORS.clear()
         COLORS.update(THEME_DEFINITIONS.get(self.theme_id, {}).get("colors", SIMPLE_COLORS))
         self.root.title(f"wwbs {APP_VERSION}")
+        self._app_icon_photo = None
         if APP_ICON.exists():
             self.root.iconbitmap(str(APP_ICON))
+            try:
+                with Image.open(APP_ICON) as icon_image:
+                    self._app_icon_photo = ImageTk.PhotoImage(icon_image.convert("RGBA"))
+                self.root.iconphoto(True, self._app_icon_photo)
+            except Exception:
+                pass
+        apply_windows_taskbar_icon(self.root, APP_ICON)
+        self.root.after(250, lambda: apply_windows_taskbar_icon(self.root, APP_ICON))
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         reference_screen = (2560, 1440)
@@ -1473,7 +3422,48 @@ class App:
         self.device_id = StringVar(value="")
         self.combat_skill_key = StringVar(value=self._load_combat_skill_key())
         self.combat_ultimate_key = StringVar(value=self._load_combat_ultimate_key())
+        self.daily_heal_enabled = BooleanVar(value=self._load_daily_heal_enabled())
+        self.daily_zone = StringVar(value=self._load_daily_zone())
+        self.auto_shutdown_enabled = BooleanVar(value=self._load_auto_shutdown_enabled())
         self.pet_size = StringVar(value=f"{self._load_pet_size_percent()}%")
+        self.pet_visible = self._load_pet_visible()
+        self.pet_supports_look_controls = self.pet_id in {"jingran", "cartethyia"}
+        self.pet_look_enabled = BooleanVar(
+            value=(
+                self._load_pet_feature_enabled(self.pet_id, "look_at_pointer", True)
+                if self.pet_supports_look_controls
+                else False
+            )
+        )
+        self.pet_auto_jump_enabled = BooleanVar(
+            value=self._load_pet_feature_enabled(self.pet_id, "auto_jump", True)
+        )
+        agent_config = LocalAgentConfig.load(CARTETHYIA_AGENT_CONFIG)
+        if not agent_config.bridge_token:
+            agent_config = replace(agent_config, bridge_token=secrets.token_urlsafe(24))
+        self.sillytavern_bridge = SillyTavernBridge(agent_config.bridge_token)
+        self.cartethyia_agent_enabled = BooleanVar(value=agent_config.enabled)
+        self.cartethyia_agent_endpoint = StringVar(value=agent_config.endpoint)
+        self.cartethyia_agent_model = StringVar(value=agent_config.model)
+        self.agent_provider = StringVar(value={"openai": "OpenAI 兼容 API", "deepseek": "DeepSeek API", "sillytavern": "SillyTavern 酒馆"}.get(agent_config.provider, "Ollama 本地"))
+        self.agent_api_key = StringVar(value=agent_config.api_key)
+        self.agent_bridge_token = StringVar(value=agent_config.bridge_token)
+        self.agent_discovered_choice = StringVar()
+        self._discovered_models = {}
+        self._model_scan_busy = False
+        self.cartethyia_agent_status = StringVar(
+            value="已启用，等待连接测试" if agent_config.enabled else "未启用，不会发送聊天请求或下载模型"
+        )
+        persona_prompt = "\n\n".join(PET_AGENT_PROMPT_LAYERS[self.pet_id])
+        self.cartethyia_agent = LocalCartethyiaAgent(
+            agent_config,
+            persona_prompt,
+            character_name=self.pet_name,
+            fallback_reply=PET_AGENT_FALLBACKS[self.pet_id],
+            bridge=self.sillytavern_bridge,
+        )
+        self._agent_chat_busy = False
+        self.chat_history = ChatHistory(APP_DIR / "pet-chat-history.json")
         self.dry_run = BooleanVar(value=True)
         self.status = StringVar(value="准备就绪")
         self.device_status = StringVar(value="窗口未检测")
@@ -1493,6 +3483,7 @@ class App:
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.tasks: list[WeeklyTask] = []
         self.stop_event = threading.Event()
+        self._manual_stop_requested = False
         self.worker: threading.Thread | None = None
         self.max_cycles: int | None = None
         self.preview_photo = None
@@ -1510,7 +3501,10 @@ class App:
         self._hotkey_triggered = threading.Event()
         self._hotkey_status_reported = False
         self._hotkey_poll_job = None
+        self._hotkey_was_down = False
+        self._last_hotkey_stop_at = 0.0
         self._last_mouse_admin_warning_at = 0.0
+        self._admin_restart_requested = False
         self._preflight_running = False
         self._last_started_tasks: list[WeeklyTask] = []
         self._last_task_started_at = 0.0
@@ -1522,7 +3516,11 @@ class App:
         self.root.protocol("WM_DELETE_WINDOW", self._close_app)
         self._start_stop_hotkey()
         self.root.after(120, self._start_desktop_pet)
-        self.root.after(300, self._show_update_notice)
+        self.root.after(800, self._scan_local_models)
+        if "--admin-restarted" in sys.argv and is_running_as_admin():
+            self._log("检测到未开启管理员模式，已通过管理员模式打开")
+        else:
+            self.root.after(300, self._show_update_notice)
 
     @staticmethod
     def _theme_pack_valid(theme_id: str, path: Path | None = None) -> bool:
@@ -1543,7 +3541,14 @@ class App:
     @classmethod
     def _load_theme_preference(cls) -> str:
         try:
-            selected = json.loads(THEME_CONFIG.read_text(encoding="utf-8")).get("theme", "simple")
+            saved = json.loads(THEME_CONFIG.read_text(encoding="utf-8"))
+            # Older beta packages stored a character theme beside the executable.
+            # When users extracted a new build over that folder, the stale file
+            # incorrectly replaced the intended simple default. Only preferences
+            # explicitly written by the current build are now restored.
+            if saved.get("explicit") is not True or saved.get("source") != "theme-picker":
+                return "simple"
+            selected = saved.get("theme", "simple")
         except (OSError, ValueError, json.JSONDecodeError):
             selected = "simple"
         if selected in THEME_DEFINITIONS and cls._theme_pack_valid(selected):
@@ -1562,6 +3567,11 @@ class App:
         return "daniya"
 
     @staticmethod
+    def _select_startup_pet(preferred_pet_id: str, _theme_id: str) -> str:
+        """Keep an explicit pet choice independent from the selected program theme."""
+        return preferred_pet_id
+
+    @staticmethod
     def _normalize_pet_size_percent(value: object) -> int:
         try:
             percent = int(round(float(str(value).strip().rstrip("%"))))
@@ -1571,19 +3581,690 @@ class App:
 
     @classmethod
     def _load_pet_size_percent(cls) -> int:
-        try:
-            saved = json.loads(PET_DISPLAY_CONFIG.read_text(encoding="utf-8")).get("percent", 100)
-        except (OSError, ValueError, json.JSONDecodeError):
-            saved = 100
+        saved = cls._load_pet_display_settings().get("percent", 100)
         return cls._normalize_pet_size_percent(saved)
+
+    @staticmethod
+    def _load_pet_display_settings() -> dict[str, object]:
+        try:
+            saved = json.loads(PET_DISPLAY_CONFIG.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {}
+        return saved if isinstance(saved, dict) else {}
+
+    @classmethod
+    def _load_pet_visible(cls) -> bool:
+        return cls._load_pet_display_settings().get("visible", True) is not False
+
+    def _save_pet_display_settings(self, **changes: object) -> None:
+        saved = self._load_pet_display_settings()
+        saved.update(changes)
+        PET_DISPLAY_CONFIG.write_text(
+            json.dumps(saved, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def _load_pet_feature_enabled(
+        cls,
+        pet_id: str,
+        feature: str,
+        default: bool,
+    ) -> bool:
+        saved = cls._load_pet_display_settings().get(feature)
+        if not isinstance(saved, dict):
+            return default
+        value = saved.get(pet_id, default)
+        return value if isinstance(value, bool) else default
+
+    def _save_pet_feature_enabled(self, feature: str, enabled: bool) -> None:
+        saved = self._load_pet_display_settings()
+        feature_settings = saved.get(feature)
+        if not isinstance(feature_settings, dict):
+            feature_settings = {}
+        feature_settings[self.pet_id] = bool(enabled)
+        saved[feature] = feature_settings
+        PET_DISPLAY_CONFIG.write_text(
+            json.dumps(saved, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _apply_pet_look_setting(self) -> None:
+        if not self.pet_supports_look_controls:
+            return
+        enabled = bool(self.pet_look_enabled.get())
+        self._save_pet_feature_enabled("look_at_pointer", enabled)
+        if self.desktop_pet is not None:
+            self.desktop_pet.set_look_enabled(enabled)
+        state = "开启" if enabled else "关闭"
+        self.status.set(f"{self.pet_name}盯鼠标：{state}")
+
+    def _apply_pet_auto_jump_setting(self) -> None:
+        if not self.pet_supports_look_controls:
+            return
+        enabled = bool(self.pet_auto_jump_enabled.get())
+        self._save_pet_feature_enabled("auto_jump", enabled)
+        if self.desktop_pet is not None:
+            self.desktop_pet.set_auto_jump_enabled(enabled)
+        state = "开启" if enabled else "关闭"
+        self.status.set(f"{self.pet_name}定时跳跃：{state}")
+
+    def _set_pet_look_enabled(self, enabled: bool) -> None:
+        self.pet_look_enabled.set(bool(enabled))
+        self._apply_pet_look_setting()
+
+    def _set_pet_auto_jump_enabled(self, enabled: bool) -> None:
+        self.pet_auto_jump_enabled.set(bool(enabled))
+        self._apply_pet_auto_jump_setting()
+
+    def _save_pet_look_from_menu(self, enabled: bool) -> None:
+        self.pet_look_enabled.set(bool(enabled))
+        self._save_pet_feature_enabled("look_at_pointer", bool(enabled))
+        state = "开启" if enabled else "关闭"
+        self.status.set(f"{self.pet_name}盯鼠标：{state}")
+
+    def _save_pet_auto_jump_from_menu(self, enabled: bool) -> None:
+        self.pet_auto_jump_enabled.set(bool(enabled))
+        self._save_pet_feature_enabled("auto_jump", bool(enabled))
+        state = "开启" if enabled else "关闭"
+        self.status.set(f"{self.pet_name}定时跳跃：{state}")
+
+    def _save_pet_visibility(self, visible: bool) -> None:
+        self.pet_visible = bool(visible)
+        self._save_pet_display_settings(visible=self.pet_visible)
+
+    def _current_cartethyia_agent_config(self) -> LocalAgentConfig:
+        return LocalAgentConfig(
+            enabled=bool(self.cartethyia_agent_enabled.get()),
+            endpoint=self.cartethyia_agent_endpoint.get().strip(),
+            model=self.cartethyia_agent_model.get().strip(),
+            provider={"OpenAI 兼容 API": "openai", "DeepSeek API": "deepseek", "SillyTavern 酒馆": "sillytavern"}.get(self.agent_provider.get(), "ollama"),
+            api_key=self.agent_api_key.get().strip(),
+            bridge_token=self.agent_bridge_token.get().strip(),
+        )
+
+    def _save_cartethyia_agent_settings(self, announce: bool = True) -> bool:
+        config = self._current_cartethyia_agent_config()
+        try:
+            if config.enabled and config.provider == "sillytavern":
+                if not config.bridge_token:
+                    raise ValueError("酒馆桥接密钥不能为空。")
+                self.sillytavern_bridge.token = config.bridge_token
+                self.sillytavern_bridge.start()
+            elif config.enabled:
+                service_base(config)
+                self.sillytavern_bridge.stop()
+            else:
+                self.sillytavern_bridge.stop()
+            config.save(CARTETHYIA_AGENT_CONFIG)
+        except (OSError, ValueError) as exc:
+            self.cartethyia_agent_status.set(f"保存失败：{exc}")
+            if announce:
+                messagebox.showerror("保存失败", f"无法保存本地 Agent 设置：\n{exc}", parent=self.root)
+            return False
+        self.cartethyia_agent.update_config(config)
+        state = "已启用，随机发言已暂停" if config.enabled else "未启用，已恢复主动发言；不会发送聊天请求"
+        self.cartethyia_agent_status.set(state)
+        if announce:
+            self.status.set("桌宠 Agent 设置已保存；API Key 仅保留在本次运行中")
+            self._log("桌宠 Agent 连接设置已保存。")
+        return True
+
+    def _change_agent_provider(self, _event=None) -> None:
+        self.agent_model_picker.configure(values=())
+        self.cartethyia_agent_model.set("")
+        endpoint = self.cartethyia_agent_endpoint.get().strip()
+        if self.agent_provider.get() == "SillyTavern 酒馆":
+            self.cartethyia_agent_endpoint.set("")
+            self.agent_api_key.set("")
+            self.cartethyia_agent_status.set("酒馆模式：保持对应角色会话打开，安装并启用 wwbs 桥接扩展。")
+            return
+        if self.agent_provider.get() == "DeepSeek API":
+            self.cartethyia_agent_endpoint.set("https://api.deepseek.com")
+        elif endpoint in {"", "http://127.0.0.1:11434", "http://127.0.0.1:1234/v1", "https://api.deepseek.com"}:
+            self.cartethyia_agent_endpoint.set(
+                "http://127.0.0.1:1234/v1" if self.agent_provider.get() == "OpenAI 兼容 API"
+                else "http://127.0.0.1:11434")
+        self.agent_api_key.set("")
+
+    def _scan_local_models(self) -> None:
+        if self._model_scan_busy:
+            return
+        self._model_scan_busy = True
+        self.agent_discovery_status.set("正在检测本机模型……")
+        def finish(models, error):
+            self._model_scan_busy = False
+            self._discovered_models = {item.label: item for item in models}
+            self.agent_discovery_picker.configure(values=tuple(self._discovered_models))
+            self.agent_discovered_choice.set(next(iter(self._discovered_models), ""))
+            self.agent_discovery_status.set(error or (
+                f"发现 {len(models)} 个模型，从本机模型下拉框直接选择即可。" if models
+                else "未发现模型；可启动 Ollama/LM Studio 后重试，或手动填写自定义服务地址。"))
+            if models and not self.cartethyia_agent_model.get().strip() and self.agent_provider.get() == "Ollama 本地":
+                self._use_discovered_model()
+        def work():
+            try:
+                models = discover_local_models()
+            except Exception:
+                self.root.after(0, lambda: finish([], "本机检测失败，请手动填写服务地址或稍后重试。"))
+            else:
+                self.root.after(0, lambda: finish(models, None))
+        threading.Thread(target=work, name="pet-model-discovery", daemon=True).start()
+
+    def _use_discovered_model(self, _event=None) -> None:
+        model = self._discovered_models.get(self.agent_discovered_choice.get())
+        if model is None:
+            return
+        self.agent_provider.set("OpenAI 兼容 API" if model.provider == "openai" else "Ollama 本地")
+        self.cartethyia_agent_endpoint.set(model.endpoint)
+        self.cartethyia_agent_model.set(model.model)
+        self.agent_api_key.set("")
+        self.agent_model_picker.configure(values=tuple(item.model for item in self._discovered_models.values()
+                                                       if item.endpoint == model.endpoint))
+        self.cartethyia_agent_status.set("已填入模型，请保存设置。" if model.available else
+                                       "已填入模型；请先启动对应服务。LM Studio 请先载入模型，再获取服务模型列表选择。")
+
+    def _fetch_agent_models(self) -> None:
+        config = self._current_cartethyia_agent_config()
+        if config.provider == "sillytavern":
+            self.cartethyia_agent_status.set("酒馆模式使用当前会话的模型，无需在这里获取模型。")
+            return
+        self.cartethyia_agent_status.set("正在获取服务模型列表……")
+        def finish(names, error=None):
+            if config != self._current_cartethyia_agent_config():
+                return
+            self.agent_model_picker.configure(values=names)
+            if names and config.model not in names:
+                self.cartethyia_agent_model.set(names[0])
+            self.cartethyia_agent_status.set(error or (f"发现 {len(names)} 个模型，请从模型名称下拉框选择。" if names else "服务未返回模型，请手动填写。"))
+        def work():
+            try:
+                names = list_service_models(config)
+            except (RuntimeError, ValueError) as exc:
+                self.root.after(0, lambda error=str(exc): finish([], error))
+            else:
+                self.root.after(0, lambda: finish(names))
+        threading.Thread(target=work, name="pet-service-models", daemon=True).start()
+
+    def _test_cartethyia_agent(self) -> None:
+        if not self._save_cartethyia_agent_settings(announce=False):
+            return
+        config = self.cartethyia_agent.config
+        if not config.enabled:
+            self.cartethyia_agent_status.set("请先勾选“启用桌宠 Agent”并保存。")
+            return
+        self.cartethyia_agent_status.set("正在测试酒馆会话……" if config.provider == "sillytavern" else "正在测试模型连接……本地模型首次载入可能需要较长时间")
+
+        def work() -> None:
+            try:
+                reply = self.cartethyia_agent.test_connection()
+            except Exception as exc:
+                error_text = str(exc)
+                self.root.after(0, lambda text=error_text: self.cartethyia_agent_status.set(f"连接失败：{text}"))
+                return
+            self.root.after(0, lambda: self.cartethyia_agent_status.set(f"连接成功：{reply}"))
+
+        threading.Thread(target=work, name="cartethyia-agent-test", daemon=True).start()
+
+    def _record_pet_chat(self, speaker: str, text: str, pet_id: str | None = None) -> None:
+        try:
+            self.chat_history.append(pet_id or self.pet_id, speaker, text)
+        except OSError:
+            self._log("聊天记录暂存于内存；文件写入失败，请检查程序目录权限。")
+
+    def _build_pet_chat_history(self, parent, height: int = 9) -> None:
+        shell = Frame(parent)
+        shell.pack(fill=BOTH, expand=True, pady=(0, 10))
+        history = Text(shell, height=height, width=44, wrap="word", relief="flat",
+                       font=(FONT_FAMILY, 10), padx=10, pady=8, bg="#f3f5f8")
+        scrollbar = ttk.Scrollbar(shell, command=history.yview)
+        history.configure(yscrollcommand=scrollbar.set)
+        history.pack(side=LEFT, fill=BOTH, expand=True)
+        scrollbar.pack(side=RIGHT, fill="y")
+        history.tag_configure("user", justify="right", foreground="#175d35", spacing3=12)
+        history.tag_configure("pet", justify="left", foreground="#243652", spacing3=12)
+        records = self.chat_history.messages(self.pet_id)
+        for item in records:
+            history.insert(END, f"{item['speaker']}\n{item['text']}\n\n",
+                           "user" if item["speaker"] == "你" else "pet")
+        if not records:
+            history.insert(END, "还没有聊天记录。")
+        history.configure(state="disabled")
+        history.see(END)
+
+    def _show_pet_chat_history(self) -> None:
+        window = Toplevel(self.root)
+        window.title(f"{self.pet_name} · 聊天记录")
+        window.geometry("520x560")
+        Label(window, text="记录保存在本机，按角色分别保留最近500条。", pady=8).pack(fill=X)
+        self._build_pet_chat_history(window, height=20)
+
+    def _ask_cartethyia_chat_message(self) -> str | None:
+        """Show a compact, themed composer beside the desktop pet."""
+        result: dict[str, str | None] = {"value": None}
+        theme = PET_AGENT_DIALOG_THEMES[self.pet_id]
+        dialog = Toplevel(self.root)
+        dialog.title(f"和{self.pet_name}聊天")
+        dialog.configure(bg=theme["background"])
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.attributes("-topmost", True)
+        if APP_ICON.exists():
+            try:
+                dialog.iconbitmap(str(APP_ICON))
+            except Exception:
+                pass
+
+        header = Frame(dialog, bg=theme["header"], padx=18, pady=13)
+        header.pack(fill=X)
+        Label(
+            header,
+            text=self.pet_name,
+            font=(FONT_FAMILY, 13, "bold"),
+            fg=theme["title"],
+            bg=theme["header"],
+        ).pack(anchor="w")
+        Label(
+            header,
+            text=theme["subtitle"],
+            font=(FONT_FAMILY, 9),
+            fg=theme["muted"],
+            bg=theme["header"],
+        ).pack(anchor="w", pady=(2, 0))
+
+        body = Frame(dialog, bg=theme["background"], padx=18, pady=14)
+        body.pack(fill=BOTH, expand=True)
+        self._build_pet_chat_history(body)
+        input_border = Frame(body, bg=theme["border"], padx=1, pady=1)
+        input_border.pack(fill=X)
+        editor = Text(
+            input_border,
+            width=44,
+            height=3,
+            wrap="word",
+            font=(FONT_FAMILY, 10),
+            relief="flat",
+            bd=0,
+            padx=9,
+            pady=7,
+            bg=theme["editor"],
+            fg=theme["title"],
+            insertbackground=theme["accent"],
+        )
+        editor.pack(fill=X)
+        Label(
+            body,
+            text="Enter 发送 · Shift+Enter 换行",
+            font=(FONT_FAMILY, 8),
+            fg=theme["muted"],
+            bg=theme["background"],
+        ).pack(anchor="w", pady=(5, 9))
+
+        actions = Frame(body, bg=theme["background"])
+        actions.pack(fill=X)
+
+        def close_dialog() -> None:
+            result["value"] = None
+            dialog.destroy()
+
+        def submit(_event=None) -> str:
+            value = editor.get("1.0", "end-1c").strip()
+            if value:
+                result["value"] = value
+                dialog.destroy()
+            return "break"
+
+        def handle_enter(event) -> str | None:
+            if event.state & 0x0001:
+                return None
+            return submit(event)
+
+        Button(
+            actions,
+            text="取消",
+            width=9,
+            command=close_dialog,
+            bg=theme["cancel"],
+            fg=theme["cancel_text"],
+            activebackground=theme["border"],
+            relief="flat",
+            bd=0,
+        ).pack(side=RIGHT)
+        Button(
+            actions,
+            text="发送",
+            width=9,
+            command=submit,
+            bg=theme["accent"],
+            fg="white",
+            activebackground=theme["accent_active"],
+            activeforeground="white",
+            relief="flat",
+            bd=0,
+        ).pack(side=RIGHT, padx=(0, 9))
+
+        dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+        dialog.bind("<Escape>", lambda _event: close_dialog())
+        editor.bind("<Return>", handle_enter)
+        dialog.update_idletasks()
+        width = max(440, dialog.winfo_reqwidth())
+        height = max(240, dialog.winfo_reqheight())
+        screen_w = dialog.winfo_screenwidth()
+        screen_h = dialog.winfo_screenheight()
+        if self.desktop_pet is not None:
+            anchor_x = self.desktop_pet.window.winfo_x() + self.desktop_pet.width // 2
+            anchor_y = self.desktop_pet.window.winfo_y()
+            x = anchor_x - width // 2
+            y = anchor_y - height - 12
+            if y < 20:
+                y = self.desktop_pet.window.winfo_y() + self.desktop_pet.height + 12
+        else:
+            x = self.root.winfo_x() + max(0, (self.root.winfo_width() - width) // 2)
+            y = self.root.winfo_y() + max(0, (self.root.winfo_height() - height) // 2)
+        x = max(10, min(screen_w - width - 10, x))
+        y = max(10, min(screen_h - height - 50, y))
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.grab_set()
+        editor.focus_force()
+        self.root.wait_window(dialog)
+        return result["value"]
+
+    def _open_cartethyia_chat(self) -> None:
+        if self._agent_chat_busy:
+            self._pet_feedback("waiting", "我还在整理刚才的话，稍等我一下。", 3200)
+            return
+        if not self.cartethyia_agent_enabled.get():
+            self._pet_feedback("failed", "本地 Agent 还没有启用，请先到设置页完成配置。", 5200)
+            return
+        if not self._save_cartethyia_agent_settings(announce=False):
+            return
+        # Start loading the model while the user is composing the message.  The
+        # request is best-effort and the normal chat request still reports any
+        # connection error.  Ollama releases an unused warm model after 60s.
+        threading.Thread(
+            target=self.cartethyia_agent.warmup,
+            name="pet-agent-warmup",
+            daemon=True,
+        ).start()
+        message = self._ask_cartethyia_chat_message()
+        if message is None or not message.strip():
+            return
+        message = message.strip()
+        self._pending_chat_pet = (self.pet_id, self.pet_name)
+        self._record_pet_chat("你", message)
+        self._agent_chat_busy = True
+
+        def pet_chat_work() -> None:
+            try:
+                reply = self.cartethyia_agent.respond(message)
+            except Exception as exc:
+                error_text = str(exc)
+                self.root.after(0, lambda text=error_text: self._finish_cartethyia_pet_chat(None, text))
+                return
+            self.root.after(0, lambda: self._finish_cartethyia_pet_chat(reply, None))
+
+        threading.Thread(target=pet_chat_work, name="cartethyia-pet-chat", daemon=True).start()
+        return
+
+        if self._agent_chat_window is not None and self._agent_chat_window.winfo_exists():
+            self._agent_chat_window.deiconify()
+            self._agent_chat_window.lift()
+            if self._agent_chat_entry is not None:
+                self._agent_chat_entry.focus_set()
+            return
+        window = Toplevel(self.root)
+        window.title("与卡提希娅聊天 · 本地 Agent 试用")
+        window.geometry("680x600")
+        window.minsize(560, 460)
+        window.transient(self.root)
+        if APP_ICON.exists():
+            try:
+                window.iconbitmap(str(APP_ICON))
+            except Exception:
+                pass
+        chat_background = "#ededed"
+        shell = Frame(window, bg=chat_background)
+        shell.pack(fill=BOTH, expand=True)
+        header = Frame(shell, padx=16, pady=12, bg="#f7f7f7", highlightthickness=1, highlightbackground="#d7d7d7")
+        header.pack(fill=X)
+        Label(
+            header,
+            text="卡提希娅 · 本地 Agent",
+            font=(FONT_FAMILY, 13, "bold"),
+            bg="#f7f7f7",
+            fg=COLORS["text"],
+        ).pack(anchor="w")
+        Label(
+            header,
+            text="普通聊天由本地模型生成；明确的一键日常等命令只会调用安全白名单。",
+            bg="#f7f7f7",
+            fg=COLORS["muted"],
+        ).pack(anchor="w", pady=(2, 0))
+
+        history_shell = Frame(shell, bg=chat_background)
+        history_shell.pack(fill=BOTH, expand=True)
+        history_canvas = Canvas(history_shell, bg=chat_background, highlightthickness=0, bd=0)
+        history_scrollbar = ttk.Scrollbar(history_shell, orient="vertical", command=history_canvas.yview)
+        history_canvas.configure(yscrollcommand=history_scrollbar.set)
+        history_canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        history_scrollbar.pack(side=RIGHT, fill="y")
+        history = Frame(history_canvas, bg=chat_background, padx=14, pady=12)
+        history_window = history_canvas.create_window((0, 0), window=history, anchor="nw")
+
+        def resize_history(_event=None) -> None:
+            history_canvas.itemconfigure(history_window, width=history_canvas.winfo_width())
+            history_canvas.configure(scrollregion=history_canvas.bbox("all"))
+
+        def scroll_history(event) -> str:
+            history_canvas.yview_scroll(int(-event.delta / 120), "units")
+            return "break"
+
+        history.bind("<Configure>", resize_history)
+        history_canvas.bind("<Configure>", resize_history)
+        history_canvas.bind("<MouseWheel>", scroll_history)
+        history.bind("<MouseWheel>", scroll_history)
+
+        input_row = Frame(shell, padx=12, pady=11, bg="#f7f7f7", highlightthickness=1, highlightbackground="#d7d7d7")
+        input_row.pack(fill=X)
+        entry = Entry(input_row, font=(FONT_FAMILY, 11), relief="flat", bd=0)
+        entry.pack(side=LEFT, fill=X, expand=True, ipady=8, padx=(2, 10))
+        send = Button(
+            input_row,
+            text="发送",
+            width=9,
+            command=self._send_cartethyia_chat,
+            bg="#07c160",
+            fg="white",
+            activebackground="#06ad56",
+            activeforeground="white",
+            relief="flat",
+            bd=0,
+        )
+        send.pack(side=LEFT, ipady=5)
+        self._agent_chat_window = window
+        self._agent_chat_canvas = history_canvas
+        self._agent_chat_text = history
+        self._agent_chat_entry = entry
+        self._agent_chat_send_button = send
+        self._append_cartethyia_chat("卡提希娅", "义人，你来啦。想聊点什么，还是准备开始新的冒险？")
+        if not self.cartethyia_agent_enabled.get():
+            self._append_cartethyia_chat("系统", "本地 Agent 尚未启用。请先到设置页填写服务地址和模型名称。")
+        entry.bind("<Return>", lambda _event: self._send_cartethyia_chat())
+        entry.focus_set()
+
+        def on_destroy(event) -> None:
+            if event.widget is window:
+                self._agent_chat_window = None
+                self._agent_chat_canvas = None
+                self._agent_chat_text = None
+                self._agent_chat_entry = None
+                self._agent_chat_send_button = None
+
+        window.bind("<Destroy>", on_destroy)
+
+    def _append_cartethyia_chat(self, speaker: str, text: str) -> None:
+        widget = self._agent_chat_text
+        if widget is None or not widget.winfo_exists():
+            return
+        if speaker == "系统":
+            Label(
+                widget,
+                text=text,
+                font=(FONT_FAMILY, 9),
+                fg="#888888",
+                bg="#d9d9d9",
+                padx=9,
+                pady=4,
+                wraplength=470,
+                justify=LEFT,
+            ).pack(pady=7)
+        else:
+            is_user = speaker == "你"
+            row = Frame(widget, bg="#ededed")
+            row.pack(fill=X, pady=6)
+            side = RIGHT if is_user else LEFT
+            message_column = Frame(row, bg="#ededed")
+            message_column.pack(side=side, anchor="e" if is_user else "w")
+            Label(
+                message_column,
+                text=speaker,
+                font=(FONT_FAMILY, 8),
+                fg="#888888",
+                bg="#ededed",
+            ).pack(anchor="e" if is_user else "w", padx=3, pady=(0, 2))
+            bubble = Label(
+                message_column,
+                text=text,
+                font=(FONT_FAMILY, 10),
+                fg="#111111",
+                bg="#95ec69" if is_user else "#ffffff",
+                padx=12,
+                pady=8,
+                wraplength=390,
+                justify=LEFT,
+                relief="flat",
+                bd=0,
+            )
+            bubble.pack(anchor="e" if is_user else "w")
+            canvas = self._agent_chat_canvas
+            if canvas is not None:
+                row.bind("<MouseWheel>", lambda event, target=canvas: (target.yview_scroll(int(-event.delta / 120), "units"), "break")[1])
+                bubble.bind("<MouseWheel>", lambda event, target=canvas: (target.yview_scroll(int(-event.delta / 120), "units"), "break")[1])
+        widget.update_idletasks()
+        canvas = self._agent_chat_canvas
+        if canvas is not None and canvas.winfo_exists():
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.yview_moveto(1.0)
+
+    def _send_cartethyia_chat(self) -> None:
+        if self._agent_chat_busy or self._agent_chat_entry is None:
+            return
+        message = self._agent_chat_entry.get().strip()
+        if not message:
+            return
+        if not self.cartethyia_agent_enabled.get():
+            self._append_cartethyia_chat("系统", "本地 Agent 尚未启用，请先在设置页完成配置。")
+            return
+        if not self._save_cartethyia_agent_settings(announce=False):
+            self._append_cartethyia_chat("系统", self.cartethyia_agent_status.get())
+            return
+        self._agent_chat_entry.delete(0, END)
+        self._append_cartethyia_chat("你", message)
+        self._agent_chat_busy = True
+        if self._agent_chat_send_button is not None:
+            self._agent_chat_send_button.configure(state="disabled")
+
+        def work() -> None:
+            try:
+                reply = self.cartethyia_agent.respond(message)
+            except Exception as exc:
+                error_text = str(exc)
+                self.root.after(0, lambda text=error_text: self._finish_cartethyia_chat(None, text))
+                return
+            self.root.after(0, lambda: self._finish_cartethyia_chat(reply, None))
+
+        threading.Thread(target=work, name="cartethyia-agent-chat", daemon=True).start()
+
+    def _finish_cartethyia_chat(self, reply: AgentReply | None, error: str | None) -> None:
+        self._agent_chat_busy = False
+        if self._agent_chat_send_button is not None and self._agent_chat_send_button.winfo_exists():
+            self._agent_chat_send_button.configure(state="normal")
+        if error is not None:
+            self._append_cartethyia_chat("系统", error)
+            return
+        if reply is None:
+            return
+        display_text = self._agent_reply_with_action(reply)
+        self._append_cartethyia_chat(self.pet_name, display_text)
+        self._pet_feedback("waving", display_text, 5200)
+        if reply.tool is not None:
+            self._execute_cartethyia_agent_tool(reply.tool)
+
+    @staticmethod
+    def _agent_reply_with_action(reply: AgentReply) -> str:
+        task_label = AGENT_TASK_LABELS.get(reply.tool or "")
+        if task_label is None:
+            return reply.text
+        return f"{reply.text}\n现在执行：{task_label}。"
+
+    def _finish_cartethyia_pet_chat(self, reply: AgentReply | None, error: str | None) -> None:
+        self._agent_chat_busy = False
+        pet_id, pet_name = getattr(self, "_pending_chat_pet", (self.pet_id, self.pet_name))
+        if error is not None:
+            self._record_pet_chat("系统", error, pet_id)
+            self._pet_feedback("failed", error, 7200)
+            return
+        if reply is None:
+            return
+        display_text = self._agent_reply_with_action(reply)
+        self._record_pet_chat(pet_name, display_text, pet_id)
+        duration = max(5200, min(11000, 2600 + len(display_text) * 115))
+        self._pet_feedback("waving", display_text, duration)
+        if reply.tool is not None:
+            self._execute_cartethyia_agent_tool(reply.tool)
+
+    def _execute_cartethyia_agent_tool(self, tool: str) -> None:
+        actions = {
+            "run_daily": lambda: self._start_daily_routine(require_confirmation=False),
+            "run_weekly_rewards": lambda: self._start_enabled_real(15, require_confirmation=False),
+            "run_weekly_astrite": lambda: self._start_enabled_real(13, require_confirmation=False),
+            "run_4c_10": lambda: self._start_named_task_real("4C刷取", 10, require_confirmation=False),
+            "run_4c_30": lambda: self._start_named_task_real("4C刷取", 30, require_confirmation=False),
+            "stop_task": self._stop,
+            "diagnose": self._diagnose_runtime,
+            "set_auto_shutdown_on": lambda: self._set_auto_shutdown_enabled(True),
+            "set_auto_shutdown_off": lambda: self._set_auto_shutdown_enabled(False),
+            "set_daily_heal_on": lambda: self._set_daily_heal_enabled(True),
+            "set_daily_heal_off": lambda: self._set_daily_heal_enabled(False),
+            "set_pointer_look_on": lambda: self._set_pet_look_enabled(True),
+            "set_pointer_look_off": lambda: self._set_pet_look_enabled(False),
+            "set_auto_jump_on": lambda: self._set_pet_auto_jump_enabled(True),
+            "set_auto_jump_off": lambda: self._set_pet_auto_jump_enabled(False),
+        }
+        action = actions.get(tool)
+        if action is None:
+            self._pet_feedback("failed", "这个操作不在允许列表中，我不能执行。", 5200)
+            return
+        self._log(f"{self.pet_name}本地 Agent 调用白名单操作：{tool}")
+
+        if tool.startswith("set_"):
+            action()
+            return
+
+        def release_then_run() -> None:
+            self.cartethyia_agent.unload()
+            self.root.after(0, action)
+
+        threading.Thread(
+            target=release_then_run,
+            name="cartethyia-agent-release-before-task",
+            daemon=True,
+        ).start()
 
     def _apply_pet_size(self, _event=None) -> None:
         percent = self._normalize_pet_size_percent(self.pet_size.get())
         self.pet_size.set(f"{percent}%")
-        PET_DISPLAY_CONFIG.write_text(
-            json.dumps({"percent": percent}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._save_pet_display_settings(percent=percent)
         if self.desktop_pet is not None:
             base_scale = float(self.pet_definition.get("scale", 1.15))
             self.desktop_pet.set_scale(base_scale * percent / 100.0)
@@ -1613,6 +4294,156 @@ class App:
             return "R"
 
     @staticmethod
+    def _load_daily_heal_enabled() -> bool:
+        try:
+            saved = json.loads(COMBAT_CONFIG.read_text(encoding="utf-8"))
+            return saved.get("daily_heal_enabled") is True
+        except (OSError, ValueError, json.JSONDecodeError):
+            return False
+
+    @staticmethod
+    def _load_auto_shutdown_enabled() -> bool:
+        try:
+            saved = json.loads(APP_SETTINGS_CONFIG.read_text(encoding="utf-8"))
+            return saved.get("shutdown_after_task") is True
+        except (OSError, ValueError, json.JSONDecodeError):
+            return False
+
+    def _save_auto_shutdown_setting(self) -> None:
+        try:
+            saved = json.loads(APP_SETTINGS_CONFIG.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict):
+                saved = {}
+        except (OSError, ValueError):
+            saved = {}
+        saved["shutdown_after_task"] = bool(self.auto_shutdown_enabled.get())
+        APP_SETTINGS_CONFIG.write_text(
+            json.dumps(
+                saved,
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+    def _start_custom_4c(self) -> None:
+        try:
+            settings = json.loads(APP_SETTINGS_CONFIG.read_text(encoding="utf-8"))
+            if not isinstance(settings, dict):
+                settings = {}
+        except (OSError, ValueError):
+            settings = {}
+        saved_count = settings.get("four_c_count", 30)
+        if type(saved_count) is not int or not 1 <= saved_count <= 9999:
+            saved_count = 30
+        count = self._ask_4c_count(saved_count)
+        if count is None:
+            return
+        settings["four_c_count"] = count
+        try:
+            APP_SETTINGS_CONFIG.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            messagebox.showerror("保存失败", "无法记住刷取次数，请检查程序目录权限。", parent=self.root)
+            return
+        self._start_named_task_real("4C刷取", count)
+
+    def _ask_4c_count(self, initial: int) -> int | None:
+        dialog = Toplevel(self.root)
+        dialog.title("4C刷取次数")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.configure(bg=COLORS["app_bg"])
+        dialog.geometry("390x210")
+        shell, body = self._rounded_panel(dialog, padding=18, outer_color=COLORS["app_bg"])
+        shell.pack(fill=BOTH, expand=True, padx=14, pady=14)
+        Label(body, text="4C刷取次数", font=(FONT_FAMILY, 13, "bold"),
+              bg=COLORS["panel_alt"], fg=COLORS["text"]).pack(anchor="w")
+        Label(body, text="要刷取多少次？会自动记住上次的次数（1–9999）。",
+              bg=COLORS["panel_alt"], fg=COLORS["muted"]).pack(anchor="w", pady=(6, 12))
+        value = StringVar(value=str(initial))
+        input_shell, input_body = self._rounded_panel(body, padding=6,
+                                                      color=COLORS["panel"],
+                                                      outer_color=COLORS["panel_alt"])
+        input_shell.pack(fill=X)
+        entry = Entry(input_body, textvariable=value, font=(FONT_FAMILY, 11),
+                      bg=COLORS["panel"], fg=COLORS["text"],
+                      insertbackground=COLORS["text"], relief="flat", bd=0)
+        entry.pack(fill=X, padx=4)
+        error = Label(body, text="", bg=COLORS["panel_alt"], fg=COLORS["primary"])
+        error.pack(anchor="w", pady=(4, 0))
+        result = {"count": None}
+
+        def accept() -> None:
+            try:
+                count = int(value.get().strip())
+            except ValueError:
+                count = 0
+            if not 1 <= count <= 9999:
+                error.configure(text="请输入 1 到 9999 之间的整数。")
+                return
+            result["count"] = count
+            dialog.destroy()
+
+        actions = Frame(body, bg=COLORS["panel_alt"])
+        actions.pack(side="bottom", fill=X, pady=(3, 0))
+        self._rounded_button(actions, "取消", dialog.destroy, width=84).pack(side=RIGHT)
+        self._rounded_button(actions, "确定", accept, width=84, primary=True).pack(side=RIGHT, padx=(0, 8))
+        dialog.bind("<Return>", lambda _event: accept())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        entry.focus_set()
+        entry.select_range(0, END)
+        dialog.grab_set()
+        self.root.wait_window(dialog)
+        return result["count"]
+
+    def _apply_auto_shutdown_setting(self) -> None:
+        self._save_auto_shutdown_setting()
+        state = "开启" if self.auto_shutdown_enabled.get() else "关闭"
+        self.status.set(f"任务完成后自动关机：{state}")
+        self._log(f"任务正常完成后自动关机已{state}。")
+
+    def _set_auto_shutdown_enabled(self, enabled: bool) -> None:
+        self.auto_shutdown_enabled.set(bool(enabled))
+        self._apply_auto_shutdown_setting()
+
+    def _set_daily_heal_enabled(self, enabled: bool) -> None:
+        self.daily_heal_enabled.set(bool(enabled))
+        self._save_combat_settings(announce=False)
+        state = "开启" if enabled else "关闭"
+        self.status.set(f"日常三号位回血：{state}")
+
+    @staticmethod
+    def _load_daily_zone() -> str:
+        try:
+            selected = str(json.loads(DAILY_CONFIG.read_text(encoding="utf-8")).get("zone", ""))
+        except (OSError, ValueError, json.JSONDecodeError):
+            selected = ""
+        return selected if selected in DAILY_ZONE_TEMPLATES else DAILY_ZONE_NAMES[0]
+
+    def _save_daily_zone(self, _event=None) -> None:
+        selected = self.daily_zone.get()
+        if selected not in DAILY_ZONE_TEMPLATES:
+            return
+        DAILY_CONFIG.write_text(
+            json.dumps({"zone": selected}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.status.set(f"一键日常无音区：{selected}")
+
+    def _scroll_daily_zone(self, event) -> str:
+        selected = self.daily_zone.get()
+        try:
+            index = DAILY_ZONE_NAMES.index(selected)
+        except ValueError:
+            index = 0
+        direction = -1 if event.delta > 0 else 1
+        index = max(0, min(len(DAILY_ZONE_NAMES) - 1, index + direction))
+        self.daily_zone.set(DAILY_ZONE_NAMES[index])
+        self._save_daily_zone()
+        return "break"
+
+    @staticmethod
     def _combat_binding_display(binding: str) -> str:
         normalized = str(binding).upper()
         return {
@@ -1622,7 +4453,7 @@ class App:
             "ESC": "Esc",
         }.get(normalized, normalized)
 
-    def _save_combat_settings(self) -> None:
+    def _save_combat_settings(self, announce: bool = True) -> None:
         try:
             normalized_skill = ClientWindowController.normalize_input_binding(self.combat_skill_key.get())
             normalized_ultimate = ClientWindowController.normalize_input_binding(self.combat_ultimate_key.get())
@@ -1633,18 +4464,32 @@ class App:
         self.combat_ultimate_key.set(self._combat_binding_display(normalized_ultimate))
         COMBAT_CONFIG.write_text(
             json.dumps(
-                {"skill_key": normalized_skill, "ultimate_key": normalized_ultimate},
+                {
+                    "skill_key": normalized_skill,
+                    "ultimate_key": normalized_ultimate,
+                    "daily_heal_enabled": self.daily_heal_enabled.get(),
+                },
                 ensure_ascii=False,
                 indent=2,
             ),
             encoding="utf-8",
         )
-        self._log(f"4C技能键位已保存为：{normalized_skill}；大招键位：{normalized_ultimate}。")
-        messagebox.showinfo(
-            "已保存",
-            f"4C技能键位：{normalized_skill}\n4C大招键位：{normalized_ultimate}",
-            parent=self.root,
+        heal_text = "开启" if self.daily_heal_enabled.get() else "关闭"
+        self._log(
+            f"4C技能键位已保存为：{normalized_skill}；大招键位：{normalized_ultimate}；"
+            f"日常三号位回血：{heal_text}。"
         )
+        if announce:
+            messagebox.showinfo(
+                "已保存",
+                f"4C技能键位：{normalized_skill}\n4C大招键位：{normalized_ultimate}"
+                f"\n日常三号位回血：{heal_text}",
+                parent=self.root,
+            )
+
+    def _autosave_combat_settings(self, _event=None) -> None:
+        self._save_combat_settings(announce=False)
+        self.status.set("任务键位与回血设置已自动保存")
 
     def _theme_status_text(self) -> str:
         if self.theme_id in THEME_DEFINITIONS:
@@ -1659,22 +4504,34 @@ class App:
         if self.theme_id in THEME_DEFINITIONS:
             self._build_theme_banner()
 
-        self.header = Frame(self.root, padx=24, pady=18, bg=COLORS["app_bg"])
+        self.header = Frame(self.root, padx=24, pady=12, bg=COLORS["app_bg"])
         self.header.pack(side=TOP, fill=X)
         Label(self.header, text="wwbs", font=(FONT_FAMILY, 22, "bold"), fg=COLORS["text"], bg=COLORS["app_bg"]).pack(side=LEFT)
-        Button(self.header, text="检查更新", command=self._check_for_updates).pack(side=RIGHT, padx=(0, 8))
-        Button(self.header, text="关于", command=self._show_about).pack(side=RIGHT, padx=(0, 8))
-        Button(self.header, text="更新公告", command=self._show_update_history).pack(side=RIGHT, padx=(0, 14))
+        self._rounded_button(self.header, "检查更新", self._check_for_updates, width=92).pack(side=RIGHT, padx=(0, 8))
+        self._rounded_button(self.header, "关于", self._show_about, width=66).pack(side=RIGHT, padx=(0, 8))
+        self._rounded_button(self.header, "更新公告", self._show_update_history, width=92).pack(side=RIGHT, padx=(0, 14))
         Label(self.header, textvariable=self.status, font=(FONT_FAMILY, 10), fg=COLORS["muted"], bg=COLORS["app_bg"]).pack(side=RIGHT)
 
-        summary = Frame(self.root, padx=24, pady=4, bg=COLORS["app_bg"])
-        summary.pack(side=TOP, fill=X)
-        self._summary_label(summary, "目标状态", self.device_status).pack(side=LEFT, padx=(0, 10))
-        self._summary_label(summary, "识别模板", self.template_status).pack(side=LEFT, padx=(0, 10))
-        self._summary_label(summary, "运行模式", StringVar(value="手动点击后执行")).pack(side=LEFT)
+        nav = Frame(self.root, padx=24, bg=COLORS["app_bg"])
+        nav.pack(side=TOP, fill=X, pady=(0, 8))
 
-        self.tabs = ttk.Notebook(self.root)
-        self.tabs.pack(fill=BOTH, expand=True, padx=24, pady=(12, 22))
+        summary_shell, summary = self._rounded_panel(
+            self.root, padding=9, color=COLORS["panel"], outer_color=COLORS["app_bg"])
+        summary_shell.pack(side=TOP, fill=X, padx=24, pady=(0, 10))
+        summary.configure(padx=16)
+        Label(summary, text="●", fg=COLORS["primary"], bg=COLORS["panel"]).pack(side=LEFT)
+        Label(summary, textvariable=self.device_status, fg=COLORS["text"],
+              bg=COLORS["panel"]).pack(side=LEFT, padx=(4, 22))
+        Label(summary, textvariable=self.template_status, fg=COLORS["muted"],
+              bg=COLORS["panel"]).pack(side=LEFT, padx=(0, 22))
+        Label(summary, text="手动点击后执行", fg=COLORS["muted"],
+              bg=COLORS["panel"]).pack(side=LEFT)
+
+        tabs_shell, self.tabs = self._rounded_panel(
+            self.root, padding=0, color=COLORS["panel"], outer_color=COLORS["app_bg"])
+        tabs_shell.pack(fill=BOTH, expand=True, padx=24, pady=(0, 22))
+        self.tabs.columnconfigure(0, weight=1)
+        self.tabs.rowconfigure(0, weight=1)
 
         self.start_tab = Frame(self.tabs, padx=20, pady=18, bg=COLORS["panel"])
         self.template_tab = Frame(self.tabs, padx=20, pady=18, bg=COLORS["panel"])
@@ -1682,11 +4539,26 @@ class App:
         settings_shell = Frame(self.tabs, bg=COLORS["panel"])
         self.settings_tab, self.settings_scroll_canvas = self._create_scrollable_tab(settings_shell)
         self.log_tab = Frame(self.tabs, padx=20, pady=18, bg=COLORS["panel"])
-        self.tabs.add(self.start_tab, text="开始")
-        self.tabs.add(self.template_tab, text="模板")
-        self.tabs.add(self.probability_tab, text="概率")
-        self.tabs.add(settings_shell, text="设置")
-        self.tabs.add(self.log_tab, text="日志")
+        self._tab_panels = (self.start_tab, self.template_tab, self.probability_tab,
+                            settings_shell, self.log_tab)
+        self._nav_buttons = []
+        for index, title in enumerate(("快捷任务", "模板", "概率", "设置", "日志")):
+            button = Canvas(nav, width=94 if index == 0 else 72, height=42,
+                            bg=COLORS["app_bg"], highlightthickness=0,
+                            cursor="hand2", takefocus=True)
+            button._keep_canvas_style = True
+            button.pack(side=LEFT, padx=(0, 4))
+            button.bind("<Button-1>", lambda _event, position=index: self._select_top_tab(position))
+            button.bind("<Return>", lambda _event, position=index: self._select_top_tab(position))
+            button.bind("<space>", lambda _event, position=index: self._select_top_tab(position))
+            button.bind("<Enter>", lambda _event, position=index: self._draw_nav_button(position, True))
+            button.bind("<Leave>", lambda _event, position=index: self._draw_nav_button(position))
+            self._nav_buttons.append((button, title))
+            self._draw_nav_button(index)
+        for panel in self._tab_panels:
+            panel.grid(row=0, column=0, sticky="nsew")
+        self._selected_top_tab = 0
+        self._select_top_tab(0)
 
         self._build_start_tab()
         self._build_template_tab()
@@ -1724,6 +4596,489 @@ class App:
         widget.bind("<MouseWheel>", scroll, add="+")
         for child in widget.winfo_children():
             App._bind_mousewheel_tree(child, canvas)
+
+    def _scroll_start_left(self, event) -> str:
+        direction = -1 if getattr(event, "delta", 0) > 0 else 1
+        self.start_left_canvas.yview_scroll(direction * 3, "units")
+        return "break"
+
+    def _bind_start_left_mousewheel(self, widget) -> None:
+        if isinstance(widget, ttk.Combobox) or getattr(widget, "_is_rounded_picker", False):
+            return  # Keep the zone picker's own wheel selection behavior.
+        widget.bind("<MouseWheel>", self._scroll_start_left, add="+")
+        for child in widget.winfo_children():
+            self._bind_start_left_mousewheel(child)
+
+    def _update_start_scrollbar(self, first: str, last: str) -> None:
+        self._start_scroll_range = (float(first), float(last))
+        self._draw_start_scrollbar()
+
+    def _draw_start_scrollbar(self) -> None:
+        bar = self.start_left_scrollbar
+        bar.delete("all")
+        height = bar.winfo_height()
+        width = bar.winfo_width()
+        first, last = self._start_scroll_range
+        if height <= 1 or last - first >= 0.999:
+            return
+        bar.create_line(width // 2, 0, width // 2, height,
+                        fill=COLORS["line_soft"], width=2)
+        top = max(2, int(first * height))
+        bottom = min(height - 2, max(top + 24, int(last * height)))
+        bar.create_line(width // 2, top, width // 2, bottom,
+                        fill=COLORS["line"], width=5, capstyle="round")
+
+    def _drag_start_scrollbar(self, event) -> None:
+        first, last = self._start_scroll_range
+        visible = min(1.0, last - first)
+        height = max(1, self.start_left_scrollbar.winfo_height())
+        thumb = max(24, int(visible * height))
+        travel = max(1, height - thumb)
+        top = max(0, min(travel, event.y - thumb // 2))
+        self.start_left_canvas.yview_moveto((top / travel) * (1.0 - visible))
+
+    @staticmethod
+    def _paint_rounded_card(canvas: Canvas, x0: int, y0: int, x1: int, y1: int,
+                            radius: int, color: str) -> None:
+        options = {"fill": color, "outline": color, "tags": "shape"}
+        canvas.create_rectangle(x0 + radius, y0, x1 - radius, y1, **options)
+        canvas.create_rectangle(x0, y0 + radius, x1, y1 - radius, **options)
+        for x in (x0, x1 - radius * 2):
+            for y in (y0, y1 - radius * 2):
+                canvas.create_oval(x, y, x + radius * 2, y + radius * 2, **options)
+
+    def _rounded_panel(self, parent, *, padding: int = 12, color: str | None = None,
+                       outer_color: str | None = None):
+        """Return a rounded shell and a normal Frame for its contents."""
+        color = color or COLORS["panel_alt"]
+        outer_color = outer_color or COLORS["panel"]
+        shell = Frame(parent, bg=outer_color)
+        backdrop = Canvas(shell, bg=outer_color, highlightthickness=0, bd=0)
+        backdrop.place(relx=0, rely=0, relwidth=1, relheight=1)
+        backdrop._keep_canvas_style = True
+        content = Frame(shell, bg=color, padx=padding, pady=padding)
+        content.pack(fill=BOTH, expand=True, padx=2, pady=2)
+
+        def redraw(event) -> None:
+            backdrop.delete("all")
+            self._paint_rounded_card(backdrop, 0, 0, event.width, event.height, 14,
+                                     COLORS["line_soft"])
+            self._paint_rounded_card(backdrop, 1, 1, event.width - 1, event.height - 1,
+                                     13, color)
+
+        shell.bind("<Configure>", redraw)
+        return shell, content
+
+    def _rounded_picker(self, parent, variable: StringVar, values, on_change,
+                        *, height: int = 31, editable: bool = False) -> Canvas:
+        """A rounded selector with a compact scrollable popup and wheel selection."""
+        choices = list(values)
+        picker = Canvas(parent, height=height, bg=parent.cget("bg"),
+                        highlightthickness=0, bd=0, cursor="hand2", takefocus=True)
+        picker._keep_canvas_style = True
+        picker._is_rounded_picker = True
+
+        def draw(_event=None) -> None:
+            picker.delete("all")
+            width = max(80, picker.winfo_width())
+            self._paint_rounded_card(picker, 0, 0, width, height, 8, COLORS["line"])
+            self._paint_rounded_card(picker, 1, 1, width - 1, height - 1, 7, COLORS["panel"])
+            picker.create_text(12, height // 2, text=variable.get(), anchor="w",
+                               width=width - 40, fill=COLORS["text"],
+                               font=(FONT_FAMILY, 10))
+            picker.create_text(width - 17, height // 2, text="⌄", fill=COLORS["muted"],
+                               font=(FONT_FAMILY, 13, "bold"))
+
+        def wheel(event) -> str:
+            try:
+                index = choices.index(variable.get())
+            except ValueError:
+                index = 0
+            direction = -1 if event.delta > 0 else 1
+            selected = choices[max(0, min(len(choices) - 1, index + direction))]
+            if selected != variable.get():
+                variable.set(selected)
+                on_change()
+            return "break"
+
+        def popup(_event=None) -> str:
+            previous = getattr(picker, "_popup_window", None)
+            if previous is not None and previous.winfo_exists():
+                picker._popup_close()
+                return "break"
+            window = Toplevel(picker)
+            window.overrideredirect(True)
+            window.transient(self.root)
+            picker._popup_window = window
+            width = max(180, picker.winfo_width())
+            visible = min(8, len(choices))
+            row_height = 32
+            entry_height = 40 if editable else 0
+            total_height = visible * row_height + 8 + entry_height
+            screen_left = picker.winfo_vrootx()
+            screen_top = picker.winfo_vrooty()
+            screen_right = screen_left + picker.winfo_vrootwidth()
+            screen_bottom = screen_top + picker.winfo_vrootheight()
+            x = max(screen_left + 8, min(picker.winfo_rootx(), screen_right - width - 8))
+            below = picker.winfo_rooty() + height + 2
+            above = picker.winfo_rooty() - total_height - 2
+            y = above if below + total_height > screen_bottom - 8 and above >= screen_top + 8 else below
+            y = max(screen_top + 8, min(y, screen_bottom - total_height - 8))
+            window.geometry(f"{width}x{total_height}+{x}+{y}")
+            outside_binding = None
+
+            def close_popup() -> None:
+                nonlocal outside_binding
+                if outside_binding is not None:
+                    self.root.unbind("<Button-1>", outside_binding)
+                    outside_binding = None
+                if window.winfo_exists():
+                    window.destroy()
+                picker._popup_window = None
+                picker._popup_close = None
+
+            def close_if_outside(event) -> None:
+                if not (x <= event.x_root < x + width and y <= event.y_root < y + total_height):
+                    close_popup()
+
+            picker._popup_close = close_popup
+
+            def bind_outside() -> None:
+                nonlocal outside_binding
+                if window.winfo_exists():
+                    outside_binding = self.root.bind("<Button-1>", close_if_outside, add="+")
+
+            picker.after_idle(bind_outside)
+            surface = Canvas(window, width=width, height=total_height,
+                             bg=COLORS["panel"], highlightthickness=0, bd=0)
+            surface.pack(fill=BOTH, expand=True)
+            try:
+                selected_index = choices.index(variable.get())
+            except ValueError:
+                selected_index = 0
+            offset = max(0, min(len(choices) - visible, selected_index - visible // 2))
+            custom = None
+
+            def redraw() -> None:
+                surface.delete("all")
+                self._paint_rounded_card(surface, 0, 0, width, total_height, 9, COLORS["line"])
+                self._paint_rounded_card(surface, 1, 1, width - 1, total_height - 1,
+                                         8, COLORS["panel"])
+                for row, value in enumerate(choices[offset:offset + visible]):
+                    top = row * row_height + 4 + entry_height
+                    if value == variable.get():
+                        self._paint_rounded_card(surface, 5, top, width - 13, top + row_height,
+                                                 6, COLORS["panel_alt"])
+                    surface.create_text(14, top + row_height // 2, text=value, anchor="w",
+                                        width=width - 38, fill=COLORS["text"],
+                                        font=(FONT_FAMILY, 10))
+                if len(choices) > visible:
+                    track_top, track_bottom = 8 + entry_height, total_height - 8
+                    track_height = track_bottom - track_top
+                    thumb_height = max(22, int(track_height * visible / len(choices)))
+                    thumb_top = track_top + int((track_height - thumb_height) * offset / (len(choices) - visible))
+                    surface.create_line(width - 6, track_top, width - 6, track_bottom,
+                                        fill=COLORS["line_soft"], width=2)
+                    surface.create_line(width - 6, thumb_top, width - 6, thumb_top + thumb_height,
+                                        fill=COLORS["muted"], width=4, capstyle="round")
+                if custom is not None:
+                    surface.create_window(7, 7, window=custom, anchor="nw", width=width - 20,
+                                          height=27)
+
+            def scroll_list(event) -> str:
+                nonlocal offset
+                offset = max(0, min(len(choices) - visible, offset + (-1 if event.delta > 0 else 1)))
+                redraw()
+                return "break"
+
+            def choose(event) -> None:
+                nonlocal offset
+                if not 0 <= event.x < width or not 0 <= event.y < total_height:
+                    close_popup()
+                    return
+                if event.x >= width - 13 and len(choices) > visible:
+                    offset = max(0, min(len(choices) - visible,
+                                        int((event.y - entry_height) / (total_height - entry_height)
+                                            * (len(choices) - visible + 1))))
+                    redraw()
+                    return
+                if event.y < entry_height:
+                    return
+                index = offset + max(0, min(visible - 1,
+                                             (event.y - 4 - entry_height) // row_height))
+                if 0 <= index < len(choices):
+                    variable.set(choices[index])
+                    on_change()
+                close_popup()
+
+            redraw()
+            if editable:
+                custom = Entry(surface, font=(FONT_FAMILY, 10), relief="flat", bd=0,
+                               bg=COLORS["panel_alt"], fg=COLORS["text"],
+                               insertbackground=COLORS["text"])
+                custom.insert(0, variable.get())
+                redraw()
+
+                def save_custom(_event=None) -> None:
+                    variable.set(custom.get().strip())
+                    on_change()
+                    close_popup()
+
+                custom.bind("<Return>", save_custom)
+            surface.bind("<MouseWheel>", scroll_list)
+            surface.bind("<Button-1>", choose)
+            surface.bind("<B1-Motion>", lambda event: choose(event)
+                         if event.x >= width - 13 else None)
+            window.bind("<Escape>", lambda _event: close_popup())
+            window.protocol("WM_DELETE_WINDOW", close_popup)
+            window.lift()
+            window.focus_set()
+            if editable:
+                custom.focus_set()
+                custom.select_range(0, END)
+            return "break"
+
+        picker.bind("<Configure>", draw)
+        picker.bind("<MouseWheel>", wheel)
+        picker.bind("<Button-1>", popup)
+        picker.bind("<Return>", popup)
+        picker.bind("<space>", popup)
+        variable.trace_add("write", lambda *_args: picker.after_idle(draw) if picker.winfo_exists() else None)
+        draw()
+        return picker
+
+    def _rounded_button(self, parent, label: str, command, *, width: int = 130,
+                        primary: bool = False) -> Canvas:
+        button = Canvas(parent, width=width, height=37, bg=parent.cget("bg"),
+                        highlightthickness=0, bd=0, cursor="hand2", takefocus=True)
+        button._keep_canvas_style = True
+
+        def draw(state: str = "default") -> None:
+            button.delete("all")
+            actual_width = max(60, button.winfo_width())
+            fill = (COLORS["primary_hover"] if state == "hover" else COLORS["primary"])
+            if not primary:
+                fill = COLORS["panel"] if state == "default" else COLORS["panel_alt"]
+            if state == "pressed":
+                fill = COLORS["line_soft"] if not primary else COLORS["primary"]
+            self._paint_rounded_card(button, 0, 0, actual_width, 37, 9,
+                                     COLORS["primary"] if primary else COLORS["line"])
+            self._paint_rounded_card(button, 1, 1, actual_width - 1, 36, 8, fill)
+            button.create_text(actual_width // 2, 18, text=label,
+                               fill="#ffffff" if primary else COLORS["text"],
+                               font=(FONT_FAMILY, 10, "bold" if primary else "normal"))
+
+        button.bind("<Configure>", lambda _event: draw())
+        button.bind("<Enter>", lambda _event: draw("hover"))
+        button.bind("<Leave>", lambda _event: draw())
+        button.bind("<ButtonPress-1>", lambda _event: draw("pressed"))
+        button.bind("<ButtonRelease-1>", lambda event: (
+            draw("hover"), command() if 0 <= event.x < button.winfo_width()
+            and 0 <= event.y < button.winfo_height() else None
+        ))
+        button.bind("<Return>", lambda _event: command())
+        button.bind("<space>", lambda _event: command())
+        draw()
+        return button
+
+    @staticmethod
+    def _normalize_start_action_order(saved) -> list[str]:
+        defaults = ["weekly_rewards", "weekly_astrite", "daily", "combat_4c_10", "combat_4c_custom"]
+        if not isinstance(saved, list):
+            return defaults
+        ordered = []
+        for key in saved:
+            if key in defaults and key not in ordered:
+                ordered.append(key)
+        return ordered + [key for key in defaults if key not in ordered]
+
+    def _load_start_action_order(self) -> list[str]:
+        try:
+            saved = json.loads(UI_CONFIG.read_text(encoding="utf-8")).get("start_action_order")
+        except (OSError, ValueError, AttributeError):
+            saved = None
+        return self._normalize_start_action_order(saved)
+
+    def _save_start_action_order(self) -> None:
+        try:
+            UI_CONFIG.write_text(json.dumps({"start_action_order": self._start_action_order},
+                                            ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            self._log(f"保存快捷任务顺序失败：{exc}")
+
+    def _repack_start_action_cards(self) -> None:
+        for card in self._start_action_cards.values():
+            card.pack_forget()
+        for key in self._start_action_order:
+            self._start_action_cards[key].pack(fill=X, pady=(0, 6))
+        next(iter(self._start_action_cards.values())).master.update_idletasks()
+
+    def _move_start_action_card(self, key: str, pointer_y: int) -> None:
+        order = self._start_action_order
+        if key not in order:
+            return
+        index = order.index(key)
+        for other_key in order:
+            if other_key == key:
+                continue
+            other = self._start_action_cards[other_key]
+            midpoint = other.winfo_rooty() + other.winfo_height() // 2
+            if pointer_y < midpoint:
+                target = order.index(other_key)
+                if index < target:
+                    target -= 1
+                if target != index:
+                    order.pop(index)
+                    order.insert(target, key)
+                    self._repack_start_action_cards()
+                return
+        if index != len(order) - 1:
+            order.pop(index)
+            order.append(key)
+            self._repack_start_action_cards()
+
+    def _activate_start_action_card(self, card: Canvas, event, command,
+                                    notice_key: str, with_zone: bool) -> None:
+        width = card.winfo_width()
+        if not 0 <= event.x < width or not 0 <= event.y < card.winfo_height():
+            return
+        if width - 82 <= event.x <= width - 45 and event.y < 58:
+            self._show_run_notice(notice_key)
+        elif not with_zone or event.y < 65:
+            command()
+
+    def _make_start_action_card(self, parent: Frame, key: str, title: str, detail: str,
+                                command, notice_key: str, with_zone: bool = False):
+        height = 114 if with_zone else 70
+        card = Canvas(parent, height=height, width=360, bg=COLORS["panel"],
+                      highlightthickness=0, cursor="hand2", takefocus=True)
+        card._keep_canvas_style = True
+        self._start_action_cards[key] = card
+        picker = None
+        picker_window = None
+        if with_zone:
+            picker = self._rounded_picker(card, self.daily_zone, DAILY_ZONE_NAMES,
+                                          self._save_daily_zone)
+            picker_window = card.create_window(55, 73, window=picker, anchor="nw")
+
+        def draw(state: str = "default") -> None:
+            card.delete("shape")
+            width = max(180, card.winfo_width())
+            if getattr(card, "_drag_started", False):
+                self._paint_rounded_card(card, 1, 1, width - 2, height - 2, 14,
+                                         COLORS["line_soft"])
+                self._paint_rounded_card(card, 2, 2, width - 3, height - 3, 13,
+                                         COLORS["panel"])
+                card.create_text(width // 2, height // 2, text="松开即可放到此处",
+                                 fill=COLORS["muted"], font=(FONT_FAMILY, 10), tags="shape")
+                return
+            self._paint_rounded_card(card, 1, 1, width - 2, height - 2, 14,
+                                     COLORS["primary"] if state != "default" else COLORS["line_soft"])
+            self._paint_rounded_card(card, 2, 2, width - 3, height - 3, 13,
+                                     COLORS["line_soft"] if state == "pressed" else
+                                     COLORS["panel"] if state == "hover" else COLORS["panel_alt"])
+            for offset_y in (25, 31, 37):
+                card.create_oval(19, offset_y, 22, offset_y + 3,
+                                 fill=COLORS["muted"], outline="", tags="shape")
+            card.create_text(51, 25, text=title, anchor="w", fill=COLORS["text"],
+                             width=max(130, width - 145), font=(FONT_FAMILY, 11, "bold"), tags="shape")
+            card.create_text(51, 49, text=detail, anchor="w", fill=COLORS["muted"],
+                             width=max(130, width - 145), font=(FONT_FAMILY, 9), tags="shape")
+            card.create_oval(width - 72, 23, width - 50, 45,
+                             outline=COLORS["muted"], width=1, tags="shape")
+            card.create_text(width - 61, 34, text="?", fill=COLORS["muted"],
+                             font=(FONT_FAMILY, 9, "bold"), tags="shape")
+            card.create_text(width - 25, 34, text="›", fill=COLORS["text"],
+                             font=(FONT_FAMILY, 19), tags="shape")
+            if picker_window is not None:
+                card.itemconfigure(picker_window, width=max(120, width - 80))
+            card.tag_lower("shape")
+
+        card.bind("<Configure>", lambda _event: draw())
+        card.bind("<Enter>", lambda _event: draw("hover"))
+        card.bind("<Leave>", lambda _event: draw())
+        def press(event) -> None:
+            card._drag_from_handle = 8 <= event.x <= 34 and 10 <= event.y <= 56
+            card._drag_started = False
+            card._drag_origin = event.y_root
+            card._drag_offset = (event.x_root - card.winfo_rootx(),
+                                 event.y_root - card.winfo_rooty())
+            card.configure(cursor="hand2")
+            draw("pressed")
+
+        def motion(event) -> None:
+            if not getattr(card, "_drag_from_handle", False):
+                return
+            if not card._drag_started and abs(event.y_root - card._drag_origin) >= 5:
+                # A floating copy preserves the pointer's position within the card,
+                # while the original card becomes the destination placeholder.
+                ghost = Toplevel(self.root)
+                ghost.withdraw()
+                ghost.overrideredirect(True)
+                ghost.transient(self.root)
+                ghost.attributes("-topmost", True)
+                ghost.attributes("-alpha", 0.94)
+                surface = Canvas(ghost, width=card.winfo_width(), height=height,
+                                 bg=COLORS["panel"], highlightthickness=0, bd=0,
+                                 cursor="hand2")
+                surface.pack()
+                for item in card.find_withtag("shape"):
+                    kind = card.type(item)
+                    options = {name: values[-1] for name, values in card.itemconfigure(item).items()}
+                    getattr(surface, "create_" + kind)(*card.coords(item), **options)
+                if picker_window is not None:
+                    width = card.winfo_width()
+                    self._paint_rounded_card(surface, 55, 73, width - 25, 105, 9,
+                                             COLORS["line"])
+                    self._paint_rounded_card(surface, 56, 74, width - 26, 104, 8,
+                                             COLORS["panel"])
+                    surface.create_text(67, 89, text=self.daily_zone.get(), anchor="w",
+                                        fill=COLORS["text"], font=(FONT_FAMILY, 10))
+                    surface.create_text(width - 41, 89, text="⌄", fill=COLORS["muted"])
+                    card.itemconfigure(picker_window, state="hidden")
+                card._drag_ghost = ghost
+                card._drag_started = True
+                draw()
+                offset_x, offset_y = card._drag_offset
+                ghost.geometry(f"+{event.x_root - offset_x}+{event.y_root - offset_y}")
+                ghost.deiconify()
+            if card._drag_started:
+                offset_x, offset_y = card._drag_offset
+                card._drag_ghost.geometry(f"+{event.x_root - offset_x}+{event.y_root - offset_y}")
+                card._drag_ghost.lift()
+                top = self.start_left_canvas.winfo_rooty()
+                bottom = top + self.start_left_canvas.winfo_height()
+                if event.y_root < top + 30:
+                    self.start_left_canvas.yview_scroll(-1, "units")
+                elif event.y_root > bottom - 30:
+                    self.start_left_canvas.yview_scroll(1, "units")
+                self._move_start_action_card(key, event.y_root)
+
+        def release(event) -> None:
+            card.configure(cursor="hand2")
+            was_handle = getattr(card, "_drag_from_handle", False)
+            was_dragged = getattr(card, "_drag_started", False)
+            card._drag_from_handle = False
+            card._drag_started = False
+            ghost = getattr(card, "_drag_ghost", None)
+            if ghost is not None:
+                ghost.destroy()
+                card._drag_ghost = None
+            if picker_window is not None:
+                card.itemconfigure(picker_window, state="normal")
+            draw("hover")
+            if was_dragged:
+                self._save_start_action_order()
+            elif not was_handle:
+                self._activate_start_action_card(card, event, command, notice_key, with_zone)
+
+        card.bind("<ButtonPress-1>", press)
+        card.bind("<B1-Motion>", motion)
+        card.bind("<ButtonRelease-1>", release)
+        card.bind("<Return>", lambda _event: command())
+        card.bind("<space>", lambda _event: command())
+        draw()
+        return picker
 
     def _build_theme_banner(self) -> None:
         definition = THEME_DEFINITIONS[self.theme_id]
@@ -1810,11 +5165,24 @@ class App:
         style.map("TRadiobutton", background=[("active", COLORS["panel"])])
         style.configure("Vertical.TScrollbar", background=COLORS["line_soft"], troughcolor=COLORS["panel"], borderwidth=0, arrowcolor=COLORS["muted"])
 
-    def _summary_label(self, parent: Frame, title: str, value: StringVar) -> Frame:
-        box = Frame(parent, padx=16, pady=11, bg=COLORS["panel"], highlightthickness=1, highlightbackground=COLORS["line_soft"])
-        Label(box, text=title, font=(FONT_FAMILY, 9), fg=COLORS["muted"], bg=COLORS["panel"]).pack(anchor="w")
-        Label(box, textvariable=value, font=(FONT_FAMILY, 10, "bold"), fg=COLORS["text"], bg=COLORS["panel"]).pack(anchor="w")
-        return box
+    def _draw_nav_button(self, index: int, hovered: bool = False) -> None:
+        button, title = self._nav_buttons[index]
+        selected = index == getattr(self, "_selected_top_tab", 0)
+        background = COLORS["panel_alt"] if hovered and not selected else COLORS["app_bg"]
+        button.configure(bg=background)
+        button.delete("all")
+        width = int(button.cget("width"))
+        button.create_text(width // 2, 19, text=title,
+                           fill=COLORS["primary"] if selected else COLORS["text"],
+                           font=(FONT_FAMILY, 11, "bold" if selected else "normal"))
+        if selected:
+            button.create_line(8, 40, width - 8, 40, fill=COLORS["primary"], width=2)
+
+    def _select_top_tab(self, index: int) -> None:
+        self._selected_top_tab = index
+        self._tab_panels[index].tkraise()
+        for position in range(len(self._nav_buttons)):
+            self._draw_nav_button(position)
 
     def _polish_widgets(self, widget) -> None:
         for child in widget.winfo_children():
@@ -1879,85 +5247,242 @@ class App:
                 parent_bg = child.master.cget("bg") if hasattr(child.master, "cget") else COLORS["panel"]
                 child.configure(bg=parent_bg, fg=COLORS["text"], activebackground=parent_bg, activeforeground=COLORS["text"], selectcolor=COLORS["panel"])
             elif klass == "Canvas":
-                if child not in (getattr(self, "preview_canvas", None), getattr(self, "theme_banner", None)):
+                if (
+                    child not in (getattr(self, "preview_canvas", None), getattr(self, "theme_banner", None))
+                    and not getattr(child, "_keep_canvas_style", False)
+                ):
                     child.configure(bg=COLORS["panel"], highlightthickness=0)
             self._polish_widgets(child)
 
     def _build_start_tab(self) -> None:
-        scroll_canvas = Canvas(self.start_tab, highlightthickness=0, bg=COLORS["panel"])
-        content = Frame(scroll_canvas, bg=COLORS["panel"])
-        content_window = scroll_canvas.create_window((0, 0), window=content, anchor="nw")
+        self.start_tab.columnconfigure(0, weight=3, minsize=310, uniform="start_columns")
+        self.start_tab.columnconfigure(1, weight=2, minsize=280, uniform="start_columns")
+        self.start_tab.rowconfigure(0, weight=1)
 
-        scroll_canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        left_shell = Frame(self.start_tab, bg=COLORS["panel"])
+        left_shell.grid(row=0, column=0, sticky="nsew", padx=(0, 18))
+        left_shell.columnconfigure(0, weight=1)
+        left_shell.rowconfigure(0, weight=1)
+        self.start_left_canvas = Canvas(left_shell, highlightthickness=0, bg=COLORS["panel"])
+        self.start_left_scrollbar = Canvas(left_shell, width=7, bg=COLORS["panel"],
+                                           highlightthickness=0, cursor="sb_v_double_arrow")
+        self.start_left_canvas.configure(yscrollcommand=self._update_start_scrollbar)
+        self.start_left_canvas.grid(row=0, column=0, sticky="nsew")
+        self.start_left_scrollbar.grid(row=0, column=1, sticky="ns", padx=(5, 0))
+        self._start_scroll_range = (0.0, 1.0)
+        self.start_left_scrollbar.bind("<Configure>", lambda _event: self._draw_start_scrollbar())
+        self.start_left_scrollbar.bind("<Button-1>", self._drag_start_scrollbar)
+        self.start_left_scrollbar.bind("<B1-Motion>", self._drag_start_scrollbar)
+        left = Frame(self.start_left_canvas, bg=COLORS["panel"], padx=4, pady=4)
+        left_window = self.start_left_canvas.create_window((0, 0), window=left, anchor="nw")
+        left.bind("<Configure>", lambda _event: self.start_left_canvas.configure(scrollregion=self.start_left_canvas.bbox("all")))
+        self.start_left_canvas.bind(
+            "<Configure>",
+            lambda event: self.start_left_canvas.itemconfigure(left_window, width=max(1, event.width)),
+        )
 
-        def update_scroll_region(_event=None) -> None:
-            scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all"))
-
-        def update_content_width(event) -> None:
-            content_width = max(event.width - (START_CONTENT_SIDE_PADDING * 2), 1040)
-            scroll_canvas.itemconfigure(content_window, width=content_width)
-            scroll_canvas.coords(content_window, START_CONTENT_SIDE_PADDING, 0)
-
-        content.bind("<Configure>", update_scroll_region)
-        scroll_canvas.bind("<Configure>", update_content_width)
-
-        content.columnconfigure(0, minsize=ACTION_PANEL_WIDTH)
-        content.columnconfigure(1, weight=1)
-        content.rowconfigure(0, weight=1)
-
-        left = Frame(content, bg=COLORS["panel"])
-        left.grid(row=0, column=0, sticky="new", padx=(0, 28))
-        left.configure(width=ACTION_PANEL_WIDTH)
-        left.grid_propagate(False)
-        right = Frame(content, bg=COLORS["panel"])
+        right = Frame(self.start_tab, bg=COLORS["panel"])
         right.grid(row=0, column=1, sticky="nsew")
 
-        self.task_list = Listbox(content, height=1, activestyle="none", font=(FONT_FAMILY, 10))
+        self.task_list = Listbox(self.start_tab, height=1, activestyle="none", font=(FONT_FAMILY, 10))
         self.task_list.bind("<<ListboxSelect>>", lambda _event: self._show_selected_task())
 
-        Label(left, text="一键操作", font=(FONT_FAMILY, 13, "bold")).pack(anchor="w")
-        action_box = Frame(left, padx=14, pady=14, bg=COLORS["panel_alt"], highlightthickness=1, highlightbackground=COLORS["line_soft"])
-        action_box.pack(fill=X, pady=(8, 10))
-        action_box.columnconfigure(0, weight=1, uniform="actions")
-        ttk.Button(action_box, text="检测游戏窗口", style="Primary.TButton", command=self._check_target).grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        ttk.Button(action_box, text="启动（拿满奖励）", style="Primary.TButton", command=lambda: self._start_enabled_real(15)).grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        ttk.Button(action_box, text="拿满星声（13轮）", style="Primary.TButton", command=lambda: self._start_enabled_real(13)).grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        ttk.Button(action_box, text="4C刷取（5次）", style="Primary.TButton", command=lambda: self._start_named_task_real("4C刷取", 5)).grid(row=3, column=0, sticky="ew", pady=(0, 10))
-        ttk.Button(action_box, text="4C刷取（10次）", style="Primary.TButton", command=lambda: self._start_named_task_real("4C刷取", 10)).grid(row=4, column=0, sticky="ew", pady=(0, 10))
-        Button(action_box, text=f"停止当前任务（{STOP_HOTKEY_LABEL}）", command=self._stop).grid(row=5, column=0, sticky="ew")
+        Label(left, text="快捷任务", font=(FONT_FAMILY, 14, "bold"), bg=COLORS["panel"]).pack(anchor="w", pady=(2, 2))
+        Label(
+            left, text="点击任务直接运行；按住左侧三点拖动排序。",
+            fg=COLORS["muted"], bg=COLORS["panel"],
+        ).pack(anchor="w", pady=(0, 10))
 
-        Label(left, text=self.pet_name, font=(FONT_FAMILY, 12, "bold")).pack(anchor="w", pady=(10, 0))
-        pet_box = Frame(left, padx=14, pady=14, bg=COLORS["panel_alt"], highlightthickness=1, highlightbackground=COLORS["line_soft"])
-        pet_box.pack(fill=X, pady=(8, 10))
-        Button(pet_box, text="显示 / 隐藏", command=self._toggle_desktop_pet).pack(fill=X)
+        action_list = Frame(left, bg=COLORS["panel"])
+        action_list.pack(fill=X)
+        self._start_action_cards = {}
+        self._start_action_order = self._load_start_action_order()
+        self._make_start_action_card(action_list, "weekly_rewards", "周常拿满奖励", "完成周常并领取可用奖励",
+                                     lambda: self._start_enabled_real(15), "weekly")
+        self._make_start_action_card(action_list, "weekly_astrite", "周常拿满星声", "完成本周星声目标",
+                                     lambda: self._start_enabled_real(13), "weekly")
+        self._make_start_action_card(
+            action_list, "daily", "一键日常（2轮双倍）", "先选择无音区，再运行两轮挑战",
+            self._start_daily_routine, "daily", with_zone=True,
+        )
+        self._make_start_action_card(action_list, "combat_4c_10", "4C刷取（10次）", "固定 10 轮战斗与吸收",
+                                     lambda: self._start_named_task_real("4C刷取", 10), "combat_4c")
+        self._make_start_action_card(action_list, "combat_4c_custom", "4C刷取（自定义次数）", "运行前填写本次循环次数",
+                                     self._start_custom_4c, "combat_4c")
+        self._repack_start_action_cards()
+        Label(left, text="提示：将鼠标放在无音区或键位上滚动滚轮，可快速切换选项。",
+              fg=COLORS["muted"], bg=COLORS["panel"],
+              wraplength=430, justify=LEFT).pack(anchor="w", pady=(1, 4))
+        self._rounded_button(left, f"停止当前任务（{STOP_HOTKEY_LABEL}）", self._stop).pack(fill=X, pady=(3, 11))
+
+        Label(left, text="桌宠", font=(FONT_FAMILY, 13, "bold"), bg=COLORS["panel"]).pack(anchor="w", pady=(13, 0))
+        pet_shell, pet_box = self._rounded_panel(left, padding=12)
+        pet_shell.pack(fill=X, pady=(8, 4))
+        pet_box.configure(padx=14)
+        Label(pet_box, text=self.pet_name, font=(FONT_FAMILY, 11, "bold"),
+              bg=COLORS["panel_alt"]).pack(side=LEFT)
+        self._rounded_button(pet_box, "显示 / 隐藏", self._toggle_desktop_pet, width=110).pack(side=RIGHT)
         Label(
             left,
             text=f"提示：右键{self.pet_name}可直接执行一键操作",
             fg=COLORS["muted"],
             bg=COLORS["panel"],
-            wraplength=ACTION_PANEL_WIDTH - 10,
+            wraplength=420,
             justify=LEFT,
         ).pack(anchor="w", pady=(0, 10))
 
-        Label(right, text="游戏窗口预览", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", pady=(12, 4))
-        self.preview_canvas = Canvas(right, width=900, height=506, bg=COLORS["preview"], highlightthickness=1, highlightbackground=COLORS["line_soft"])
-        self.preview_canvas.pack(anchor="w", pady=(0, 8))
-        self.preview_canvas.create_text(
-            210,
-            120,
-            text="点击“检测游戏窗口”后显示画面",
-            fill="#f5f5f7",
-            font=(FONT_FAMILY, 10),
-        )
-        self.preview_canvas.bind("<Configure>", self._resize_preview_canvas)
-        right.bind("<Configure>", self._resize_preview_canvas)
+        Label(left, text="任务设置", font=(FONT_FAMILY, 13, "bold"), bg=COLORS["panel"]).pack(anchor="w", pady=(12, 0))
+        settings_shell, quick_settings = self._rounded_panel(left, padding=12)
+        settings_shell.pack(fill=X, pady=(8, 10))
+        quick_settings.configure(padx=14)
+        key_row = Frame(quick_settings, bg=COLORS["panel_alt"])
+        key_row.pack(fill=X, pady=(0, 8))
+        key_row.columnconfigure(0, weight=1)
+        key_row.columnconfigure(1, weight=1)
+        skill_field = Frame(key_row, bg=COLORS["panel_alt"])
+        skill_field.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ultimate_field = Frame(key_row, bg=COLORS["panel_alt"])
+        ultimate_field.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        Label(skill_field, text="4C 技能键位", bg=COLORS["panel_alt"], anchor="w").pack(fill=X)
+        combat_key_picker = self._rounded_picker(
+            skill_field, self.combat_skill_key,
+            ("E", "Q", "R", "T", "鼠标侧键1", "鼠标侧键2"),
+            self._autosave_combat_settings, editable=True)
+        combat_key_picker.pack(fill=X, pady=(3, 0))
+        Label(ultimate_field, text="4C 大招键位", bg=COLORS["panel_alt"], anchor="w").pack(fill=X)
+        ultimate_key_picker = self._rounded_picker(
+            ultimate_field, self.combat_ultimate_key,
+            ("R", "E", "Q", "T", "鼠标侧键1", "鼠标侧键2"),
+            self._autosave_combat_settings, editable=True)
+        ultimate_key_picker.pack(fill=X, pady=(3, 0))
+        Checkbutton(
+            quick_settings, text="日常启用三号位回血", variable=self.daily_heal_enabled,
+            command=self._autosave_combat_settings, bg=COLORS["panel_alt"],
+            activebackground=COLORS["panel_alt"],
+        ).pack(anchor="w", pady=(1, 5))
+        Checkbutton(
+            quick_settings, text="任务正常完成后自动关机", variable=self.auto_shutdown_enabled,
+            command=self._apply_auto_shutdown_setting, bg=COLORS["panel_alt"],
+            activebackground=COLORS["panel_alt"],
+        ).pack(anchor="w", pady=(0, 5))
+        Label(
+            quick_settings,
+            text="更改后自动保存；手动停止、执行失败和预演不会关机。",
+            fg=COLORS["muted"], bg=COLORS["panel_alt"],
+            wraplength=420, justify=LEFT,
+        ).pack(anchor="w")
 
-        Label(right, text="运行状态", font=(FONT_FAMILY, 12, "bold")).pack(anchor="w", pady=(16, 4))
-        self.detail = Text(right, height=12, wrap="word", font=(FONT_FAMILY, 10), relief="solid", bd=1)
+        self.start_left_canvas.bind("<MouseWheel>", lambda event: self._scroll_start_left(event), add="+")
+        self._bind_start_left_mousewheel(left)
+
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+        preview_shell, preview_card = self._rounded_panel(right)
+        preview_shell.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        Label(preview_card, text="实时截图", font=(FONT_FAMILY, 12, "bold"),
+              bg=COLORS["panel_alt"]).pack(anchor="w", pady=(0, 9))
+        self.preview_canvas = Canvas(preview_card, width=300, height=169,
+                                     bg=COLORS["panel"], highlightthickness=0)
+        self.preview_canvas.pack(anchor="center")
+        self.preview_canvas.bind("<Configure>", self._resize_preview_canvas)
+        preview_card.bind("<Configure>", self._resize_preview_canvas)
+
+        log_shell, log_card = self._rounded_panel(right)
+        log_shell.grid(row=1, column=0, sticky="nsew")
+        Label(log_card, text="运行状态", font=(FONT_FAMILY, 12, "bold"),
+              bg=COLORS["panel_alt"]).pack(anchor="w", pady=(0, 9))
+        Label(log_card, textvariable=self.status, fg=COLORS["primary"],
+              bg=COLORS["panel_alt"], anchor="w").pack(fill=X, pady=(0, 8))
+        self.detail = Text(log_card, height=8, wrap="word", font=(FONT_FAMILY, 10), relief="flat", bd=0)
         self.detail.pack(fill=BOTH, expand=True)
         self.detail.bind("<MouseWheel>", self._scroll_detail_log, add="+")
         self.detail.bind("<Button-4>", lambda _event: self._scroll_detail_log_units(-3), add="+")
         self.detail.bind("<Button-5>", lambda _event: self._scroll_detail_log_units(3), add="+")
+
+    def _run_notice_button(self, parent: Frame, notice_key: str) -> Canvas:
+        button = Canvas(
+            parent,
+            width=30,
+            height=30,
+            bg=COLORS["panel_alt"],
+            highlightthickness=0,
+            cursor="hand2",
+            takefocus=True,
+        )
+        button._keep_canvas_style = True
+
+        def draw(hovered: bool = False) -> None:
+            button.delete("all")
+            color = COLORS["primary"] if hovered else COLORS["muted"]
+            button.create_oval(4, 4, 26, 26, outline=color, width=2)
+            button.create_text(15, 15, text="?", fill=color, font=(FONT_FAMILY, 10, "bold"))
+
+        draw()
+        button.bind("<Enter>", lambda _event: draw(True))
+        button.bind("<Leave>", lambda _event: draw(False))
+        button.bind("<Button-1>", lambda _event: self._show_run_notice(notice_key))
+        button.bind("<Return>", lambda _event: self._show_run_notice(notice_key))
+        button.bind("<space>", lambda _event: self._show_run_notice(notice_key))
+        return button
+
+    def _show_run_notice(self, notice_key: str) -> None:
+        notice = RUN_NOTICES.get(notice_key)
+        if notice is None:
+            return
+        title, image_path = notice
+        if not image_path.exists():
+            messagebox.showerror("示例图缺失", f"没有找到运行提示图片：\n{image_path}", parent=self.root)
+            return
+
+        window = Toplevel(self.root)
+        window.title(title)
+        window.transient(self.root)
+        window.resizable(False, False)
+        if APP_ICON.exists():
+            try:
+                window.iconbitmap(str(APP_ICON))
+            except Exception:
+                pass
+
+        screen_width = window.winfo_screenwidth()
+        screen_height = window.winfo_screenheight()
+        image_width = min(960, max(640, screen_width - 160))
+        image_height = round(image_width * 9 / 16)
+        maximum_height = max(360, screen_height - 260)
+        if image_height > maximum_height:
+            image_height = maximum_height
+            image_width = round(image_height * 16 / 9)
+
+        container = Frame(window, padx=22, pady=18, bg=COLORS["panel"])
+        container.pack(fill=BOTH, expand=True)
+        Label(
+            container,
+            text="请先将游戏调整至对应画面，再开始运行",
+            font=(FONT_FAMILY, 15, "bold"),
+            fg=COLORS["text"],
+            bg=COLORS["panel"],
+        ).pack(anchor="w", pady=(0, 12))
+        with Image.open(image_path) as source:
+            preview = source.convert("RGB").resize(
+                (image_width, image_height),
+                Image.Resampling.LANCZOS,
+            )
+        photo = ImageTk.PhotoImage(preview, master=window)
+        Label(
+            container,
+            image=photo,
+            bg=COLORS["preview"],
+            bd=1,
+            relief="solid",
+        ).pack()
+        window._notice_photo = photo
+        ttk.Button(container, text="知道了", command=window.destroy).pack(anchor="e", pady=(12, 0))
+        window.bind("<Escape>", lambda _event: window.destroy())
+        window.update_idletasks()
+        x = max(0, (screen_width - window.winfo_width()) // 2)
+        y = max(0, (screen_height - window.winfo_height()) // 2)
+        window.geometry(f"+{x}+{y}")
+        window.grab_set()
 
     def _scroll_detail_log(self, event) -> str:
         self.detail.yview_scroll(int(-1 * (event.delta / 120)), "units")
@@ -2074,9 +5599,11 @@ class App:
         Button(theme_actions, text="使用原版简约主题", command=lambda: self._select_theme("simple")).pack(side=LEFT)
         Button(theme_actions, text="使用达妮娅主题", command=lambda: self._select_theme("daniya")).pack(side=LEFT, padx=(10, 0))
         Button(theme_actions, text="使用爱弥斯主题", command=lambda: self._select_theme("aemeath")).pack(side=LEFT, padx=(10, 0))
+        Button(theme_actions, text="使用景燃主题", command=lambda: self._select_theme("jingran")).pack(side=LEFT, padx=(10, 0))
+        Button(theme_actions, text="使用卡提希娅主题", command=lambda: self._select_theme("cartethyia")).pack(side=LEFT, padx=(10, 0))
         Label(
             theme_box,
-            text="角色主题会自动绑定同名桌宠；原版简约主题不强制更换角色。切换后会自动重启程序。",
+            text="选择角色主题时会切换到同名桌宠；之后仍可单独改选桌宠。切换主题后会自动重启程序。",
             fg=COLORS["muted"],
             bg=COLORS["panel_alt"],
         ).pack(anchor="w", pady=(10, 0))
@@ -2096,9 +5623,11 @@ class App:
         pet_actions.pack(fill=X)
         Button(pet_actions, text="使用达妮娅", command=lambda: self._select_pet("daniya")).pack(side=LEFT)
         Button(pet_actions, text="使用爱弥斯", command=lambda: self._select_pet("aemeath")).pack(side=LEFT, padx=(10, 0))
+        Button(pet_actions, text="使用景燃", command=lambda: self._select_pet("jingran")).pack(side=LEFT, padx=(10, 0))
+        Button(pet_actions, text="使用卡提希娅", command=lambda: self._select_pet("cartethyia")).pack(side=LEFT, padx=(10, 0))
         Label(
             pet_select_box,
-            text="选择桌宠会同时切换对应角色主题；两款桌宠使用相同功能、右键菜单和排版。",
+            text="选择桌宠不会改变程序主题；四款桌宠使用相同功能、右键菜单和排版。",
             fg=COLORS["muted"],
             bg=COLORS["panel_alt"],
         ).pack(anchor="w", pady=(10, 0))
@@ -2120,6 +5649,112 @@ class App:
             fg=COLORS["muted"],
             bg=COLORS["panel_alt"],
         ).pack(side=LEFT)
+        pet_behavior_row = Frame(pet_select_box, bg=COLORS["panel_alt"])
+        pet_behavior_row.pack(fill=X, pady=(10, 0))
+        behavior_state = "normal" if self.pet_supports_look_controls else "disabled"
+        Checkbutton(
+            pet_behavior_row,
+            text="盯鼠标",
+            variable=self.pet_look_enabled,
+            command=self._apply_pet_look_setting,
+            state=behavior_state,
+            bg=COLORS["panel_alt"],
+        ).pack(side=LEFT)
+        Checkbutton(
+            pet_behavior_row,
+            text="定时跳跃（每45至90秒尝试一次）",
+            variable=self.pet_auto_jump_enabled,
+            command=self._apply_pet_auto_jump_setting,
+            state=behavior_state,
+            bg=COLORS["panel_alt"],
+        ).pack(side=LEFT, padx=(16, 0))
+        Label(
+            pet_behavior_row,
+            text="仅景燃与卡提希娅可用，设置自动保存",
+            fg=COLORS["muted"],
+            bg=COLORS["panel_alt"],
+        ).pack(side=LEFT, padx=(16, 0))
+
+        agent_box = Frame(
+            self.settings_tab,
+            padx=16,
+            pady=14,
+            bg=COLORS["panel_alt"],
+            highlightthickness=1,
+            highlightbackground=COLORS["line_soft"],
+        )
+        agent_box.pack(fill=X, pady=(0, 14))
+        Label(
+            agent_box,
+            text="桌宠 Agent（本地模型 / API）",
+            font=(FONT_FAMILY, 11, "bold"),
+            bg=COLORS["panel_alt"],
+        ).pack(anchor="w")
+        Checkbutton(
+            agent_box,
+            text="启用桌宠 Agent",
+            variable=self.cartethyia_agent_enabled,
+            command=lambda: self._save_cartethyia_agent_settings(announce=False),
+            bg=COLORS["panel_alt"],
+            activebackground=COLORS["panel_alt"],
+        ).pack(anchor="w", pady=(8, 4))
+        Label(agent_box, text="启用 Agent 后停止随机自言自语，只回复聊天和任务消息；关闭后恢复主动发言。聊天记录保存在本机。",
+              bg=COLORS["panel_alt"], fg=COLORS["muted"], wraplength=700, justify="left").pack(anchor="w")
+        provider_row = Frame(agent_box, bg=COLORS["panel_alt"])
+        provider_row.pack(fill=X, pady=3)
+        Label(provider_row, text="接入方式", width=12, anchor="w", bg=COLORS["panel_alt"]).pack(side=LEFT)
+        provider_picker = ttk.Combobox(provider_row, textvariable=self.agent_provider,
+                                      values=("Ollama 本地", "DeepSeek API", "OpenAI 兼容 API", "SillyTavern 酒馆"), state="readonly", width=25)
+        provider_picker.pack(side=LEFT)
+        provider_picker.bind("<<ComboboxSelected>>", self._change_agent_provider)
+        endpoint_row = Frame(agent_box, bg=COLORS["panel_alt"])
+        endpoint_row.pack(fill=X, pady=3)
+        Label(endpoint_row, text="服务地址", width=12, anchor="w", bg=COLORS["panel_alt"]).pack(side=LEFT)
+        Entry(endpoint_row, textvariable=self.cartethyia_agent_endpoint, width=42).pack(side=LEFT, padx=(0, 10))
+        Label(endpoint_row, text="API 填服务商 Base URL（通常以 /v1 结尾）", fg=COLORS["muted"], bg=COLORS["panel_alt"]).pack(side=LEFT)
+        key_row = Frame(agent_box, bg=COLORS["panel_alt"])
+        key_row.pack(fill=X, pady=3)
+        Label(key_row, text="API Key", width=12, anchor="w", bg=COLORS["panel_alt"]).pack(side=LEFT)
+        Entry(key_row, textvariable=self.agent_api_key, show="*", width=42).pack(side=LEFT, padx=(0, 10))
+        Label(key_row, text="可留空；仅本次运行有效，重启后需重新填写", fg=COLORS["muted"], bg=COLORS["panel_alt"]).pack(side=LEFT)
+        bridge_row = Frame(agent_box, bg=COLORS["panel_alt"])
+        bridge_row.pack(fill=X, pady=3)
+        Label(bridge_row, text="酒馆桥接密钥", width=12, anchor="w", bg=COLORS["panel_alt"]).pack(side=LEFT)
+        Entry(bridge_row, textvariable=self.agent_bridge_token, width=42, state="readonly").pack(side=LEFT, padx=(0, 10))
+        Label(bridge_row, text=f"复制到酒馆 wwbs 扩展；本机端口 {SILLYTAVERN_BRIDGE_PORT}", fg=COLORS["muted"], bg=COLORS["panel_alt"]).pack(side=LEFT)
+        model_row = Frame(agent_box, bg=COLORS["panel_alt"])
+        model_row.pack(fill=X, pady=3)
+        Label(model_row, text="模型名称", width=12, anchor="w", bg=COLORS["panel_alt"]).pack(side=LEFT)
+        self.agent_model_picker = ttk.Combobox(model_row, textvariable=self.cartethyia_agent_model, width=39)
+        self.agent_model_picker.pack(side=LEFT, padx=(0, 10))
+        Button(model_row, text="获取服务模型", command=self._fetch_agent_models).pack(side=LEFT)
+        discovery_row = Frame(agent_box, bg=COLORS["panel_alt"])
+        discovery_row.pack(fill=X, pady=3)
+        Label(discovery_row, text="本机模型", width=12, anchor="w", bg=COLORS["panel_alt"]).pack(side=LEFT)
+        self.agent_discovery_picker = ttk.Combobox(discovery_row, textvariable=self.agent_discovered_choice, state="readonly", width=39)
+        self.agent_discovery_picker.pack(side=LEFT, padx=(0, 10))
+        self.agent_discovery_picker.bind("<<ComboboxSelected>>", self._use_discovered_model)
+        Button(discovery_row, text="重新检测", command=self._scan_local_models).pack(side=LEFT)
+        self.agent_discovery_status = StringVar(value="等待检测本机模型")
+        Label(agent_box, textvariable=self.agent_discovery_status, bg=COLORS["panel_alt"], fg=COLORS["muted"], wraplength=900).pack(anchor="w")
+        agent_actions = Frame(agent_box, bg=COLORS["panel_alt"])
+        agent_actions.pack(fill=X, pady=(9, 3))
+        Button(agent_actions, text="保存 Agent 设置", command=self._save_cartethyia_agent_settings).pack(side=LEFT)
+        Button(agent_actions, text="测试连接", command=self._test_cartethyia_agent).pack(side=LEFT, padx=(10, 0))
+        Label(
+            agent_box,
+            textvariable=self.cartethyia_agent_status,
+            fg=COLORS["muted"],
+            bg=COLORS["panel_alt"],
+        ).pack(anchor="w", pady=(7, 0))
+        Label(
+            agent_box,
+            text="四位共享连接设置。酒馆模式使用当前打开的角色卡、世界书和会话上下文；请先在酒馆选中与桌宠相同的角色。远程 API 可能收费。",
+            fg=COLORS["muted"],
+            bg=COLORS["panel_alt"],
+            wraplength=980,
+            justify=LEFT,
+        ).pack(anchor="w", pady=(5, 0))
 
         mode_row = Frame(self.settings_tab)
         mode_row.pack(fill=X, pady=5)
@@ -2139,55 +5774,6 @@ class App:
         Label(size_row, text="模板基准", width=12, anchor="w").pack(side=LEFT)
         Entry(size_row, textvariable=self.expected_resolution, width=24).pack(side=LEFT, padx=6)
         Label(size_row, text="模板按这个分辨率制作，窗口可等比例缩小，例如 1536x864", fg="#697386").pack(side=LEFT)
-
-        combat_row = Frame(self.settings_tab)
-        combat_row.pack(fill=X, pady=5)
-        Label(combat_row, text="4C 技能键位", width=12, anchor="w").pack(side=LEFT)
-        combat_key_picker = ttk.Combobox(
-            combat_row,
-            textvariable=self.combat_skill_key,
-            values=("E", "Q", "R", "T", "鼠标侧键1", "鼠标侧键2"),
-            width=21,
-        )
-        combat_key_picker.pack(side=LEFT, padx=6)
-        Button(combat_row, text="保存键位", command=self._save_combat_settings).pack(side=LEFT, padx=(0, 8))
-        Label(combat_row, text="支持 E、Q 等单键，以及鼠标侧键1 / 鼠标侧键2", fg="#697386").pack(side=LEFT)
-
-        ultimate_row = Frame(self.settings_tab)
-        ultimate_row.pack(fill=X, pady=5)
-        Label(ultimate_row, text="4C 大招键位", width=12, anchor="w").pack(side=LEFT)
-        ttk.Combobox(
-            ultimate_row,
-            textvariable=self.combat_ultimate_key,
-            values=("R", "E", "Q", "T", "鼠标侧键1", "鼠标侧键2"),
-            width=21,
-        ).pack(side=LEFT, padx=6)
-        Label(ultimate_row, text="默认 R；与技能键一起点击“保存键位”", fg="#697386").pack(side=LEFT)
-
-        row1 = Frame(self.settings_tab)
-        row1.pack(fill=X, pady=5)
-        Label(row1, text="ADB 路径", width=12, anchor="w").pack(side=LEFT)
-        Entry(row1, textvariable=self.adb_path, width=42).pack(side=LEFT, padx=6)
-        Button(row1, text="检测目标", command=self._check_target).pack(side=LEFT)
-
-        row2 = Frame(self.settings_tab)
-        row2.pack(fill=X, pady=5)
-        Label(row2, text="设备 ID", width=12, anchor="w").pack(side=LEFT)
-        Entry(row2, textvariable=self.device_id, width=42).pack(side=LEFT, padx=6)
-        Label(row2, text="只有连接多个设备时才需要填写", fg="#697386").pack(side=LEFT)
-
-        row3 = Frame(self.settings_tab)
-        row3.pack(fill=X, pady=5)
-        Label(row3, text="任务配置", width=12, anchor="w").pack(side=LEFT)
-        Entry(row3, textvariable=self.config_path, width=58).pack(side=LEFT, padx=6)
-        Button(row3, text="选择", command=self._choose_config).pack(side=LEFT)
-        Button(row3, text="加载", command=lambda: self._load_config(silent=False)).pack(side=LEFT, padx=6)
-
-        row4 = Frame(self.settings_tab)
-        row4.pack(fill=X, pady=12)
-        Checkbutton(row4, text="预演模式：识别模板但不点击设备", variable=self.dry_run).pack(side=LEFT)
-        Button(row4, text="保存一张当前截图", command=self._screenshot).pack(side=LEFT, padx=12)
-        Button(row4, text="查看程序目录", command=self._open_config_dir).pack(side=LEFT)
 
         self._update_mode_label()
         self._bind_mousewheel_tree(self.settings_tab, self.settings_scroll_canvas)
@@ -2215,7 +5801,13 @@ class App:
         if theme_id == self.theme_id and bound_pet_id == self.pet_id:
             messagebox.showinfo("主题", "已经在使用这个主题了。", parent=self.root)
             return
-        THEME_CONFIG.write_text(json.dumps({"theme": theme_id}, ensure_ascii=False), encoding="utf-8")
+        THEME_CONFIG.write_text(
+            json.dumps(
+                {"theme": theme_id, "explicit": True, "source": "theme-picker"},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         if theme_id in PET_DEFINITIONS:
             PET_CONFIG.write_text(json.dumps({"pet": bound_pet_id}, ensure_ascii=False), encoding="utf-8")
         display_name = THEME_DEFINITIONS.get(theme_id, {}).get("name", "原版简约主题")
@@ -2228,17 +5820,11 @@ class App:
         if definition is None or not Path(definition["frames"]).exists():
             messagebox.showerror("桌宠不可用", "桌宠动画资源不完整。", parent=self.root)
             return
-        bound_theme_id = pet_id
-        if pet_id == self.pet_id and self.theme_id == bound_theme_id:
+        if pet_id == self.pet_id:
             messagebox.showinfo("桌宠", "已经在使用这款桌宠了。", parent=self.root)
             return
-        if not self._theme_pack_valid(bound_theme_id):
-            messagebox.showerror("主题不可用", f"{definition['name']}对应的主题包不可用。", parent=self.root)
-            return
         PET_CONFIG.write_text(json.dumps({"pet": pet_id}, ensure_ascii=False), encoding="utf-8")
-        THEME_CONFIG.write_text(json.dumps({"theme": bound_theme_id}, ensure_ascii=False), encoding="utf-8")
-        theme_name = THEME_DEFINITIONS[bound_theme_id]["name"]
-        if messagebox.askyesno("切换桌宠", f"已选择{definition['name']}，并绑定{theme_name}。现在重启程序查看效果吗？", parent=self.root):
+        if messagebox.askyesno("切换桌宠", f"已选择{definition['name']}桌宠，程序主题保持不变。现在重启程序查看效果吗？", parent=self.root):
             self._restart_app()
 
     def _restart_app(self) -> None:
@@ -2248,6 +5834,70 @@ class App:
             command = [sys.executable, str(Path(__file__).resolve())]
         subprocess.Popen(command, cwd=str(APP_DIR))
         self._close_app()
+
+    @staticmethod
+    def _elevated_launch_command() -> tuple[str, str]:
+        if getattr(sys, "frozen", False):
+            executable = sys.executable
+            arguments = list(sys.argv[1:])
+        else:
+            executable = sys.executable
+            arguments = [str(Path(__file__).resolve()), *sys.argv[1:]]
+        if "--admin-restarted" not in arguments:
+            arguments.append("--admin-restarted")
+        return executable, subprocess.list2cmdline(arguments)
+
+    def _request_admin_restart(self, log_message: str) -> bool:
+        if is_running_as_admin() or self._admin_restart_requested:
+            return False
+        self._admin_restart_requested = True
+        executable, parameters = self._elevated_launch_command()
+        self._log(log_message)
+        try:
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                executable,
+                parameters or None,
+                str(APP_DIR),
+                1,
+            )
+        except Exception as exc:
+            self._admin_restart_requested = False
+            self._log(f"无法请求管理员权限：{exc}")
+            return False
+        if int(result) > 32:
+            self.stop_event.set()
+            self.root.after(120, self._close_app)
+            return True
+        self._admin_restart_requested = False
+        self._log(f"管理员重启未获批准或启动失败（返回值 {int(result)}）。")
+        return False
+
+    def _restart_as_admin_after_error(self, error_text: str) -> bool:
+        return self._request_admin_restart(
+            "检测到任务执行失败且程序未使用管理员权限，正在请求管理员权限并自动重启。"
+        )
+
+    def _ensure_admin_for_real_run(self) -> bool:
+        if self.dry_run.get() or is_running_as_admin():
+            return True
+        restarted = self._request_admin_restart(
+            "真实任务开始前检测到程序未使用管理员权限，正在请求管理员权限并自动重启。"
+        )
+        if not restarted:
+            messagebox.showerror(
+                "需要管理员权限",
+                "真实任务需要以管理员身份运行。请允许 Windows 权限请求后重试。",
+                parent=self.root,
+            )
+        return False
+
+    def _handle_task_failure(self, error_text: str) -> None:
+        if self._restart_as_admin_after_error(error_text):
+            return
+        if is_running_as_admin() or not self._admin_restart_requested:
+            self._show_task_error_feedback(error_text)
 
     def _build_log_tab(self) -> None:
         Label(self.log_tab, text="运行日志", font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
@@ -2270,22 +5920,7 @@ class App:
     def _show_update_notice(self) -> None:
         messagebox.showinfo(
             f"wwbs {APP_VERSION} 更新公告",
-            "1.3.9 正式版\n\n"
-            "• 新增“群声共振模拟域”实验任务\n"
-            "• 用户选好关卡后，自动点击开始模拟\n"
-            "• 固定视角识别蓝色守岸人并用 W/A/S/D 靠近\n"
-            "• 出现 F / 守岸人提示后自动停止移动并交互\n"
-            "• 4C每9秒切三号位，等待2秒后执行三次普攻回血连段\n"
-            "• 一号位额外每20秒按Q；三号位三次普攻后等待1秒按Q再切回\n"
-            "• 吸收键出现立即按F；目标不在视野时固定向右、以5倍幅度搜索\n"
-            "• 技能键位提供常用键、鼠标侧键1和鼠标侧键2下拉预设\n"
-            "• 4C仅在首领名字与整条血条都彻底消失后判定击败\n"
-            "• 提供4C刷取5次和10次两个档位\n"
-            "• 修复切回幻梦游园后仍执行群声任务的问题\n"
-            "• 失焦、识别失败、超时或手动停止时自动释放方向键\n\n"
-            "• 桌宠新增多档大小调整并自动保存，右键桌宠也可直接切换\n"
-            "• 重制高清多尺寸任务栏图标\n\n"
-            "正式版支持通过 GitHub Releases 检查和安装后续更新。",
+            UPDATE_HISTORY[0][1],
             parent=self.root,
         )
 
@@ -2303,11 +5938,13 @@ class App:
                 ),
                 commands={
                     "diagnose": self._diagnose_runtime,
-                    "check_target": self._check_target,
+                    "chat": self._open_cartethyia_chat,
+                    "chat_history": self._show_pet_chat_history,
                     "run_rewards": lambda: self._start_enabled_real(15, require_confirmation=False),
                     "run_astrite": lambda: self._start_enabled_real(13, require_confirmation=False),
-                    "run_4c_5": lambda: self._start_named_task_real("4C刷取", 5, require_confirmation=False),
+                    "run_daily": lambda: self._start_daily_routine(require_confirmation=False),
                     "run_4c_10": lambda: self._start_named_task_real("4C刷取", 10, require_confirmation=False),
+                    "run_4c_custom": self._start_custom_4c,
                     "stop_task": self._stop,
                     **{
                         f"pet_size_{percent}": lambda value=percent: self._set_pet_size_percent(value)
@@ -2316,12 +5953,33 @@ class App:
                 },
                 pet_name=self.pet_name,
                 app_version=APP_VERSION,
+                app_icon=APP_ICON,
                 idle_line_factory=self.pet_definition["idle_line"],
+                allow_generated_speech=lambda: not self.cartethyia_agent_enabled.get(),
                 bubble_palette=self.pet_definition["bubble_palette"],
+                look_spritesheet=self.pet_definition.get("look_spritesheet"),
+                alpha_cutoff=self.pet_definition.get("alpha_cutoff"),
+                look_enabled=(
+                    bool(self.pet_look_enabled.get())
+                    if self.pet_supports_look_controls
+                    else False
+                ),
+                auto_jump_enabled=(
+                    bool(self.pet_auto_jump_enabled.get())
+                    if self.pet_supports_look_controls
+                    else None
+                ),
+                forward_jump_enabled=self.pet_supports_look_controls,
+                visible=self.pet_visible,
+                on_visibility_changed=self._save_pet_visibility,
+                on_look_enabled_changed=self._save_pet_look_from_menu,
+                on_auto_jump_enabled_changed=self._save_pet_auto_jump_from_menu,
+                speak_on_interact=self.pet_id == "jingran",
+                chatter_delay_range=(12000, 24000) if self.pet_id == "jingran" else None,
             )
             self.log_queue.put(f"{self.pet_name}已启动：拖动移动，双击互动，右键执行功能或运行诊断。")
             welcome_factory = self.pet_definition.get("welcome_dialogue")
-            if callable(welcome_factory):
+            if callable(welcome_factory) and not self.cartethyia_agent_enabled.get():
                 welcome = welcome_factory()
                 self.root.after(
                     420,
@@ -2336,6 +5994,7 @@ class App:
 
     def _toggle_desktop_pet(self) -> None:
         if self.desktop_pet is None:
+            self._save_pet_visibility(True)
             self._start_desktop_pet()
         elif self.desktop_pet.window.winfo_exists():
             self.desktop_pet.toggle_visible()
@@ -2510,6 +6169,18 @@ class App:
                             findings.append(
                                 ("warning", "当前首领名字与整条血条都未出现：可能已经击败，或尚未进入4C战斗。")
                             )
+                    elif self._task_with_action(diagnostic_tasks, "daily_routine") is not None:
+                        required = [
+                            "activity_full.png", "battle_task_text.png", "reward_prompt.png",
+                            "guide_battle_tab.png", "guide_tacet_section.png",
+                        ]
+                        missing = [name for name in required if not (TEMPLATES_DIR / "daily" / name).exists()]
+                        if not (TEMPLATES_DIR / DIAGNOSTIC_START_TEMPLATE).exists():
+                            missing.append("../" + DIAGNOSTIC_START_TEMPLATE)
+                        if missing:
+                            findings.append(("error", f"日常与衔接周常模板不完整：{', '.join(missing)}。"))
+                        else:
+                            findings.append(("ok", "日常与衔接周常模板齐全；日常从大世界开始，运行中无需匹配周常起始界面。"))
                     elif navigation_task is not None:
                         navigation_step = next(
                             step for step in navigation_task.steps if step.action == "move_to_visual_target"
@@ -2623,6 +6294,7 @@ class App:
 
     def _close_app(self) -> None:
         self.stop_event.set()
+        self.sillytavern_bridge.stop()
         if self.pet_id == "aemeath":
             record_aemeath_departure()
         if self._hotkey_poll_job is not None:
@@ -2681,15 +6353,33 @@ class App:
                 self._log(f"全局停止快捷键已启用：{STOP_HOTKEY_LABEL}")
             else:
                 self._log(f"全局快捷键注册失败；{STOP_HOTKEY_LABEL} 仍可在程序窗口内使用。")
-        if self._hotkey_triggered.is_set():
+        registered_trigger = self._hotkey_triggered.is_set()
+        if registered_trigger:
             self._hotkey_triggered.clear()
+        key_down = self._stop_hotkey_is_down()
+        async_trigger = key_down and not self._hotkey_was_down
+        self._hotkey_was_down = key_down
+        if registered_trigger or async_trigger:
             self._stop_from_hotkey()
         if self.root.winfo_exists():
             self._hotkey_poll_job = self.root.after(100, self._poll_stop_hotkey)
 
     def _stop_from_hotkey(self) -> None:
+        now = time.monotonic()
+        if now - self._last_hotkey_stop_at < 0.5:
+            return
+        self._last_hotkey_stop_at = now
         self._log(f"收到快捷键 {STOP_HOTKEY_LABEL}。")
         self._stop()
+
+    @staticmethod
+    def _stop_hotkey_is_down() -> bool:
+        """Fallback polling when RegisterHotKey is unavailable or loses a message."""
+        try:
+            get_key = ctypes.windll.user32.GetAsyncKeyState
+            return all(get_key(key) & 0x8000 for key in (VK_CONTROL, VK_ALT, VK_S))
+        except Exception:
+            return False
 
     def _show_about(self) -> None:
         window = Toplevel(self.root)
@@ -2762,10 +6452,18 @@ class App:
 
     @staticmethod
     def _version_tuple(value: str) -> tuple[int, ...]:
-        numbers = re.findall(r"\d+", value or "")
-        return tuple(int(number) for number in numbers) or (0,)
+        match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", value or "")
+        if not match:
+            return (0, 0, 0, 0, 0)
+        version = tuple(int(number or 0) for number in match.groups())
+        prerelease = re.search(r"(alpha|beta|rc)[ .-]*(\d*)", value, re.I)
+        stage = {"alpha": 0, "beta": 1, "rc": 2}[prerelease[1].lower()] if prerelease else 3
+        return (*version, stage, int(prerelease[2] or 0) if prerelease else 0)
 
     def _check_for_updates(self) -> None:
+        if getattr(self, "_update_installing", False):
+            messagebox.showinfo("更新中", "正在下载并准备安装更新，请稍候。", parent=self.root)
+            return
         if getattr(self, "update_worker", None) and self.update_worker.is_alive():
             messagebox.showinfo("检查更新", "正在检查更新，请稍候。", parent=self.root)
             return
@@ -2797,7 +6495,7 @@ class App:
     def _show_available_update(self, tag: str, release: dict, asset: dict) -> None:
         self.status.set("远程更新检查完成")
         if self._version_tuple(tag) <= self._version_tuple(APP_VERSION):
-            messagebox.showinfo("检查更新", f"当前已经是最新版本：wwbs {APP_VERSION}", parent=self.root)
+            messagebox.showinfo("检查更新", f"暂未发现比 wwbs {APP_VERSION} 更新的正式版本。", parent=self.root)
             return
         notes = str(release.get("body", "")).strip() or "该版本没有填写更新说明。"
         prompt = f"发现新版本：{tag}\n\n{notes}\n\n是否下载并安装？"
@@ -2806,12 +6504,17 @@ class App:
         if not getattr(sys, "frozen", False):
             messagebox.showinfo("开发模式", "源码运行模式可以检查更新，但请使用打包版 wwbs.exe 执行自动替换。", parent=self.root)
             return
+        if self.worker and self.worker.is_alive():
+            messagebox.showinfo("任务运行中", "请先结束当前任务，再安装更新。", parent=self.root)
+            return
+        self._update_installing = True
         self.status.set(f"正在下载 {tag}...")
         threading.Thread(target=self._download_and_install_update, args=(tag, asset), daemon=True).start()
 
     def _show_update_error(self, error_text: str) -> None:
-        self.status.set("远程更新检查失败")
-        messagebox.showerror("检查更新失败", f"无法连接 GitHub Releases：\n{error_text}", parent=self.root)
+        self._update_installing = False
+        self.status.set("更新未完成，原程序继续运行")
+        messagebox.showerror("更新未完成", error_text, parent=self.root)
 
     def _download_and_install_update(self, tag: str, asset: dict) -> None:
         work_dir = Path(tempfile.mkdtemp(prefix="wwbs_update_"))
@@ -2828,26 +6531,11 @@ class App:
                         break
                     output.write(chunk)
 
-            def ps_quote(value: str) -> str:
-                return "'" + value.replace("'", "''") + "'"
-
+            staged = prepare_update(zip_path, work_dir / "extract", asset.get("size", 0), asset.get("digest") or "")
             target_dir = Path(sys.executable).resolve().parent
-            current_exe = Path(sys.executable).resolve()
             script_path = work_dir / "update.ps1"
-            script = f"""
-$ErrorActionPreference = 'Stop'
-$work = {ps_quote(str(work_dir))}
-$target = {ps_quote(str(target_dir))}
-$zip = {ps_quote(str(zip_path))}
-$exe = {ps_quote(str(current_exe))}
-while (Get-Process -Id {os.getpid()} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 500 }}
-$extract = Join-Path $work 'extract'
-Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
-Get-ChildItem -LiteralPath $extract -Force | ForEach-Object {{ Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force }}
-Start-Process -FilePath $exe
-Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
-"""
-            script_path.write_text(script, encoding="utf-8")
+            script = install_script(staged, target_dir, work_dir, os.getpid())
+            script_path.write_text(script, encoding="utf-8-sig")
             subprocess.Popen(
                 ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -3117,6 +6805,8 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             self._log(f"由{self.pet_name}触发任务，已跳过开始确认。")
         self.max_cycles = max_cycles
         self.dry_run.set(False)
+        if not self._ensure_admin_for_real_run():
+            return
         self._preflight_enabled_run()
 
     def _start_named_task_real(
@@ -3129,6 +6819,10 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         if task is None:
             messagebox.showerror("任务不可用", f"没有找到任务：{task_name}", parent=self.root)
             return
+        if task_name == "4C刷取":
+            # The dedicated launcher always uses the packaged 4C resources. It must
+            # not depend on, or alter, the template group selected in the UI.
+            task = replace(task, template_group="4c", enabled=True)
         if self.target_mode.get() != "client":
             messagebox.showerror("模式不支持", "4C刷取目前只支持 PC 客户端窗口。", parent=self.root)
             return
@@ -3140,6 +6834,51 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             return
         self.max_cycles = cycles
         self.dry_run.set(False)
+        if not self._ensure_admin_for_real_run():
+            return
+        self._start_worker([task])
+
+    def _start_daily_routine(self, require_confirmation: bool = True) -> None:
+        selected = self.daily_zone.get()
+        if selected not in DAILY_ZONE_TEMPLATES:
+            messagebox.showerror("请选择无音区", "请先滑动选择要挑战的无音区。", parent=self.root)
+            return
+        if self.target_mode.get() != "client":
+            messagebox.showerror("模式不支持", "一键日常目前只支持 PC 客户端窗口。", parent=self.root)
+            return
+        if require_confirmation:
+            if not messagebox.askyesno(
+                "确认开始一键日常",
+                f"将挑战“{selected}”两轮并领取日常奖励。\n\n"
+                "体力不足时只会使用结晶单质或结晶溶剂；两者都没有就停止，绝不会使用星声。\n"
+                "请确认角色当前位于可按 Esc 打开终端的大世界。",
+                parent=self.root,
+            ):
+                return
+        else:
+            self._log(f"由{self.pet_name}触发一键日常，目标为“{selected}”，已跳过开始确认。")
+        self._save_daily_zone()
+        task = WeeklyTask(
+            name="一键日常",
+            enabled=True,
+            weekday="any",
+            description=(
+                f"自动挑战 {selected} 两轮并领取活跃度与先约电台奖励；"
+                "周度游历未完成时自动进入幻梦游园并执行15轮周常。"
+            ),
+            template_group="daily",
+            steps=[
+                Step(
+                    action="daily_routine",
+                    label=f"一键日常：{selected}",
+                    timeout=600.0,
+                )
+            ],
+        )
+        self.max_cycles = 2
+        self.dry_run.set(False)
+        if not self._ensure_admin_for_real_run():
+            return
         self._start_worker([task])
 
     def _preflight_enabled_run(self) -> None:
@@ -3177,7 +6916,7 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         def finish_failure(error_text: str, elapsed: float) -> None:
             self._preflight_running = False
             self._log(f"快速启动检查失败，用时 {elapsed:.2f} 秒。")
-            self._show_task_error_feedback(error_text)
+            self._handle_task_failure(error_text)
 
         def work() -> None:
             started = time.perf_counter()
@@ -3232,11 +6971,17 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         self._log(f"已删除任务：{task.name}")
 
     def _start_worker(self, tasks: list[WeeklyTask]) -> None:
+        if getattr(self, "_update_installing", False):
+            messagebox.showinfo("正在更新", "更新准备期间不能启动自动任务。", parent=self.root)
+            return
         if self.worker and self.worker.is_alive():
             messagebox.showinfo("提示", "任务正在运行中。")
             return
+        if not self._ensure_admin_for_real_run():
+            return
         self._last_started_tasks = list(tasks)
         self._last_task_started_at = time.monotonic()
+        self._manual_stop_requested = False
         if len(tasks) == 1:
             task = tasks[0]
             self.template_status.set(
@@ -3263,18 +7008,57 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
                 self.max_cycles,
                 self.combat_skill_key.get(),
                 self.combat_ultimate_key.get(),
+                self.daily_zone.get(),
+                self.daily_heal_enabled.get(),
+                notice=lambda message: self.root.after(
+                    0,
+                    lambda text=message: messagebox.showinfo("提示", text, parent=self.root),
+                ),
             )
             for task in tasks:
                 runner.run_task(task)
+                if runner.weekly_rewards_pending:
+                    break
             self._log("执行结束。")
-            self.root.after(0, lambda: self._pet_feedback("review", self._event_line("task_complete")))
+            if runner.weekly_rewards_pending:
+                self.root.after(0, lambda: self._pet_feedback("review", "周常已达上限，宝箱请再检查一下；本次不会自动关机。", 6500))
+            elif self._manual_stop_requested:
+                self._log("任务由用户手动停止，不会触发自动关机。")
+            else:
+                self.root.after(0, self._handle_successful_task_completion)
         except Exception as exc:
             error_text = str(exc)
             self._log(f"执行失败: {error_text}")
-            self.root.after(0, lambda text=error_text: self._show_task_error_feedback(text))
+            self.root.after(0, lambda text=error_text: self._handle_task_failure(text))
         finally:
             self.max_cycles = None
             self.root.after(0, lambda: self._set_pet_working(False))
+
+    def _handle_successful_task_completion(self) -> None:
+        self._pet_feedback("review", self._event_line("task_complete"))
+        if (
+            not self.auto_shutdown_enabled.get()
+            or self.dry_run.get()
+            or self._manual_stop_requested
+        ):
+            return
+        self._log("任务正常完成，已请求 Windows 在30秒后自动关机。")
+        self._pet_feedback("review", "任务已经完成。电脑将在30秒后自动关机。", 9000)
+        try:
+            subprocess.Popen(
+                [
+                    "shutdown.exe",
+                    "/s",
+                    "/t",
+                    "30",
+                    "/c",
+                    "wwbs 自动任务已完成，电脑将在30秒后关机。",
+                ],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError as exc:
+            self._log(f"自动关机请求失败: {exc}")
+            self._pet_feedback("failed", f"任务已经完成，但自动关机请求失败：{exc}", 7200)
 
     def _is_due(self, task: WeeklyTask) -> bool:
         if task.weekday == "any":
@@ -3397,6 +7181,7 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             self._ensure_template_task(template_name, self._template_group_key(self.template_group.get()))
 
     def _stop(self) -> None:
+        self._manual_stop_requested = True
         self.stop_event.set()
         self._pet_feedback("waiting", self._event_line("stop_requested"))
         self._log("正在请求停止...")
@@ -3462,7 +7247,7 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         if active is None:
             self._log(
                 f"模板组 {self._template_group_name(selected_group)} 没有普通启动任务；"
-                "4C请使用5次或10次专用按钮。"
+                "4C请使用10次或自定义次数按钮。"
             )
             return
         ConfigStore(Path(self.config_path.get())).save(self.tasks)
@@ -3621,15 +7406,19 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
             self.preview_canvas.configure(width=width, height=height)
         if self.preview_source and self.preview_source.exists():
             self._show_preview(self.preview_source, self.preview_title)
+        else:
+            self.preview_canvas.delete("all")
+            self.preview_canvas.create_text(
+                width // 2, height // 2,
+                text="暂无截图\n运行任务后显示游戏画面",
+                fill=COLORS["muted"], font=(FONT_FAMILY, 10), justify="center",
+            )
 
     def _preview_canvas_size(self) -> tuple[int, int]:
-        parent_width = max(self.preview_canvas.master.winfo_width(), 640)
-        available_height = min(PREVIEW_MAX_HEIGHT, max(PREVIEW_MIN_HEIGHT, int(self.root.winfo_height() * 0.52)))
+        parent_width = max(180, self.preview_canvas.master.winfo_width() - 28)
+        available_height = min(PREVIEW_MAX_HEIGHT, max(PREVIEW_MIN_HEIGHT, int(self.root.winfo_height() * 0.29)))
         target_width = min(parent_width, int(available_height * PREVIEW_ASPECT))
-        target_height = int(target_width / PREVIEW_ASPECT)
-        if target_height < PREVIEW_MIN_HEIGHT and parent_width >= int(PREVIEW_MIN_HEIGHT * PREVIEW_ASPECT):
-            target_height = PREVIEW_MIN_HEIGHT
-            target_width = int(target_height * PREVIEW_ASPECT)
+        target_height = max(1, int(target_width / PREVIEW_ASPECT))
         return target_width, target_height
 
     def _describe_step(self, step: Step) -> str:
@@ -3647,7 +7436,7 @@ Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
         if step.action == "move_to_visual_target":
             return f"{label}固定视角下用 W/A/S/D 靠近目标，出现 {step.template} 后按 F"
         if step.action == "combat_4c":
-            return f"{label}持续战斗，击败后寻找并吸收金色目标，再点击重新挑战；支持5次或10次循环"
+            return f"{label}持续战斗，击败后寻找并吸收金色目标，再点击重新挑战；支持10次或自定义次数循环"
         if step.action == "tap":
             return f"{label}点击固定位置 ({step.x}, {step.y})"
         if step.action == "swipe":
@@ -3740,11 +7529,12 @@ def ensure_default_config() -> None:
 def main() -> None:
     ensure_default_config()
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ybpan34.wwbs.1.3.9.icon2")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ybpan34.wwbs.1.4.7")
     except Exception:
         pass
     root = Tk()
     App(root)
+    root.after(0, signal_update_ready)
     root.mainloop()
 
 

@@ -13,6 +13,12 @@ import daniya_persona
 
 
 class AemeathPersonaTests(unittest.TestCase):
+    def test_daniya_prompt_layers_exist(self) -> None:
+        self.assertIn("达妮娅", daniya_persona.SYSTEM_PROMPT)
+        self.assertIn("红茶", daniya_persona.CHARACTER_PROMPT)
+        self.assertIn("慵懒", daniya_persona.PERSONALITY_PROMPT)
+        self.assertIn("日常", daniya_persona.DIALOGUE_PROMPT)
+
     def test_prompt_layers_exist(self) -> None:
         self.assertIn("爱弥斯", persona.SYSTEM_PROMPT)
         self.assertIn("校园", persona.CHARACTER_PROMPT)

@@ -1,0 +1,10 @@
+{
+  "display_name": "wwbs 桌宠桥接",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "author": "wwbs",
+  "version": "1.0.0",
+  "homePage": "https://github.com/ybpan34-prog/WWBS"
+}

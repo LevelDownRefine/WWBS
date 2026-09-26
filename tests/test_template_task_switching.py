@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock
 
 import app
 
@@ -46,6 +47,24 @@ class TemplateTaskSwitchingTests(unittest.TestCase):
         self.assertEqual(len(enabled), 1)
         self.assertEqual(enabled[0].name, "幻梦游园")
         self.assertEqual(enabled[0].template_group, "default")
+
+    def test_4c_launcher_forces_packaged_group_without_changing_selection(self):
+        launcher = app.App.__new__(app.App)
+        misconfigured = task("4C刷取", "default", False, "combat_4c")
+        launcher.tasks = [misconfigured]
+        launcher.target_mode = Mock()
+        launcher.target_mode.get.return_value = "client"
+        launcher.max_cycles = None
+        launcher.dry_run = Mock()
+        launcher._start_worker = Mock()
+
+        launcher._start_named_task_real("4C刷取", 5, require_confirmation=False)
+
+        launched = launcher._start_worker.call_args.args[0][0]
+        self.assertEqual(launched.template_group, "4c")
+        self.assertTrue(launched.enabled)
+        self.assertEqual(misconfigured.template_group, "default")
+        self.assertEqual(launcher.max_cycles, 5)
 
 
 if __name__ == "__main__":
