@@ -246,6 +246,7 @@ class DailyRoutineTests(unittest.TestCase):
 
     def test_standalone_weekly_run_checks_skill_before_clicking_start(self):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
+        runner._check_weekly_cap = Mock()
         runner._wait_for_daily_template = Mock()
         runner._ensure_weekly_skill_selected = Mock()
         runner._run_step = Mock()
