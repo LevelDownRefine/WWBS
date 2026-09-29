@@ -1,0 +1,14 @@
+# 只开能抓到真 bug 的规则，不做风格重排
+target-version = "py310"
+
+[lint]
+# E4 导入位置 / E7 语句用法 / E9 运行时错误
+# F  pyflakes：未定义名、未使用导入与变量、重复定义
+select = ["E4", "E7", "E9", "F"]
+
+# E731 是「不要把 lambda 赋给变量」，纯风格，不含缺陷检测，不为此改写既有代码
+ignore = ["E731"]
+
+[lint.per-file-ignores]
+# scripts/ 是路径引导式脚本：先 sys.path.insert 再 import 仓库模块
+"scripts/*" = ["E402"]

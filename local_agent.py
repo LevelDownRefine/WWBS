@@ -195,7 +195,7 @@ def list_service_models(config: LocalAgentConfig, timeout: float = 5.0) -> list[
         return sorted({item[name_key] for item in payload[key] if isinstance(item, dict) and isinstance(item.get(name_key), str) and item[name_key]})
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"读取模型列表失败（HTTP {exc.code}），请检查地址、密钥和服务权限。") from None
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError):
         raise RuntimeError("无法读取模型列表，请确认服务已启动，或手动填写模型名。") from None
 
 
@@ -455,7 +455,7 @@ class LocalCartethyiaAgent:
             if isinstance(exc.reason, (TimeoutError, socket.timeout)):
                 raise RuntimeError(timeout_message) from exc
             raise RuntimeError("无法连接模型服务，请检查服务地址、网络或服务是否启动。") from None
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, json.JSONDecodeError):
             raise RuntimeError("模型服务返回了无法读取的数据，请检查接口格式。") from None
         try:
             content = (payload["choices"][0]["message"]["content"] if config.provider != "ollama"
