@@ -249,7 +249,7 @@ class ClientWindowController:
             "ESCAPE": "ESC",
         }
         normalized = aliases.get(normalized, normalized)
-        if normalized in {"XBUTTON1", "XBUTTON2", "SPACE", "ESC"}:
+        if normalized in {"XBUTTON1", "XBUTTON2", "SPACE", "ESC", "F2"}:
             return normalized
         if len(normalized) == 1 and normalized.isascii() and normalized.isalnum():
             return normalized
@@ -264,6 +264,8 @@ class ClientWindowController:
             return 0x1B
         if normalized in {"XBUTTON1", "XBUTTON2"}:
             raise ValueError("鼠标侧键不能作为键盘事件发送。")
+        if normalized == "F2":
+            return 0x71
         if len(normalized) != 1 or not normalized.isascii() or not normalized.isalnum():
             raise ValueError(f"不支持的键盘按键: {key}")
         return ord(normalized)
