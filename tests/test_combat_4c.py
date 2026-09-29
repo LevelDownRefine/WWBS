@@ -106,6 +106,15 @@ class Combat4CTests(unittest.TestCase):
             self.assertEqual(name, "absorb_prompt_dark.png")
             self.assertGreater(match.x, 1250)
 
+    def test_function_keys_are_supported_for_keyboard_events(self):
+        self.assertEqual(ClientWindowController.normalize_input_binding("f2"), "F2")
+        self.assertEqual(ClientWindowController.normalize_input_binding("F12"), "F12")
+        self.assertEqual(ClientWindowController._virtual_key("F1"), 0x70)
+        self.assertEqual(ClientWindowController._virtual_key("F2"), 0x71)
+        self.assertEqual(ClientWindowController._virtual_key("F12"), 0x7B)
+        with self.assertRaises(ValueError):
+            ClientWindowController.normalize_input_binding("F13")
+
     def test_combat_binding_presets_use_friendly_mouse_button_names(self):
         self.assertEqual(app.App._combat_binding_display("XBUTTON1"), "鼠标侧键1")
         self.assertEqual(app.App._combat_binding_display("XBUTTON2"), "鼠标侧键2")

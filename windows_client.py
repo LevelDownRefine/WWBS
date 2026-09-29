@@ -251,6 +251,9 @@ class ClientWindowController:
         normalized = aliases.get(normalized, normalized)
         if normalized in {"XBUTTON1", "XBUTTON2", "SPACE", "ESC"}:
             return normalized
+        if 2 <= len(normalized) <= 3 and normalized[0] == "F" and normalized[1:].isdigit():
+            if 1 <= int(normalized[1:]) <= 12:
+                return normalized
         if len(normalized) == 1 and normalized.isascii() and normalized.isalnum():
             return normalized
         raise ValueError(f"不支持的输入键位: {binding}")
@@ -264,6 +267,9 @@ class ClientWindowController:
             return 0x1B
         if normalized in {"XBUTTON1", "XBUTTON2"}:
             raise ValueError("鼠标侧键不能作为键盘事件发送。")
+        if 2 <= len(normalized) <= 3 and normalized[0] == "F" and normalized[1:].isdigit():
+            if 1 <= int(normalized[1:]) <= 12:
+                return 0x70 + int(normalized[1:]) - 1
         if len(normalized) != 1 or not normalized.isascii() or not normalized.isalnum():
             raise ValueError(f"不支持的键盘按键: {key}")
         return ord(normalized)
