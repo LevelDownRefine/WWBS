@@ -89,13 +89,22 @@ class InteractionTests(unittest.TestCase):
         instance.combat_ultimate_key = Mock()
         instance.combat_ultimate_key.get.return_value = "鼠标侧键2"
         instance.combat_ultimate_key.set = Mock()
+        instance._boss_challenge_settings = Mock(
+            return_value=app.BossChallengeEntrance(True, "90")
+        )
         instance.status = Mock()
         instance._log = Mock()
         with tempfile.TemporaryDirectory() as tmp, patch.object(app, "COMBAT_CONFIG", Path(tmp) / "combat.json"):
             instance._autosave_combat_settings()
             saved = json.loads(app.COMBAT_CONFIG.read_text(encoding="utf-8"))
-        self.assertEqual(saved, {"skill_key": "Q", "ultimate_key": "XBUTTON2"})
-        instance.status.set.assert_called_once_with("战斗键位已自动保存")
+        self.assertEqual(saved, {
+            "skill_key": "Q",
+            "ultimate_key": "XBUTTON2",
+            "boss_challenge_level": "90",
+            "boss_challenge_target": "定序诸理之律",
+            "combat_4c_enter_boss_challenge": True,
+        })
+        instance.status.set.assert_called_once_with("战斗设置已自动保存")
 
     def test_history_persists_and_separates_pets(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,15 +135,17 @@ class InteractionTests(unittest.TestCase):
         pet._speak_generated_line()
         pet.say.assert_called_once_with("hello", 4600)
 
-    def test_custom_count_remembers_and_preserves_other_settings(self):
+    def test_4c_count_remembers_and_preserves_other_settings(self):
         instance = app.App.__new__(app.App)
         instance.root = Mock()
+        instance.status = Mock()
+        instance.four_c_count = Mock()
+        instance.four_c_count.get.return_value = "53"
         instance._start_named_task_real = Mock()
         with tempfile.TemporaryDirectory() as tmp, patch.object(app, "APP_SETTINGS_CONFIG", Path(tmp) / "settings.json"):
             app.APP_SETTINGS_CONFIG.write_text('{"shutdown_after_task": true, "four_c_count": 47}')
-            with patch.object(instance, "_ask_4c_count", return_value=53) as ask:
-                instance._start_custom_4c()
-            ask.assert_called_once_with(47)
+            self.assertEqual(instance._load_4c_count(), 47)
+            instance._start_4c()
             self.assertEqual(json.loads(app.APP_SETTINGS_CONFIG.read_text())["four_c_count"], 53)
             instance.auto_shutdown_enabled = Mock()
             instance.auto_shutdown_enabled.get.return_value = False

@@ -25,6 +25,11 @@ from PIL import Image, ImageDraw, ImageTk
 import numpy as np
 
 from image_matcher import TemplateMatcher
+from combat_4c_entrance import (
+    BOSS_CHALLENGE_OPTIONS,
+    NO_BOSS_CHALLENGE,
+    BossChallengeEntrance,
+)
 from windows_client import ClientWindowController
 from desktop_pet import DesktopPet
 from chat_history import ChatHistory
@@ -1040,6 +1045,7 @@ class TaskRunner:
         rotation_presets: dict[str, list[dict]] | None = None,
         rotation_times: dict[str, dict] | None = None,
         rotation_orders: dict[str, list[int]] | None = None,
+        boss_challenge: BossChallengeEntrance | None = None,
     ):
         self.controller = controller
         self.log = log
@@ -1050,6 +1056,7 @@ class TaskRunner:
         self.combat_ultimate_key = combat_ultimate_key
         self.daily_zone_name = daily_zone_name
         self.daily_heal_enabled = bool(daily_heal_enabled)
+        self.boss_challenge = boss_challenge
         self.notice = notice or (lambda _message: None)
         self.rotation_modules = rotation_modules if rotation_modules is not None else active_modules(default_store())
         self.rotation_presets = rotation_presets or {}
@@ -1326,6 +1333,9 @@ class TaskRunner:
             f"大招键位 {ultimate_key}。"
         )
         try:
+            # 入口对象会自行处理“无”（禁用）选项；取消进入则终止本次任务。
+            if self.boss_challenge is not None and not self.boss_challenge.enter(self):
+                return
             for cycle_index in range(1, cycle_count + 1):
                 if self.stop_event.is_set():
                     self.log("    收到停止信号，4C刷取已停止。")
@@ -1519,7 +1529,7 @@ class TaskRunner:
         health_ratio = self._boss_health_ratio(screenshot)
         name_ratio = self._boss_name_ratio(screenshot)
         bar_track_score = self._boss_bar_track_score(screenshot)
-        header_present = name_ratio >= 0.015 or bar_track_score >= 0.18
+        header_present = name_ratio >= BossChallengeEntrance.BOSS_NAME_THRESHOLD or bar_track_score >= BossChallengeEntrance.BOSS_BAR_TRACK_THRESHOLD
         confirmation = 0 if header_present else missing_checks + 1
         if log_result:
             self.log(
@@ -4148,8 +4158,23 @@ class App:
                 value = saved_connection.get(key)
                 if isinstance(value, str) and (key != 'target_mode' or value in {'client','adb'}):
                     getattr(self,key).set(value)
-        self.combat_skill_key = StringVar(value=self._load_combat_skill_key())
-        self.combat_ultimate_key = StringVar(value=self._load_combat_ultimate_key())
+        try:
+            saved_combat = json.loads(COMBAT_CONFIG.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            saved_combat = {}
+        saved_combat = saved_combat if isinstance(saved_combat, dict) else {}
+        self.combat_skill_key = StringVar(value=self._combat_binding_from_settings(saved_combat, "skill_key", "E"))
+        self.combat_ultimate_key = StringVar(value=self._combat_binding_from_settings(saved_combat, "ultimate_key", "R"))
+        boss_challenge = BossChallengeEntrance(
+            enabled=saved_combat.get("combat_4c_enter_boss_challenge") is True,
+            level=saved_combat.get("boss_challenge_level"),
+            target=saved_combat.get("boss_challenge_target"),
+        )
+        self.boss_challenge_level = StringVar(value=boss_challenge.level)
+        self.boss_challenge_target = StringVar(
+            value=boss_challenge.target if boss_challenge.enabled else NO_BOSS_CHALLENGE
+        )
+        self.four_c_count = StringVar(value=str(self._load_4c_count()))
         self.daily_zone = StringVar(value=self._load_daily_zone())
         self.auto_shutdown_enabled = BooleanVar(value=self._load_auto_shutdown_enabled())
         self.pet_size = StringVar(value=f"{self._load_pet_size_percent()}%")
@@ -5026,22 +5051,25 @@ class App:
         self._apply_pet_size()
 
     @staticmethod
-    def _load_combat_skill_key() -> str:
-        try:
-            selected = json.loads(COMBAT_CONFIG.read_text(encoding="utf-8")).get("skill_key", "E")
-            normalized = ClientWindowController.normalize_input_binding(str(selected))
-            return App._combat_binding_display(normalized)
-        except (OSError, ValueError, json.JSONDecodeError):
-            return "E"
+    def _combat_binding_from_settings(
+        saved: dict[str, object], key: str, default: str,
+    ) -> str:
+        """从已加载的战斗设置中读取并规范化键位。
 
-    @staticmethod
-    def _load_combat_ultimate_key() -> str:
+        Args:
+            saved: 已读取的战斗设置。
+            key: 要读取的设置项。
+            default: 设置不存在或无效时使用的键位。
+
+        Returns:
+            可供界面显示的键位名称。
+        """
         try:
-            selected = json.loads(COMBAT_CONFIG.read_text(encoding="utf-8")).get("ultimate_key", "R")
+            selected = saved.get(key, default)
             normalized = ClientWindowController.normalize_input_binding(str(selected))
             return App._combat_binding_display(normalized)
-        except (OSError, ValueError, json.JSONDecodeError):
-            return "R"
+        except ValueError:
+            return default
 
     @staticmethod
     def _load_auto_shutdown_enabled() -> bool:
@@ -5050,6 +5078,51 @@ class App:
             return saved.get("shutdown_after_task") is True
         except (OSError, ValueError, json.JSONDecodeError):
             return False
+
+    @staticmethod
+    def _load_4c_count() -> int:
+        """读取上次保存的 4C 刷取次数。
+
+        Returns:
+            1 到 9999 之间的刷取次数；配置无效时返回 30。
+        """
+        try:
+            saved = json.loads(APP_SETTINGS_CONFIG.read_text(encoding="utf-8"))
+            count = saved.get("four_c_count", 30)
+        except (OSError, ValueError, json.JSONDecodeError, AttributeError):
+            count = 30
+        return count if type(count) is int and 1 <= count <= 9999 else 30
+
+    def _save_4c_count(self, _event=None) -> bool:
+        """校验并保存 4C 刷取次数。
+
+        Returns:
+            次数有效且保存成功时返回 True，否则返回 False。
+        """
+        try:
+            count = int(self.four_c_count.get().strip())
+        except ValueError:
+            count = 0
+        if not 1 <= count <= 9999:
+            self.status.set("4C 刷取次数必须是 1 到 9999 之间的整数")
+            return False
+        self.four_c_count.set(str(count))
+        try:
+            saved = json.loads(APP_SETTINGS_CONFIG.read_text(encoding="utf-8"))
+            if not isinstance(saved, dict):
+                saved = {}
+        except (OSError, ValueError):
+            saved = {}
+        saved["four_c_count"] = count
+        try:
+            APP_SETTINGS_CONFIG.write_text(
+                json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8",
+            )
+        except OSError:
+            self.status.set("4C 刷取次数保存失败，请检查设置目录权限")
+            return False
+        self.status.set(f"4C 刷取次数已保存为 {count}")
+        return True
 
     def _save_auto_shutdown_setting(self) -> None:
         try:
@@ -5068,78 +5141,16 @@ class App:
             encoding="utf-8",
         )
 
-    def _start_custom_4c(self) -> None:
-        try:
-            settings = json.loads(APP_SETTINGS_CONFIG.read_text(encoding="utf-8"))
-            if not isinstance(settings, dict):
-                settings = {}
-        except (OSError, ValueError):
-            settings = {}
-        saved_count = settings.get("four_c_count", 30)
-        if type(saved_count) is not int or not 1 <= saved_count <= 9999:
-            saved_count = 30
-        count = self._ask_4c_count(saved_count)
-        if count is None:
+    def _start_4c(self) -> None:
+        """使用卡片中填写的次数启动 4C 刷取。"""
+        if not self._save_4c_count():
+            messagebox.showerror(
+                "刷取次数不可用",
+                "请输入 1 到 9999 之间的整数，并检查设置目录权限。",
+                parent=self.root,
+            )
             return
-        settings["four_c_count"] = count
-        try:
-            APP_SETTINGS_CONFIG.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
-        except OSError:
-            messagebox.showerror("保存失败", "无法记住刷取次数，请检查程序目录权限。", parent=self.root)
-            return
-        self._start_named_task_real("4C刷取", count)
-
-    def _ask_4c_count(self, initial: int) -> int | None:
-        dialog = Toplevel(self.root)
-        dialog.title("4C刷取次数")
-        dialog.transient(self.root)
-        dialog.resizable(False, False)
-        dialog.configure(bg=COLORS["app_bg"])
-        dialog.geometry("390x210")
-        shell, body = self._rounded_panel(dialog, padding=18, outer_color=COLORS["app_bg"])
-        shell.pack(fill=BOTH, expand=True, padx=14, pady=14)
-        Label(body, text="4C刷取次数", font=(FONT_FAMILY, 13, "bold"),
-              bg=COLORS["panel_alt"], fg=COLORS["text"]).pack(anchor="w")
-        hint = Label(body, text="要刷取多少次？会自动记住上次的次数（1–9999）。",
-                     bg=COLORS["panel_alt"], fg=COLORS["muted"], wraplength=310, justify=LEFT, anchor='w')
-        hint.pack(fill=X, pady=(6,12))
-        hint.bind('<Configure>', lambda event: hint.configure(wraplength=max(160,event.width-4)))
-        value = StringVar(value=str(initial))
-        input_shell, input_body = self._rounded_panel(body, padding=6,
-                                                      color=COLORS["panel"],
-                                                      outer_color=COLORS["panel_alt"])
-        input_shell.pack(fill=X)
-        entry = Entry(input_body, textvariable=value, font=(FONT_FAMILY, 11),
-                      bg=COLORS["panel"], fg=COLORS["text"],
-                      insertbackground=COLORS["text"], relief="flat", bd=0)
-        entry.pack(fill=X, padx=4)
-        error = Label(body, text="", bg=COLORS["panel_alt"], fg=COLORS["primary"])
-        error.pack(anchor="w", pady=(4, 0))
-        result = {"count": None}
-
-        def accept() -> None:
-            try:
-                count = int(value.get().strip())
-            except ValueError:
-                count = 0
-            if not 1 <= count <= 9999:
-                error.configure(text="请输入 1 到 9999 之间的整数。")
-                return
-            result["count"] = count
-            dialog.destroy()
-
-        actions = Frame(body, bg=COLORS["panel_alt"])
-        actions.pack(side="bottom", fill=X, pady=(3, 0))
-        self._rounded_button(actions, "取消", dialog.destroy, width=84).pack(side=RIGHT)
-        self._rounded_button(actions, "确定", accept, width=84, primary=True).pack(side=RIGHT, padx=(0, 8))
-        dialog.bind("<Return>", lambda _event: accept())
-        dialog.bind("<Escape>", lambda _event: dialog.destroy())
-        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
-        entry.focus_set()
-        entry.select_range(0, END)
-        dialog.grab_set()
-        self.root.wait_window(dialog)
-        return result["count"]
+        self._start_named_task_real("4C刷取", int(self.four_c_count.get()))
 
     def _apply_auto_shutdown_setting(self) -> None:
         self._save_auto_shutdown_setting()
@@ -5200,11 +5211,15 @@ class App:
             return
         self.combat_skill_key.set(self._combat_binding_display(normalized_skill))
         self.combat_ultimate_key.set(self._combat_binding_display(normalized_ultimate))
+        boss_challenge = self._boss_challenge_settings()
         COMBAT_CONFIG.write_text(
             json.dumps(
                 {
                     "skill_key": normalized_skill,
                     "ultimate_key": normalized_ultimate,
+                    "boss_challenge_level": boss_challenge.level,
+                    "boss_challenge_target": boss_challenge.target,
+                    "combat_4c_enter_boss_challenge": boss_challenge.enabled,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -5223,7 +5238,20 @@ class App:
 
     def _autosave_combat_settings(self, _event=None) -> None:
         self._save_combat_settings(announce=False)
-        self.status.set("战斗键位已自动保存")
+        self.status.set("战斗设置已自动保存")
+
+    def _boss_challenge_settings(self) -> BossChallengeEntrance:
+        """根据当前界面选项创建首领入口设置。
+
+        Returns:
+            当前选择的开关、推荐等级和目标首领。
+        """
+        target = self.boss_challenge_target.get()
+        return BossChallengeEntrance(
+            enabled=target != NO_BOSS_CHALLENGE,
+            level=self.boss_challenge_level.get(),
+            target=target,
+        )
 
     def _theme_status_text(self) -> str:
         if self.theme_id in THEME_DEFINITIONS:
@@ -5858,11 +5886,13 @@ class App:
 
     @staticmethod
     def _normalize_start_action_order(saved) -> list[str]:
-        defaults = ["weekly_rewards", "weekly_astrite", "daily", "combat_4c_10", "combat_4c_custom", "tower"]
+        defaults = ["weekly_rewards", "weekly_astrite", "daily", "combat_4c", "tower"]
         if not isinstance(saved, list):
             return defaults
         ordered = []
         for key in saved:
+            if key in {"combat_4c_10", "combat_4c_custom"}:
+                key = "combat_4c"
             if key in defaults and key not in ordered:
                 ordered.append(key)
         return ordered + [key for key in defaults if key not in ordered]
@@ -5913,31 +5943,51 @@ class App:
             self._repack_start_action_cards()
 
     def _activate_start_action_card(self, card: Canvas, event, command,
-                                    notice_key: str, with_zone: bool) -> None:
+                                    notice_key: str, has_picker: bool) -> None:
         width = card.winfo_width()
         if not 0 <= event.x < width or not 0 <= event.y < card.winfo_height():
             return
         if width - 82 <= event.x <= width - 45 and event.y < 58:
             self._show_run_notice(notice_key)
-        elif not with_zone or event.y < 65:
+        elif not has_picker or event.y < 65:
             command()
 
     def _make_start_action_card(self, parent: Frame, key: str, title: str, detail: str,
-                                command, notice_key: str, with_zone: bool = False):
+                                command, notice_key: str, controls=()):
         title_line = tkfont.Font(root=self.root, family=FONT_FAMILY, size=11,
                                  weight="bold").metrics("linespace")
         detail_line = tkfont.Font(root=self.root, family=FONT_FAMILY, size=9).metrics("linespace")
-        height = max(86, 22 + title_line + detail_line + 14) + (44 if with_zone else 0)
+        height = max(86, 22 + title_line + detail_line + 14) + 40 * len(controls)
         card = Canvas(parent, height=height, width=360, bg=COLORS["panel"],
                       highlightthickness=0, cursor="hand2", takefocus=True)
         card._keep_canvas_style = True
         self._start_action_cards[key] = card
-        picker = None
-        picker_window = None
-        if with_zone:
-            picker = self._rounded_picker(card, self.daily_zone, DAILY_ZONE_NAMES,
-                                          self._save_daily_zone)
-            picker_window = card.create_window(55, 73, window=picker, anchor="nw")
+        control_rows = []
+        for index, (label, variable, values, on_change) in enumerate(controls):
+            row = Frame(card, bg=COLORS["panel_alt"])
+            if label:
+                Label(
+                    row, text=label, width=4, anchor="w",
+                    bg=COLORS["panel_alt"], fg=COLORS["muted"],
+                ).pack(side=LEFT)
+            if values is None:
+                widget = self._rounded_entry(row, textvariable=variable, width=8)
+                widget.bind("<Return>", on_change)
+                widget.bind("<FocusOut>", on_change, add="+")
+
+                def focus_entry(event) -> None:
+                    # 关闭下拉框后 Windows 可能暂时没有活动控件，需把焦点交还给输入框。
+                    self._close_rounded_picker()
+                    event.widget.focus_force()
+
+                widget.bind("<Button-1>", focus_entry)
+            else:
+                widget = self._rounded_picker(row, variable, values, on_change)
+            widget.pack(side=LEFT, fill=X, expand=True)
+            window = card.create_window(
+                55, 73 + index * 40, window=row, anchor="nw",
+            )
+            control_rows.append((label, variable, values, widget, window))
 
         def draw(state: str = "default") -> None:
             card.delete("shape")
@@ -5968,8 +6018,8 @@ class App:
                              font=(FONT_FAMILY, 9, "bold"), tags="shape")
             card.create_text(width - 25, 34, text="›", fill=COLORS["text"],
                              font=(FONT_FAMILY, 19), tags="shape")
-            if picker_window is not None:
-                card.itemconfigure(picker_window, width=max(120, width - 80))
+            for _label, _variable, _values, _widget, window in control_rows:
+                card.itemconfigure(window, width=max(120, width - 80))
             card.tag_lower("shape")
 
         card.bind("<Configure>", lambda _event: draw())
@@ -6008,16 +6058,33 @@ class App:
                     kind = card.type(item)
                     options = {name: values[-1] for name, values in card.itemconfigure(item).items()}
                     getattr(surface, "create_" + kind)(*card.coords(item), **options)
-                if picker_window is not None:
+                if control_rows:
                     width = card.winfo_width()
-                    self._paint_rounded_card(surface, 55, 73, width - 25, 105, 9,
-                                             COLORS["line"])
-                    self._paint_rounded_card(surface, 56, 74, width - 26, 104, 8,
-                                             COLORS["panel"])
-                    surface.create_text(67, 89, text=self.daily_zone.get(), anchor="w",
-                                        fill=COLORS["text"], font=(FONT_FAMILY, 10))
-                    surface.create_text(width - 41, 89, text="⌄", fill=COLORS["muted"])
-                    card.itemconfigure(picker_window, state="hidden")
+                    for index, (label, variable, values, _widget, window) in enumerate(control_rows):
+                        top = 73 + index * 40
+                        left = 55
+                        if label:
+                            surface.create_text(
+                                55, top + 16, text=label, anchor="w",
+                                fill=COLORS["muted"], font=(FONT_FAMILY, 10),
+                            )
+                            left = 91
+                        self._paint_rounded_card(
+                            surface, left, top, width - 25, top + 32, 9, COLORS["line"],
+                        )
+                        self._paint_rounded_card(
+                            surface, left + 1, top + 1, width - 26, top + 31, 8,
+                            COLORS["panel"],
+                        )
+                        surface.create_text(
+                            left + 12, top + 16, text=variable.get(), anchor="w",
+                            fill=COLORS["text"], font=(FONT_FAMILY, 10),
+                        )
+                        if values is not None:
+                            surface.create_text(
+                                width - 41, top + 16, text="⌄", fill=COLORS["muted"],
+                            )
+                        card.itemconfigure(window, state="hidden")
                 card._drag_ghost = ghost
                 card._drag_started = True
                 draw()
@@ -6046,13 +6113,13 @@ class App:
             if ghost is not None:
                 ghost.destroy()
                 card._drag_ghost = None
-            if picker_window is not None:
-                card.itemconfigure(picker_window, state="normal")
+            for _label, _variable, _values, _widget, window in control_rows:
+                card.itemconfigure(window, state="normal")
             draw("hover")
             if was_dragged:
                 self._save_start_action_order()
             elif not was_handle:
-                self._activate_start_action_card(card, event, command, notice_key, with_zone)
+                self._activate_start_action_card(card, event, command, notice_key, bool(control_rows))
 
         card.bind("<ButtonPress-1>", press)
         card.bind("<B1-Motion>", motion)
@@ -6060,7 +6127,7 @@ class App:
         card.bind("<Return>", lambda _event: command())
         card.bind("<space>", lambda _event: command())
         draw()
-        return picker
+        return control_rows[0][3] if control_rows else None
 
     def _build_theme_banner(self) -> None:
         definition = THEME_DEFINITIONS[self.theme_id]
@@ -6306,12 +6373,20 @@ class App:
                                      lambda: self._start_enabled_real(13), "weekly")
         self._make_start_action_card(
             action_list, "daily", "一键日常（2轮双倍）", "先选择无音区，再运行两轮挑战",
-            self._start_daily_routine, "daily", with_zone=True,
+            self._start_daily_routine, "daily",
+            (("", self.daily_zone, DAILY_ZONE_NAMES, self._save_daily_zone),),
         )
-        self._make_start_action_card(action_list, "combat_4c_10", "4C刷取（10次）", "固定 10 轮战斗与吸收",
-                                     lambda: self._start_named_task_real("4C刷取", 10), "combat_4c")
-        self._make_start_action_card(action_list, "combat_4c_custom", "4C刷取（自定义次数）", "运行前填写本次循环次数",
-                                     self._start_custom_4c, "combat_4c")
+        self._make_start_action_card(
+            action_list, "combat_4c", "4C刷取", "设置关卡、等级和刷取次数",
+            self._start_4c, "combat_4c",
+            (
+                ("关卡", self.boss_challenge_target, BOSS_CHALLENGE_OPTIONS,
+                 self._autosave_combat_settings),
+                ("等级", self.boss_challenge_level, tuple(BossChallengeEntrance.LEVEL_ROWS),
+                 self._autosave_combat_settings),
+                ("次数", self.four_c_count, None, self._save_4c_count),
+            ),
+        )
         self._make_start_action_card(action_list, "tower", "深塔挑战", "靠近光球后开战，挑战成功后停止",
                                      self._start_tower_challenge, "tower")
         self._repack_start_action_cards()
@@ -8151,8 +8226,7 @@ class App:
                     "run_rewards": lambda: self._start_enabled_real(15, require_confirmation=False),
                     "run_astrite": lambda: self._start_enabled_real(13, require_confirmation=False),
                     "run_daily": lambda: self._start_daily_routine(require_confirmation=False),
-                    "run_4c_10": lambda: self._start_named_task_real("4C刷取", 10, require_confirmation=False),
-                    "run_4c_custom": self._start_custom_4c,
+                    "run_4c_custom": self._start_4c,
                     "stop_task": self._stop,
                     **{
                         f"pet_size_{percent}": lambda value=percent: self._set_pet_size_percent(value)
@@ -8365,7 +8439,7 @@ class App:
                         health_ratio = TaskRunner._boss_health_ratio(preview)
                         name_ratio = TaskRunner._boss_name_ratio(preview)
                         bar_track_score = TaskRunner._boss_bar_track_score(preview)
-                        if name_ratio >= 0.015 or bar_track_score >= 0.18:
+                        if name_ratio >= BossChallengeEntrance.BOSS_NAME_THRESHOLD or bar_track_score >= BossChallengeEntrance.BOSS_BAR_TRACK_THRESHOLD:
                             findings.append(
                                 (
                                     "ok",
@@ -9676,6 +9750,7 @@ class App:
                 self.combat_ultimate_key.get(),
                 self.daily_zone.get(),
                 False,
+                boss_challenge=self._boss_challenge_settings(),
                 notice=lambda message: self.root.after(
                     0,
                     lambda text=message: messagebox.showinfo("提示", text, parent=self.root),
