@@ -25,6 +25,7 @@ from PIL import Image, ImageDraw, ImageTk
 import numpy as np
 
 from image_matcher import TemplateMatcher
+from combat_4c_entrance import BossChallengeEntrance
 from windows_client import ClientWindowController
 from desktop_pet import DesktopPet
 from chat_history import ChatHistory
@@ -859,6 +860,7 @@ class TaskRunner:
         daily_zone_name: str = "",
         daily_heal_enabled: bool = False,
         notice=None,
+        boss_challenge: BossChallengeEntrance | None = None,
     ):
         self.controller = controller
         self.log = log
@@ -869,6 +871,7 @@ class TaskRunner:
         self.combat_ultimate_key = combat_ultimate_key
         self.daily_zone_name = daily_zone_name
         self.daily_heal_enabled = bool(daily_heal_enabled)
+        self.boss_challenge = boss_challenge
         self.notice = notice or (lambda _message: None)
         self.matcher = TemplateMatcher(TEMPLATES_DIR)
         self.template_root = TEMPLATES_DIR
@@ -1006,6 +1009,13 @@ class TaskRunner:
             f"大招键位 {ultimate_key}。"
         )
         try:
+            # 启用 4C 首领入口后，先进入指定首领再开始战斗；进入被取消则终止本次任务。
+            if (
+                self.boss_challenge is not None
+                and self.boss_challenge.enabled
+                and not self.boss_challenge.enter(self)
+            ):
+                return
             for cycle_index in range(1, cycle_count + 1):
                 if self.stop_event.is_set():
                     self.log("    收到停止信号，4C刷取已停止。")
@@ -1139,9 +1149,16 @@ class TaskRunner:
         missing_checks: int,
         *,
         log_result: bool = True,
+        tolerate_blank: bool = False,
     ) -> bool:
         """Capture the boss header and report whether its name or full track remains."""
-        self._capture_for_matching(screenshot)
+        # 副本加载时可能短暂出现全黑帧，常规截图校验会把它当成截图失败。
+        if tolerate_blank:
+            self.controller.screencap(
+                screenshot, bring_to_front=not self.dry_run, tolerate_blank=True,
+            )
+        else:
+            self._capture_for_matching(screenshot)
         health_ratio = self._boss_health_ratio(screenshot)
         name_ratio = self._boss_name_ratio(screenshot)
         bar_track_score = self._boss_bar_track_score(screenshot)
