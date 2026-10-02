@@ -99,7 +99,7 @@ class InteractionTests(unittest.TestCase):
             saved = json.loads(app.COMBAT_CONFIG.read_text(encoding="utf-8"))
         self.assertEqual(saved, {
             "skill_key": "Q", "ultimate_key": "XBUTTON2", "daily_heal_enabled": True,
-            "boss_challenge_level": "90", "boss_challenge_target": "失坠困谷之庭",
+            "boss_challenge_level": "90", "boss_challenge_target": "定序诸理之律",
             "combat_4c_enter_boss_challenge": True,
         })
         instance.status.set.assert_called_once_with("任务键位与回血设置已自动保存")

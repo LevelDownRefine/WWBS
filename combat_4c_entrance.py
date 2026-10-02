@@ -6,9 +6,9 @@ from PIL import Image
 
 
 BOSS_AVATARS = {
-    "失坠困谷之庭": "warsong_shizhui_kungu.png",
+    "定序诸理之律": "warsong_dingxu_zhuli.png",
+    "失坠困智之庭": "warsong_shizhui_kunzhi.png",
     "虚妄诞生之神": "warsong_xuwang_dansheng.png",
-    "星海迷途之扉": "warsong_xinghai_mitu.png",
 }
 LEVEL_ROWS = {"80": 0.487, "90": 0.565}
 
