@@ -288,7 +288,7 @@ class ClientWindowController:
         if sent != 1:
             raise RuntimeError("键盘操作发送失败，请尝试以管理员身份运行。")
 
-    def screencap(self, target: Path, bring_to_front: bool = False) -> str:
+    def screencap(self, target: Path, bring_to_front: bool = False, tolerate_blank: bool = False) -> str:
         self._ensure_window()
         if user32.IsIconic(self.hwnd):
             user32.ShowWindow(self.hwnd, SW_RESTORE)
@@ -307,7 +307,7 @@ class ClientWindowController:
             or not self._capture_has_content(image)
             or self._capture_is_desktop_copy(image, bbox)
         ):
-            image, bbox = self._capture_foreground_client()
+            image, bbox = self._capture_foreground_client(tolerate_blank=tolerate_blank)
             self.last_screen_bbox = bbox
             method = "foreground"
 
@@ -379,7 +379,7 @@ class ClientWindowController:
         except (OSError, TypeError, ValueError):
             return None
 
-    def _capture_foreground_client(self) -> tuple[Image.Image, tuple[int, int, int, int]]:
+    def _capture_foreground_client(self, tolerate_blank: bool = False) -> tuple[Image.Image, tuple[int, int, int, int]]:
         self._focus_window()
         if user32.GetForegroundWindow() != self.hwnd:
             # A second attempt helps when Windows' foreground-lock timeout races
@@ -390,7 +390,7 @@ class ClientWindowController:
             time.sleep(0.35)
             bbox = self._client_bbox()
             image = ImageGrab.grab(bbox=bbox, all_screens=True).convert("RGB")
-            if self._capture_has_content(image):
+            if self._capture_has_content(image) or tolerate_blank:
                 return image, bbox
         raise RuntimeError("游戏窗口已置前，但连续获取到空白画面。请确认游戏未最小化后重试。")
 
