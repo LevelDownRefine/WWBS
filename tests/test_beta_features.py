@@ -101,7 +101,7 @@ class InteractionTests(unittest.TestCase):
             "skill_key": "Q",
             "ultimate_key": "XBUTTON2",
             "boss_challenge_level": "90",
-            "boss_challenge_target": "失坠困谷之庭",
+            "boss_challenge_target": "定序诸理之律",
             "combat_4c_enter_boss_challenge": True,
         })
         instance.status.set.assert_called_once_with("战斗键位已自动保存")
