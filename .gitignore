@@ -39,3 +39,7 @@ pet-chat-history.tmp
 .wwbs-update-backup-*/
 pet-runs/
 wwbs-sillytavern-kit.zip
+
+# Local task settings and editor memory
+combat-settings.json
+.workbuddy/
