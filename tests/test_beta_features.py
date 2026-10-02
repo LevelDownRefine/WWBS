@@ -89,12 +89,21 @@ class InteractionTests(unittest.TestCase):
         instance.combat_ultimate_key = Mock()
         instance.combat_ultimate_key.get.return_value = "鼠标侧键2"
         instance.combat_ultimate_key.set = Mock()
+        instance._boss_challenge_settings = Mock(
+            return_value=app.BossChallengeEntrance(True, "90")
+        )
         instance.status = Mock()
         instance._log = Mock()
         with tempfile.TemporaryDirectory() as tmp, patch.object(app, "COMBAT_CONFIG", Path(tmp) / "combat.json"):
             instance._autosave_combat_settings()
             saved = json.loads(app.COMBAT_CONFIG.read_text(encoding="utf-8"))
-        self.assertEqual(saved, {"skill_key": "Q", "ultimate_key": "XBUTTON2"})
+        self.assertEqual(saved, {
+            "skill_key": "Q",
+            "ultimate_key": "XBUTTON2",
+            "boss_challenge_level": "90",
+            "boss_challenge_target": "失坠困谷之庭",
+            "combat_4c_enter_boss_challenge": True,
+        })
         instance.status.set.assert_called_once_with("战斗键位已自动保存")
 
     def test_history_persists_and_separates_pets(self):
