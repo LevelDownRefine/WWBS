@@ -25,6 +25,7 @@ from PIL import Image, ImageDraw, ImageTk
 import numpy as np
 
 from image_matcher import TemplateMatcher
+from combat_4c_entrance import BOSS_AVATARS, LEVEL_ROWS, BossChallengeEntrance
 from windows_client import ClientWindowController
 from desktop_pet import DesktopPet
 from chat_history import ChatHistory
@@ -859,6 +860,7 @@ class TaskRunner:
         daily_zone_name: str = "",
         daily_heal_enabled: bool = False,
         notice=None,
+        boss_challenge: BossChallengeEntrance | None = None,
     ):
         self.controller = controller
         self.log = log
@@ -869,6 +871,7 @@ class TaskRunner:
         self.combat_ultimate_key = combat_ultimate_key
         self.daily_zone_name = daily_zone_name
         self.daily_heal_enabled = bool(daily_heal_enabled)
+        self.boss_challenge = boss_challenge
         self.notice = notice or (lambda _message: None)
         self.matcher = TemplateMatcher(TEMPLATES_DIR)
         self.template_root = TEMPLATES_DIR
@@ -1006,6 +1009,13 @@ class TaskRunner:
             f"大招键位 {ultimate_key}。"
         )
         try:
+            # 启用 4C 首领入口后，先进入指定首领再开始战斗；进入被取消则终止本次任务。
+            if (
+                self.boss_challenge is not None
+                and self.boss_challenge.enabled
+                and not self.boss_challenge.enter(self)
+            ):
+                return
             for cycle_index in range(1, cycle_count + 1):
                 if self.stop_event.is_set():
                     self.log("    收到停止信号，4C刷取已停止。")
@@ -1139,9 +1149,16 @@ class TaskRunner:
         missing_checks: int,
         *,
         log_result: bool = True,
+        tolerate_blank: bool = False,
     ) -> bool:
         """Capture the boss header and report whether its name or full track remains."""
-        self._capture_for_matching(screenshot)
+        # 副本加载时可能短暂出现全黑帧，常规截图校验会把它当成截图失败。
+        if tolerate_blank:
+            self.controller.screencap(
+                screenshot, bring_to_front=not self.dry_run, tolerate_blank=True,
+            )
+        else:
+            self._capture_for_matching(screenshot)
         health_ratio = self._boss_health_ratio(screenshot)
         name_ratio = self._boss_name_ratio(screenshot)
         bar_track_score = self._boss_bar_track_score(screenshot)
@@ -3423,6 +3440,23 @@ class App:
         self.combat_skill_key = StringVar(value=self._load_combat_skill_key())
         self.combat_ultimate_key = StringVar(value=self._load_combat_ultimate_key())
         self.daily_heal_enabled = BooleanVar(value=self._load_daily_heal_enabled())
+        try:
+            saved_combat = json.loads(COMBAT_CONFIG.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            saved_combat = {}
+        saved_combat = saved_combat if isinstance(saved_combat, dict) else {}
+        boss_level = saved_combat.get("boss_challenge_level")
+        boss_target = saved_combat.get("boss_challenge_target")
+        boss_challenge = BossChallengeEntrance(
+            enabled=saved_combat.get("combat_4c_enter_boss_challenge") is True,
+            level=boss_level if isinstance(boss_level, str) and boss_level in LEVEL_ROWS
+            else BossChallengeEntrance.DEFAULT_LEVEL,
+            target=boss_target if isinstance(boss_target, str) and boss_target in BOSS_AVATARS
+            else BossChallengeEntrance.DEFAULT_TARGET,
+        )
+        self.boss_challenge_enabled = BooleanVar(value=boss_challenge.enabled)
+        self.boss_challenge_level = StringVar(value=boss_challenge.level)
+        self.boss_challenge_target = StringVar(value=boss_challenge.target)
         self.daily_zone = StringVar(value=self._load_daily_zone())
         self.auto_shutdown_enabled = BooleanVar(value=self._load_auto_shutdown_enabled())
         self.pet_size = StringVar(value=f"{self._load_pet_size_percent()}%")
@@ -4462,12 +4496,16 @@ class App:
             return
         self.combat_skill_key.set(self._combat_binding_display(normalized_skill))
         self.combat_ultimate_key.set(self._combat_binding_display(normalized_ultimate))
+        boss_challenge = self._boss_challenge_settings()
         COMBAT_CONFIG.write_text(
             json.dumps(
                 {
                     "skill_key": normalized_skill,
                     "ultimate_key": normalized_ultimate,
                     "daily_heal_enabled": self.daily_heal_enabled.get(),
+                    "boss_challenge_level": boss_challenge.level,
+                    "boss_challenge_target": boss_challenge.target,
+                    "combat_4c_enter_boss_challenge": boss_challenge.enabled,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -4490,6 +4528,29 @@ class App:
     def _autosave_combat_settings(self, _event=None) -> None:
         self._save_combat_settings(announce=False)
         self.status.set("任务键位与回血设置已自动保存")
+
+    def _boss_challenge_settings(self) -> BossChallengeEntrance:
+        """根据当前界面选项创建首领入口设置。
+
+        Returns:
+            当前选择的开关、推荐等级和目标首领。
+        """
+        return BossChallengeEntrance(
+            enabled=bool(self.boss_challenge_enabled.get()),
+            level=self.boss_challenge_level.get(),
+            target=self.boss_challenge_target.get(),
+        )
+
+    def _apply_boss_challenge_setting(self) -> None:
+        """保存首领入口设置，并根据开关显示或隐藏详细选项。"""
+        self._save_combat_settings(announce=False)
+        enabled = bool(self.boss_challenge_enabled.get())
+        if enabled:
+            self._boss_challenge_frame.pack(fill=X, pady=(0, 4))
+        else:
+            self._boss_challenge_frame.pack_forget()
+        state = "开启" if enabled else "关闭"
+        self.status.set(f"4C 自动进入战歌重奏副本：{state}")
 
     def _theme_status_text(self) -> str:
         if self.theme_id in THEME_DEFINITIONS:
@@ -5355,6 +5416,25 @@ class App:
             ("R", "E", "Q", "T", "鼠标侧键1", "鼠标侧键2"),
             self._autosave_combat_settings, editable=True)
         ultimate_key_picker.pack(fill=X, pady=(3, 0))
+        Checkbutton(
+            quick_settings, text="4C 自动进入战歌重奏副本", variable=self.boss_challenge_enabled,
+            command=self._apply_boss_challenge_setting, bg=COLORS["panel_alt"],
+            activebackground=COLORS["panel_alt"],
+        ).pack(anchor="w", pady=(1, 5))
+        # 外层容器始终占位，只切换内部选项区，避免重新开启后控件顺序改变。
+        boss_challenge_container = Frame(quick_settings, bg=COLORS["panel_alt"])
+        boss_challenge_container.pack(fill=X)
+        self._boss_challenge_frame = Frame(boss_challenge_container, bg=COLORS["panel_alt"])
+        Label(self._boss_challenge_frame, text="战歌重奏推荐等级", bg=COLORS["panel_alt"], anchor="w").pack(fill=X, pady=(4, 0))
+        self._rounded_picker(
+            self._boss_challenge_frame, self.boss_challenge_level, tuple(LEVEL_ROWS),
+            self._autosave_combat_settings).pack(fill=X, pady=(3, 0))
+        Label(self._boss_challenge_frame, text="战歌重奏目标", bg=COLORS["panel_alt"], anchor="w").pack(fill=X, pady=(6, 0))
+        self._rounded_picker(
+            self._boss_challenge_frame, self.boss_challenge_target, tuple(BOSS_AVATARS),
+            self._autosave_combat_settings).pack(fill=X, pady=(3, 0))
+        if self.boss_challenge_enabled.get():
+            self._boss_challenge_frame.pack(fill=X, pady=(0, 4))
         Checkbutton(
             quick_settings, text="日常启用三号位回血", variable=self.daily_heal_enabled,
             command=self._autosave_combat_settings, bg=COLORS["panel_alt"],
@@ -7010,6 +7090,7 @@ class App:
                 self.combat_ultimate_key.get(),
                 self.daily_zone.get(),
                 self.daily_heal_enabled.get(),
+                boss_challenge=self._boss_challenge_settings(),
                 notice=lambda message: self.root.after(
                     0,
                     lambda text=message: messagebox.showinfo("提示", text, parent=self.root),

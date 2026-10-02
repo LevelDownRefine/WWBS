@@ -100,6 +100,7 @@ class BetaUiTests(unittest.TestCase):
                 for method in ("_load_config", "_refresh_templates", "_drain_logs", "_start_stop_hotkey"):
                     stack.enter_context(patch.object(app.App, method))
                 stack.enter_context(patch.object(app, "ChatHistory", return_value=ChatHistory(Path(tmp) / "history.json")))
+                stack.enter_context(patch.object(app, "COMBAT_CONFIG", Path(tmp) / "combat.json"))
                 instance = app.App(root)
                 labels = []
                 def visit(widget):
@@ -195,6 +196,15 @@ class BetaUiTests(unittest.TestCase):
                     self.assertIn(moved, start_texts)
                     self.assertNotIn(moved, settings_texts)
                 self.assertNotIn("保存键位", labels)
+                panel = instance._boss_challenge_frame
+                parent = panel.master
+                order = parent.master.pack_slaves()
+                self.assertEqual(panel.winfo_manager(), "")
+                for enabled in (True, False, True):
+                    instance.boss_challenge_enabled.set(enabled)
+                    instance._apply_boss_challenge_setting()
+                    self.assertEqual(parent.master.pack_slaves(), order)
+                    self.assertEqual(panel.winfo_manager(), "pack" if enabled else "")
                 instance.agent_provider.set("DeepSeek API")
                 instance._change_agent_provider()
                 self.assertEqual(instance.cartethyia_agent_endpoint.get(), "https://api.deepseek.com")
