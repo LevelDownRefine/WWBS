@@ -189,9 +189,9 @@ templates/
 环境要求：
 
 - Windows
-- Python 3.10 或更高版本
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)（自动管理 Python 和依赖）
 
-使用 [uv](https://docs.astral.sh/uv/getting-started/installation/)（默认 Python 3.13）：
+项目默认使用 Python 3.13，在项目目录执行：
 
 ```powershell
 uv sync
@@ -200,23 +200,7 @@ uv run app.py
 
 `uv sync` 会创建 `.venv` 并安装依赖，无需手动激活环境。
 
-也可以使用 pip 安装依赖：
-
-```powershell
-pip install -r requirements.txt
-```
-
-启动：
-
-```powershell
-python app.py
-```
-
-也可以双击：
-
-```text
-启动 wwbs.bat
-```
+也可以直接双击 `启动 wwbs.bat`，脚本通过 `uv run app.py` 自动同步并使用项目环境。
 
 ## 主要文件
 
