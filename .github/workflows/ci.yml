@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  UV_VERSION: "0.11.28"
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -23,17 +26,21 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: '3.13'
-          cache: pip
+          python-version-file: .python-version
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
 
       - name: 安装依赖
-        run: pip install -r requirements.txt
+        run: uv sync --locked --no-dev
 
       # tests/ 不是包，-t 需指向 tests 自身，并用 PYTHONPATH 暴露仓库根
       - name: 运行单元测试
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: python -m unittest discover -s tests -t tests -v
+        run: uv run --locked --no-dev python -m unittest discover -s tests -t tests -v
 
   lint:
     name: ruff
@@ -44,14 +51,23 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: '3.13'
+          python-version-file: .python-version
 
-      # 检查结论以 ruff.toml 加此版本为准
-      - name: 安装 ruff
-        run: pip install ruff==0.16.8
+      - uses: astral-sh/setup-uv@v9
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: 安装静态检查工具
+        run: uv sync --locked --only-dev
 
       - name: 静态检查
-        run: ruff check .
+        run: uv run --locked --only-dev ruff check .
+
+      - name: 校验 pip 兼容依赖清单
+        run: |
+          uv export --locked --no-dev --no-hashes --no-emit-project --output-file requirements.txt
+          git diff --exit-code -- requirements.txt
 
   package:
     name: pyinstaller / windows
@@ -61,15 +77,19 @@ jobs:
 
       - uses: actions/setup-python@v7
         with:
-          python-version: '3.13'
-          cache: pip
+          python-version-file: .python-version
+
+      - uses: astral-sh/setup-uv@v9
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
 
       - name: 安装依赖与打包工具
-        run: pip install -r requirements.txt pyinstaller==6.22.3
+        run: uv sync --locked --no-dev --group build
 
       # spec 里 upx=True；runner 无 UPX 时 PyInstaller 跳过，不影响构建
       - name: 打包
-        run: pyinstaller --noconfirm wwbs.spec
+        run: uv run --locked --no-dev --group build pyinstaller --noconfirm wwbs.spec
 
       # 断言 spec 的 datas 覆盖了全部运行时资源
       - name: 校验产物资源
