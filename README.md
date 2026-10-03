@@ -189,50 +189,34 @@ templates/
 环境要求：
 
 - Windows
-- 推荐安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)，项目默认使用 Python 3.13，与 CI 保持一致。
-- uv 可在需要时下载 Python；自行安装 Python 时请包含 Tcl/Tk（tkinter）组件。
+- Python 3.10 或更高版本
 
-在项目目录安装依赖并启动：
+使用 [uv](https://docs.astral.sh/uv/getting-started/installation/)（默认 Python 3.13）：
 
 ```powershell
-uv sync --locked --no-dev
-uv run --locked --no-dev python app.py
+uv sync
+uv run app.py
 ```
 
-首次运行需要联网获取 Python 和依赖；之后使用项目的 `.venv` 环境，无需手动激活。`--locked` 确保安装与仓库的 `uv.lock` 一致。
+`uv sync` 会创建 `.venv` 并安装依赖，无需手动激活环境。
 
-也可以双击 `启动 wwbs.bat`：优先使用 uv；未安装 uv 时，优先使用项目 `.venv` 中的 Python，再尝试系统 Python。
-
-仍可使用传统 pip 方式（Python 3.10 或更高版本，推荐 3.13）：
+也可以使用 pip 安装依赖：
 
 ```powershell
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
+```
+
+启动：
+
+```powershell
 python app.py
 ```
 
-`requirements.txt` 由锁文件导出，供 pip 用户使用；依赖声明统一维护在 `pyproject.toml` 中。
+也可以双击：
 
-### 开发、测试与打包
-
-默认开发依赖包含固定版本的 Ruff；PyInstaller 放在单独的 `build` 依赖组中。
-
-```powershell
-uv sync --locked
-uv run --locked ruff check .
-uv run --locked python -m unittest discover -s tests -t tests -v
-uv run --locked --no-dev --group build pyinstaller --noconfirm wwbs.spec
+```text
+启动 wwbs.bat
 ```
-
-打包结果位于 `dist/wwbs/`。请分发整个目录，保留 `wwbs.exe` 与 `_internal` 的相对位置。
-
-修改依赖后，重新生成锁文件和 pip 兼容清单，并一并提交：
-
-```powershell
-uv lock
-uv export --locked --no-dev --no-hashes --no-emit-project --output-file requirements.txt
-```
-
-CI 使用同一份锁文件运行测试、静态检查和打包，并检查 `requirements.txt` 是否与锁文件一致。uv 的项目与 CI 用法见[官方项目文档](https://docs.astral.sh/uv/guides/projects/)和[GitHub Actions 文档](https://docs.astral.sh/uv/guides/integration/github/)。
 
 ## 主要文件
 
@@ -273,7 +257,7 @@ wwbs-exe.zip
 
 ## 发布新版本
 
-1. 修改 `app.py` 中的 `APP_VERSION` 和 `pyproject.toml` 中的 `version`，运行 `uv lock` 更新锁文件。
+1. 修改 `app.py` 中的 `APP_VERSION`。
 2. 重新生成 `wwbs-exe.zip`。
 3. 创建新的 Git 标签，例如 `v1.4`。
 4. 在 GitHub 创建同名 Release。

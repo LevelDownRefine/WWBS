@@ -1,21 +1,11 @@
 [project]
 name = "wwbs"
 version = "1.5.1"
-description = "Windows desktop automation and pets for Wuthering Waves"
-readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "Pillow>=10.0",
     "numpy>=1.24",
 ]
 
-[dependency-groups]
-dev = ["ruff==0.16.8"]
-build = ["pyinstaller==6.22.3"]
-
 [tool.uv]
-# Run the existing source tree directly; PyInstaller builds the Windows app.
 package = false
-
-[tool.uv.dependency-groups]
-build = { requires-python = ">=3.10,<3.16" }
