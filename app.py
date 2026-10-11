@@ -86,7 +86,7 @@ DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.5.4 beta2"
+APP_VERSION = "1.5.4 beta3"
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -177,6 +177,12 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    ("v1.5.4 beta3", """v1.5.4 beta3 · 活跃度识别与默认尺寸
+活跃度100改为检查左下当前分数的三个黄色数字，排除背景和宝箱刻度；领取后重复复核刷新，连续确认后领取100宝箱。
+默认窗口改为1010×1100，小屏幕自动收缩到可见工作区，仍可手动缩放。
+默认桌宠大小改为原来的70%；已有自定义大小继续使用保存的设置。
+保留beta2的周常响应确认、外观兼容、可缩放更新窗口和beta更新检测。
+完整说明见 release-notes-v1.5.4-beta3.md。"""),
     ("v1.5.4 beta2", """v1.5.4 beta2 · 周常推进与小人外观兼容
 周常每次点击后先确认画面响应，目标须在连续两张新截图中稳定，才点击下一步。
 过渡中位置变化、遮罩颜色不符或上一点击未响应时不继续推进；保留限次重新识别和停止反馈。
@@ -2791,14 +2797,20 @@ class TaskRunner:
                 if group[-1]-group[0]+1 >= max(12, round(height*.018))]
 
     def _daily_activity_score_full(self, screenshot: Path) -> bool:
-        with Image.open(screenshot) as source:
-            width, height = source.size
-        # Only the current score beside the bottom-left activity emblem counts.
-        # A loose full-screen match mistakes the visible zero for "100".
-        return self._find_daily_template(
-            "activity_full.png", threshold=.88, screenshot=screenshot,
-            region=(round(width*.15), round(height*.77), round(width*.29), round(height*.94)),
-        ) is not None
+        from daily_activity import activity_counter_full
+        return activity_counter_full(screenshot, TEMPLATES_DIR/'daily'/'activity_full.png')
+
+    def _wait_daily_activity_full(self, screenshot: Path, timeout: float = 3.0) -> bool:
+        deadline = time.monotonic()+timeout
+        confirmations = 0
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            self._capture_for_matching(screenshot)
+            full = self._daily_activity_score_full(screenshot)
+            confirmations = confirmations+1 if full and not self._yellow_claim_rows(screenshot) else 0
+            if confirmations >= 2:
+                return True
+            self._sleep_interruptible(.15)
+        return False
 
     def _wait_daily_reward_page(self, template: str, label: str, *, dismiss_overlay: bool = False) -> None:
         screenshot = APP_DIR / "_runtime_screenshot.png"
@@ -2855,12 +2867,9 @@ class TaskRunner:
         else:
             raise RuntimeError("活跃度领取多次后仍未完成，已停止；不会提前点击100宝箱。")
 
-        self._capture_for_matching(screenshot)
-        full = self._daily_activity_score_full(screenshot)
-        if full:
-            self._sleep_interruptible(.15)
-            self._capture_for_matching(screenshot)
-            full = self._daily_activity_score_full(screenshot) and not self._yellow_claim_rows(screenshot)
+        full = self._wait_daily_activity_full(screenshot)
+        if self.stop_event.is_set():
+            return
         if not full:
             self.log("    未确认活跃度达到100，跳过里程碑宝箱，避免误领。")
         else:
@@ -4045,20 +4054,7 @@ class App:
                 pass
         apply_windows_taskbar_icon(self.root, APP_ICON)
         self.root.after(250, lambda: apply_windows_taskbar_icon(self.root, APP_ICON))
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-        reference_screen = (2560, 1440)
-        window_scale = min(1.0, screen_width / reference_screen[0], screen_height / reference_screen[1])
-        target_size = round(1280 * window_scale)
-        target_size = min(target_size, screen_width - 60, screen_height - 60)
-        target_size = max(640, target_size)
-        position_x = max(0, (screen_width - target_size) // 2)
-        position_y = max(0, (screen_height - target_size) // 2)
-        self.root.geometry(f"{target_size}x{target_size}+{position_x}+{position_y}")
-        self.root.minsize(
-            min(900, max(640, screen_width - 80)),
-            min(720, max(560, screen_height - 80)),
-        )
+        self._configure_main_window_size()
         self.config_path = StringVar(value=str(DEFAULT_CONFIG))
         self.target_mode = StringVar(value="client")
         self.window_title = StringVar(value="自动")
@@ -4226,12 +4222,12 @@ class App:
         try:
             percent = int(round(float(str(value).strip().rstrip("%"))))
         except (TypeError, ValueError):
-            return 100
+            return 70
         return max(60, min(160, percent))
 
     @classmethod
     def _load_pet_size_percent(cls) -> int:
-        saved = cls._load_pet_display_settings().get("percent", 100)
+        saved = cls._load_pet_display_settings().get("percent", 70)
         return cls._normalize_pet_size_percent(saved)
 
     @staticmethod
@@ -8346,6 +8342,15 @@ class App:
         left, top = self.root.winfo_vrootx(), self.root.winfo_vrooty()
         return (left, top, left+self.root.winfo_vrootwidth(),
                 top+self.root.winfo_vrootheight()-40)
+
+    def _configure_main_window_size(self) -> None:
+        left, top, right, bottom = self._update_work_area()
+        width = min(1010, max(1, right-left-60))
+        height = min(1100, max(1, bottom-top-60))
+        x, y = left+(right-left-width)//2, top+(bottom-top-height)//2
+        self.root.geometry(f"{width}x{height}{x:+d}{y:+d}")
+        self.root.minsize(min(900, width), min(720, height))
+        self.root.resizable(True, True)
 
     def _show_available_update(self, tag: str, release: dict, asset: dict) -> None:
         self.status.set("远程更新检查完成")
