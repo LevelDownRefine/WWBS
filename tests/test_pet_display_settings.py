@@ -14,7 +14,7 @@ class PetDisplaySettingsTests(unittest.TestCase):
         self.assertEqual(App._normalize_pet_size_percent("115"), 115)
 
     def test_pet_size_falls_back_and_clamps(self):
-        self.assertEqual(App._normalize_pet_size_percent("not-a-size"), 100)
+        self.assertEqual(App._normalize_pet_size_percent("not-a-size"), 70)
         self.assertEqual(App._normalize_pet_size_percent(10), 60)
         self.assertEqual(App._normalize_pet_size_percent(999), 160)
 

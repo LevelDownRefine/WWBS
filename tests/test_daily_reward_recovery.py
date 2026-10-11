@@ -47,6 +47,47 @@ class ReportedRewardVisionTests(unittest.TestCase):
             target.save(path)
             self.assertTrue(self.runner()._daily_activity_score_full(path))
 
+    def test_full_digits_survive_background_changes_resize_and_reposition(self):
+        from daily_activity import _yellow_digits
+        with tempfile.TemporaryDirectory() as directory, \
+                Image.open(FIXTURES/'daily-activity-zero.png') as source, \
+                Image.open(app.TEMPLATES_DIR/'daily'/'activity_full.png') as counter:
+            digits = _yellow_digits(counter)
+            for color in ((32, 51, 60), (110, 149, 166), (178, 190, 197)):
+                foreground = np.full((counter.height, counter.width, 3), color, dtype=np.uint8)
+                foreground[digits] = np.asarray(counter.convert('RGB'))[digits]
+                for width in (1280, 1600, 1920, 2560):
+                    with self.subTest(color=color, width=width):
+                        screen = source.resize((width, round(width*9/16)), Image.Resampling.BILINEAR)
+                        screen.paste(color, (round(width*.15), round(screen.height*.77),
+                                             round(width*.29), round(screen.height*.94)))
+                        scale = width/1920
+                        patch_image = Image.fromarray(foreground).resize(
+                            (round(counter.width*scale), round(counter.height*scale)),
+                            Image.Resampling.BILINEAR)
+                        screen.paste(patch_image, (round(width*.195), round(screen.height*.805)))
+                        path = Path(directory)/'full-varying-background.png'
+                        screen.save(path)
+                        self.assertTrue(self.runner(width)._daily_activity_score_full(path))
+
+    def test_two_zeroes_and_three_zeroes_do_not_count_as_one_hundred(self):
+        from daily_activity import _yellow_digits
+        with tempfile.TemporaryDirectory() as directory, \
+                Image.open(FIXTURES/'daily-activity-zero.png') as source, \
+                Image.open(app.TEMPLATES_DIR/'daily'/'activity_full.png') as counter:
+            pixels = np.asarray(counter.convert('RGB'))
+            zero = pixels[30:70, 54:82].copy()
+            zero_mask = _yellow_digits(Image.fromarray(zero))
+            zero[~zero_mask] = (90, 113, 125)
+            for number in ('00', '000'):
+                screen = source.copy()
+                screen.paste((90, 113, 125), (240, 693, 465, 846))
+                for index in range(len(number)):
+                    screen.paste(Image.fromarray(zero), (300+index*34, 750))
+                path = Path(directory)/'wrong-digits.png'
+                screen.save(path)
+                self.assertFalse(self.runner()._daily_activity_score_full(path))
+
     def test_reported_radio_tasks_page_confirms_second_tab_but_not_first(self):
         runner = self.runner()
         self.assertTrue(runner._daily_battlepass_tab_selected(FIXTURES/'daily-radio-tasks.png', 2))
@@ -99,9 +140,27 @@ class RewardRecoveryFlowTests(unittest.TestCase):
     def test_full_counter_must_persist_in_a_second_frame(self):
         runner = self.runner()
         runner._yellow_claim_rows = Mock(return_value=[])
-        runner._daily_activity_score_full = Mock(side_effect=[True, False])
-        runner._collect_daily_activity_rewards()
+        runner._daily_activity_score_full = Mock(side_effect=[True]+[False]*30)
+        now = [0.]
+        runner._sleep_interruptible = lambda duration: now.__setitem__(0, now[0]+duration)
+        with patch.object(app.time, 'monotonic', side_effect=lambda: now[0]):
+            runner._collect_daily_activity_rewards()
         self.assertFalse(any(call.args[:2] == (.945, .868) for call in runner._tap_ratio.call_args_list))
+
+    def test_delayed_score_refresh_is_rechecked_before_skipping_chest(self):
+        runner = self.runner()
+        runner._yellow_claim_rows = Mock(return_value=[])
+        runner._daily_activity_score_full = Mock(side_effect=[False, False, True, True])
+        runner._collect_daily_activity_rewards()
+        self.assertEqual(runner._daily_activity_score_full.call_count, 4)
+        self.assertTrue(any(call.args[:2] == (.945, .868) for call in runner._tap_ratio.call_args_list))
+
+    def test_stopping_during_score_confirmation_does_not_click_or_leave_page(self):
+        runner = self.runner()
+        runner.stop_event.set()
+        self.assertFalse(runner._wait_daily_activity_full(Path('unused.png')))
+        runner.controller.tap.assert_not_called()
+        runner._capture_for_matching.assert_not_called()
 
     def test_radio_tab_switch_retries_and_waits_for_two_confirmations(self):
         runner = self.runner()
