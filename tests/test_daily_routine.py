@@ -531,7 +531,7 @@ class DailyRoutineTests(unittest.TestCase):
         self.assertIsNone(py)
         self.assertEqual(portal_density, 0.0)
 
-    def test_reward_orb_below_point_six_five_confidence_is_not_actionable(self):
+    def test_reward_orb_below_point_four_five_confidence_is_not_actionable(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "weak-orb.png"
             image = np.zeros((1080, 1920, 3), dtype=np.uint8)
@@ -539,7 +539,7 @@ class DailyRoutineTests(unittest.TestCase):
             Image.fromarray(image).save(path)
             x, y, confidence = TaskRunner._daily_reward_orb_location(path)
         self.assertGreater(confidence, 0.1)
-        self.assertLessEqual(confidence, 0.65)
+        self.assertLessEqual(confidence, 0.45)
         self.assertIsNone(x)
         self.assertIsNone(y)
 
