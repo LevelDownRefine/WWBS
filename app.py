@@ -86,7 +86,7 @@ DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.5.4 beta3"
+APP_VERSION = "1.5.4 beta4"
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -177,6 +177,9 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    ("v1.5.4 beta4", """v1.5.4 beta4 · 光球识别置信度
+光球定位最低置信度改为45%（0.45），定位与靠近搜索使用同一阈值。
+完整说明见 release-notes-v1.5.4-beta4.md。"""),
     ("v1.5.4 beta3", """v1.5.4 beta3 · 活跃度识别与默认尺寸
 活跃度100改为检查左下当前分数的三个黄色数字，排除背景和宝箱刻度；领取后重复复核刷新，连续确认后领取100宝箱。
 默认窗口改为1010×1100，小屏幕自动收缩到可见工作区，仍可手动缩放。
@@ -544,7 +547,7 @@ WEEKLY_CLICK_INTERVAL = 0.30
 WEEKLY_CLICK_JITTER = 0.02
 WEEKLY_STABLE_INTERVAL = 0.15
 WEEKLY_RESPONSE_TIMEOUT = 4.0
-DAILY_REWARD_ORB_MIN_CONFIDENCE = 0.65
+DAILY_REWARD_ORB_MIN_CONFIDENCE = 0.45
 CYCLE_FINAL_MAX_RETRIES = 2
 DIAGNOSTIC_START_TEMPLATE = "menu1.png"
 FONT_FAMILY = "Microsoft YaHei UI"
