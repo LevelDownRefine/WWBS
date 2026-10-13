@@ -96,7 +96,7 @@ DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
 APP_VERSION = "1.5.4"
-APP_BUILD = 3
+APP_BUILD = 4
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -189,6 +189,7 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
     ("v1.5.4", """v1.5.4 正式版 · 本地设置继承与在线种子库
+日常领取取消分数拦截：进入活跃行迹、领取上方任务奖励后，直接领取100宝箱，超过100或数字识别失败不再跳过。
 修复检测本地设置按钮无响应：启动完成后检测，立即显示可取消的检测进度；检测结果、错误与超时会明确反馈。
 本次修复：设置检测跳过只有默认任务配置的空安装目录；确认前显示实际主题、键位与预设名称，重启后核对导入文件。
 启动先完成布局与绘制再显示主窗口，修复打开时短暂黑块。
@@ -2826,18 +2827,6 @@ class TaskRunner:
         from daily_activity import activity_counter_full
         return activity_counter_full(screenshot, TEMPLATES_DIR/'daily'/'activity_full.png')
 
-    def _wait_daily_activity_full(self, screenshot: Path, timeout: float = 3.0) -> bool:
-        deadline = time.monotonic()+timeout
-        confirmations = 0
-        while time.monotonic() < deadline and not self.stop_event.is_set():
-            self._capture_for_matching(screenshot)
-            full = self._daily_activity_score_full(screenshot)
-            confirmations = confirmations+1 if full and not self._yellow_claim_rows(screenshot) else 0
-            if confirmations >= 2:
-                return True
-            self._sleep_interruptible(.15)
-        return False
-
     def _wait_daily_reward_page(self, template: str, label: str, *, dismiss_overlay: bool = False) -> None:
         screenshot = APP_DIR / "_runtime_screenshot.png"
         deadline = time.monotonic()+8
@@ -2893,15 +2882,14 @@ class TaskRunner:
         else:
             raise RuntimeError("活跃度领取多次后仍未完成，已停止；不会提前点击100宝箱。")
 
-        full = self._wait_daily_activity_full(screenshot)
         if self.stop_event.is_set():
             return
-        if not full:
-            self.log("    未确认活跃度达到100，跳过里程碑宝箱，避免误领。")
-        else:
-            self.log("    已确认活跃度100，只点击100宝箱，其余里程碑奖励由游戏一并领取。")
-            self._tap_ratio(0.945, 0.868, 0.25)
-            self._dismiss_reward_overlay_safely()
+        # A completed daily route earns enough activity. Claim the final chest
+        # after the task rewards, regardless of the rendered counter (100/120/
+        # 140/160 or a missed digit); it must not block a successful route.
+        self.log("    上方任务奖励已领取，直接领取100宝箱；不再按活跃度数字拦截，其余里程碑奖励由游戏一并领取。")
+        self._tap_ratio(0.945, 0.868, 0.25)
+        self._dismiss_reward_overlay_safely()
         self._tap_ratio(0.957, 0.058, 0.4)
 
     def _collect_daily_battlepass_rewards(self) -> None:

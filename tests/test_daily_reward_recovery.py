@@ -126,7 +126,8 @@ class RewardRecoveryFlowTests(unittest.TestCase):
                 patch.object(app.Image, 'open', return_value=Image.new('RGB', (1600, 900))):
             runner._collect_daily_activity_rewards()
         runner.controller.tap.assert_called_once_with(1408, 221)
-        self.assertFalse(any(call.args[:2] == (.945, .868) for call in runner._tap_ratio.call_args_list))
+        self.assertTrue(any(call.args[:2] == (.945, .868) for call in runner._tap_ratio.call_args_list))
+        runner._daily_activity_score_full.assert_not_called()
 
     def test_unconfirmed_claims_stop_before_the_chest(self):
         runner = self.runner()
@@ -137,30 +138,35 @@ class RewardRecoveryFlowTests(unittest.TestCase):
                 runner._collect_daily_activity_rewards()
         runner._daily_activity_score_full.assert_not_called()
 
-    def test_full_counter_must_persist_in_a_second_frame(self):
+    def test_counter_above_100_or_unreadable_does_not_block_the_chest(self):
         runner = self.runner()
         runner._yellow_claim_rows = Mock(return_value=[])
-        runner._daily_activity_score_full = Mock(side_effect=[True]+[False]*30)
-        now = [0.]
-        runner._sleep_interruptible = lambda duration: now.__setitem__(0, now[0]+duration)
-        with patch.object(app.time, 'monotonic', side_effect=lambda: now[0]):
-            runner._collect_daily_activity_rewards()
-        self.assertFalse(any(call.args[:2] == (.945, .868) for call in runner._tap_ratio.call_args_list))
-
-    def test_delayed_score_refresh_is_rechecked_before_skipping_chest(self):
-        runner = self.runner()
-        runner._yellow_claim_rows = Mock(return_value=[])
-        runner._daily_activity_score_full = Mock(side_effect=[False, False, True, True])
+        runner._daily_activity_score_full = Mock(side_effect=AssertionError('Score must not gate collection'))
         runner._collect_daily_activity_rewards()
-        self.assertEqual(runner._daily_activity_score_full.call_count, 4)
-        self.assertTrue(any(call.args[:2] == (.945, .868) for call in runner._tap_ratio.call_args_list))
+        self.assertEqual(sum(call.args[:2] == (.945, .868) for call in runner._tap_ratio.call_args_list), 1)
+        runner._daily_activity_score_full.assert_not_called()
 
-    def test_stopping_during_score_confirmation_does_not_click_or_leave_page(self):
+    def test_tasks_are_claimed_before_chest_and_page_exit(self):
         runner = self.runner()
-        runner.stop_event.set()
-        self.assertFalse(runner._wait_daily_activity_full(Path('unused.png')))
+        runner._yellow_claim_rows = Mock(side_effect=[[221], [331], [], []])
+        actions = []
+        runner.controller.tap.side_effect = lambda x, y: actions.append(('task', x, y))
+        runner._tap_ratio.side_effect = lambda x, y, pause: actions.append(('page', x, y))
+        with patch.object(app.Image, 'open', return_value=Image.new('RGB', (1600, 900))):
+            runner._collect_daily_activity_rewards()
+        self.assertEqual(actions, [('page', .039, .174), ('task', 1408, 221),
+                                   ('task', 1408, 331), ('page', .945, .868), ('page', .957, .058)])
+
+    def test_stop_after_task_claims_does_not_click_chest_or_leave_page(self):
+        runner = self.runner()
+        def rows(_screenshot):
+            runner.stop_event.set()
+            return []
+        runner._yellow_claim_rows = Mock(side_effect=rows)
+        runner._collect_daily_activity_rewards()
         runner.controller.tap.assert_not_called()
-        runner._capture_for_matching.assert_not_called()
+        self.assertFalse(any(call.args[:2] in ((.945, .868), (.957, .058))
+                             for call in runner._tap_ratio.call_args_list))
 
     def test_radio_tab_switch_retries_and_waits_for_two_confirmations(self):
         runner = self.runner()
