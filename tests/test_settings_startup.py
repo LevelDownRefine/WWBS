@@ -10,9 +10,55 @@ import app
 from combat_rotation import default_store
 from local_settings import Installation, apply_import, prepare_import, save_import_receipt, settings_files
 from ui_controls import show_ready_main_window
+from ui_controls import RoundedButton
 
 
 class SettingsStartupTests(unittest.TestCase):
+    def test_settings_button_mouse_click_opens_import_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as patches:
+            base = Path(directory)
+            source, target = base/'old', base/'current'
+            source.mkdir()
+            target.mkdir()
+            (source/'theme-settings.json').write_text('{"theme":"cartethyia"}')
+            installation = Installation(source, '1.5.4 beta3', settings_files(source))
+            patches.enter_context(patch.object(app, 'USER_SETTINGS_DIR', target))
+            for constant in ('THEME_CONFIG', 'COMBAT_CONFIG', 'PET_CONFIG', 'PET_DISPLAY_CONFIG',
+                    'COMBAT_PRESETS_CONFIG', 'DAILY_CONFIG', 'APP_SETTINGS_CONFIG', 'UI_CONFIG',
+                    'CARTETHYIA_AGENT_CONFIG', 'CONNECTION_CONFIG'):
+                patches.enter_context(patch.object(app, constant, target/(constant+'.json')))
+            for method in ('_load_config', '_refresh_templates', '_start_stop_hotkey', '_start_desktop_pet',
+                           '_scan_local_models', '_show_startup_notice_once'):
+                patches.enter_context(patch.object(app.App, method))
+            patches.enter_context(patch.object(app, 'discover_latest', return_value=installation))
+            root = tk.Tk()
+            errors = []
+            root.report_callback_exception = lambda *args: errors.append(args)
+            try:
+                ui = app.App(root)
+                ui._select_top_tab(4)
+                root.update()
+                def walk(widget):
+                    yield widget
+                    for child in widget.winfo_children():
+                        yield from walk(child)
+                button = next(w for w in walk(ui.settings_tab) if isinstance(w, RoundedButton)
+                              and w.cget('text') == '检测本地设置')
+                self.assertTrue(button.winfo_ismapped())
+                button.event_generate('<ButtonPress-1>', x=30, y=15)
+                button.event_generate('<ButtonRelease-1>', x=30, y=15)
+                self.assertTrue(ui._settings_progress_window.winfo_exists())
+                root.after(350, root.quit)
+                root.mainloop()
+                self.assertEqual(errors, [])
+                self.assertFalse(ui._settings_scan_running)
+                self.assertIsNone(ui._settings_progress_window)
+                self.assertTrue(ui._settings_import_window.winfo_ismapped())
+                self.assertIn('找到', ui.local_settings_status.get())
+                self.assertFalse((target/'theme-settings.json').exists())
+            finally:
+                root.destroy()
+
     def test_real_ui_loaders_use_imported_keys_theme_and_axis_after_restart(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as patches:
             base = Path(directory)

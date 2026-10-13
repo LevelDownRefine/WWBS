@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import deque
 import hashlib
 import json
 import os
@@ -126,12 +127,20 @@ class Installation:
     files: dict[str, Path]
 
 
-def discover_latest(current: Path, current_version: str, roots: list[Path], *, cancelled=lambda: False):
+def discover_latest(current: Path, current_version: str, roots: list[Path], *, cancelled=lambda: False,
+                    progress=lambda checked, found: None, timeout=30):
     current = current.resolve()
     found, visited = [], set()
-    pending = [(Path(root), 0) for root in roots]
+    pending = deque((Path(root), 0) for root in roots)
+    started, reported = time.monotonic(), 0.0
     while pending and len(visited) < 6000 and not cancelled():
-        folder, depth = pending.pop()
+        now = time.monotonic()
+        if now-started > timeout:
+            raise TimeoutError('本地设置检测超过30秒，已停止。请将用过的旧版本目录放在当前程序目录旁后重试。')
+        if now-reported > .2:
+            progress(len(visited), len(found))
+            reported = now
+        folder, depth = pending.popleft()
         try:
             if folder.is_symlink():
                 continue
@@ -141,12 +150,15 @@ def discover_latest(current: Path, current_version: str, roots: list[Path], *, c
             visited.add(resolved)
             if (folder/'wwbs.exe').is_file():
                 if resolved != current:
-                    version = installation_version(folder)
                     files = settings_files(folder)
                     # Every fresh ZIP contains weekly_tasks.json. It alone is
                     # not evidence of a user's settings and must not outrank
                     # an older installation containing their real preferences.
                     personalized = any(name != 'weekly_tasks.json' for name in files)
+                    # Skip unused packages before opening/decompressing their EXE.
+                    if not personalized:
+                        continue
+                    version = installation_version(folder)
                     if personalized and version and version_key(version) != version_key(current_version):
                         found.append(Installation(resolved, version, files))
                 continue

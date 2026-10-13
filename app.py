@@ -96,7 +96,7 @@ DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
 APP_VERSION = "1.5.4"
-APP_BUILD = 2
+APP_BUILD = 3
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -189,6 +189,7 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
     ("v1.5.4", """v1.5.4 正式版 · 本地设置继承与在线种子库
+修复检测本地设置按钮无响应：启动完成后检测，立即显示可取消的检测进度；检测结果、错误与超时会明确反馈。
 本次修复：设置检测跳过只有默认任务配置的空安装目录；确认前显示实际主题、键位与预设名称，重启后核对导入文件。
 启动先完成布局与绘制再显示主窗口，修复打开时短暂黑块。
 新增“检测本地设置”：寻找其他本地最新版本，确认后转换键位、主题、桌宠、轴与预设等设置，并重启；执行后无法撤回。
@@ -7583,6 +7584,11 @@ class App:
         hint.bind('<Configure>', lambda event: hint.configure(wraplength=max(180, event.width-4)))
         self._ui_button(local_box, text="检测本地设置", width=16,
                         command=self._detect_local_settings).pack(anchor='w')
+        self.local_settings_status = StringVar(value='点击检测后会显示进度；确认前不会修改设置。')
+        scan_status = Label(local_box, textvariable=self.local_settings_status, fg=COLORS['muted'],
+                            bg=COLORS['panel_alt'], justify=LEFT, anchor='w')
+        scan_status.pack(fill=X, pady=(8, 0))
+        scan_status.bind('<Configure>', lambda event: scan_status.configure(wraplength=max(180, event.width-4)))
 
         theme_box = self._card_body(self.settings_tab)
         theme_box.pack(fill=X, pady=(0, 14))
@@ -8577,33 +8583,119 @@ class App:
         self.root.resizable(True, True)
 
     def _startup_detect_local_settings(self) -> None:
+        if not getattr(self.root, '_main_frame_ready', False):
+            self.root.after(250, self._startup_detect_local_settings)
+            return
         if discovery_needed(USER_SETTINGS_DIR, APP_VERSION):
             self._detect_local_settings(automatic=True)
 
     def _detect_local_settings(self, automatic=False) -> None:
+        previous = getattr(self, '_settings_import_window', None)
+        if previous is not None and previous.winfo_exists():
+            previous.deiconify()
+            previous.lift()
+            previous.focus_force()
+            return
         if getattr(self, '_settings_scan_running', False):
+            if not automatic:
+                self._settings_scan_automatic = False
+                self._show_settings_scan_progress()
             return
         if getattr(self, '_update_installing', False) or (self.worker and self.worker.is_alive()):
             if not automatic:
                 messagebox.showinfo('本地设置', '请先停止任务或等待更新完成，再检测设置。', parent=self.root)
             return
         self._settings_scan_running = True
-        self._settings_scan_cancel = threading.Event()
-        self.status.set('正在检测其他本地版本的设置…')
+        self._settings_scan_automatic = automatic
+        cancelled = self._settings_scan_cancel = threading.Event()
+        results = self._settings_scan_results = queue.Queue()
+        self._settings_scan_started = time.monotonic()
+        self._set_settings_scan_status('正在检测其他本地版本的设置…')
+        if not automatic:
+            self._show_settings_scan_progress()
         def work():
             try:
                 source = discover_latest(USER_SETTINGS_DIR, APP_VERSION, default_search_roots(USER_SETTINGS_DIR),
-                                         cancelled=self._settings_scan_cancel.is_set)
+                                         cancelled=cancelled.is_set,
+                                         progress=lambda checked, found: results.put(('progress', (checked, found))))
                 plan = prepare_import(source, USER_SETTINGS_DIR) if source else None
-                self.root.after(0, lambda: self._offer_local_settings(plan, automatic))
+                results.put(('done', plan))
             except Exception as exc:
-                error = str(exc)
-                self.root.after(0, lambda: self._local_settings_error(error))
-        threading.Thread(target=work, daemon=True, name='wwbs-local-settings').start()
+                results.put(('error', str(exc)))
+        # Only the UI thread calls Tk. A worker can finish during startup before
+        # mainloop begins; its result remains queued instead of losing the scan.
+        self.root.after(80, lambda: self._poll_settings_scan(results, cancelled))
+        self._settings_scan_thread = threading.Thread(target=work, daemon=True, name='wwbs-local-settings')
+        self._settings_scan_thread.start()
+
+    def _set_settings_scan_status(self, text):
+        self.status.set(text)
+        if hasattr(self, 'local_settings_status'):
+            self.local_settings_status.set(text)
+
+    def _show_settings_scan_progress(self):
+        previous = getattr(self, '_settings_progress_window', None)
+        if previous is not None and previous.winfo_exists():
+            previous.deiconify()
+            previous.lift()
+            return
+        dialog = Toplevel(self.root)
+        self._settings_progress_window = dialog
+        dialog.title('检测本地设置')
+        dialog.configure(bg=COLORS['app_bg'])
+        dialog.geometry('480x210')
+        dialog.resizable(False, False)
+        shell, body = self._rounded_panel(dialog, padding=18, outer_color=COLORS['app_bg'])
+        shell.pack(fill=BOTH, expand=True, padx=14, pady=14)
+        Label(body, text='正在查找用过的旧版本', font=(FONT_FAMILY, 12, 'bold'),
+              bg=COLORS['panel_alt'], fg=COLORS['text']).pack(anchor='w')
+        Label(body, textvariable=self.local_settings_status, wraplength=390, justify=LEFT,
+              bg=COLORS['panel_alt'], fg=COLORS['muted']).pack(fill=X, pady=12)
+        self._ui_button(body, text='取消检测', command=self._cancel_settings_scan).pack(anchor='e')
+        dialog.protocol('WM_DELETE_WINDOW', self._cancel_settings_scan)
+        dialog.bind('<Escape>', lambda _event: self._cancel_settings_scan())
+
+    def _close_settings_progress(self):
+        previous = getattr(self, '_settings_progress_window', None)
+        if previous is not None and previous.winfo_exists():
+            previous.destroy()
+        self._settings_progress_window = None
+
+    def _cancel_settings_scan(self):
+        self._settings_scan_cancel.set()
+        self._settings_scan_running = False
+        self._close_settings_progress()
+        self._set_settings_scan_status('已取消检测，当前设置未修改；可以重新检测。')
+
+    def _poll_settings_scan(self, results, cancelled):
+        if results is not getattr(self, '_settings_scan_results', None) or cancelled.is_set():
+            return
+        while not results.empty():
+            kind, value = results.get_nowait()
+            if kind == 'progress':
+                self._set_settings_scan_status(f'已检查 {value[0]} 个文件夹，找到 {value[1]} 个可继承版本…')
+                continue
+            self._settings_scan_running = False
+            self._close_settings_progress()
+            try:
+                if kind == 'done':
+                    self._offer_local_settings(value, self._settings_scan_automatic)
+                else:
+                    self._local_settings_error(value)
+            except Exception as exc:
+                self._local_settings_error(str(exc))
+            return
+        if time.monotonic()-self._settings_scan_started > 35:
+            cancelled.set()
+            self._settings_scan_running = False
+            self._close_settings_progress()
+            self._local_settings_error('检测超时，已停止；请将用过的旧版本放在当前目录旁后重试。')
+            return
+        self.root.after(80, lambda: self._poll_settings_scan(results, cancelled))
 
     def _local_settings_error(self, error):
         self._settings_scan_running = False
-        self.status.set('本地设置未修改')
+        self._set_settings_scan_status('检测失败，当前设置未修改；可以重新检测。')
         messagebox.showerror('本地设置检测失败', error, parent=self.root)
 
     def _report_settings_import(self):
@@ -8622,7 +8714,7 @@ class App:
         if automatic:
             save_discovery_state(USER_SETTINGS_DIR, APP_VERSION)
         if plan is None:
-            self.status.set('没有找到其他版本的本地设置')
+            self._set_settings_scan_status('没有找到其他版本的用户设置；请检查旧版本目录位置。')
             if not automatic:
                 messagebox.showinfo('本地设置', '没有找到其他版本的用户设置。未使用过的安装包仅含默认任务配置，会被跳过。请将用过的旧版本完整目录放在当前目录旁、下载、桌面或文档目录中。', parent=self.root)
             return
@@ -8630,6 +8722,7 @@ class App:
             self.status.set('检测已完成；请停止任务后重新检测')
             return
         items = describe_import(plan)
+        self._set_settings_scan_status(f'找到 {plan.source.version}，请核对并确认继承。')
         dialog, controls, text = self._rotation_seed_window(
             '继承本地设置', '确认后覆盖当前对应设置并重启程序。执行后无法撤回。')
         self._settings_import_window = dialog
