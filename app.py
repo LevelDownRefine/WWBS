@@ -30,14 +30,14 @@ from desktop_pet import DesktopPet
 from chat_history import ChatHistory
 from update_manager import (create_update_work, download_asset, prepare_update, install_script,
                             signal_update_ready)
-from local_settings import (SETTINGS, apply_import, bootstrap_own_settings, default_search_roots,
+from local_settings import (apply_import, bootstrap_own_settings, default_search_roots,
                             discover_latest, discovery_needed, prepare_import, save_discovery_state,
-                            snapshot_settings)
+                            snapshot_settings, describe_import, save_import_receipt, verify_import_receipt)
 from weekly_rewards import WeeklyLimitReached, WeeklyRewardsVision
 from combat_rotation import ACTION_SPECS, COMBAT_MODES, SLOT_NAMES, BattleMonitor, IdleAttackWorker, RotationClock, active_modules, default_store, load_store, new_module, save_store, validate_store
 from combat_seed import decode_seed, export_seed, import_seed
 from seed_library import download_seed, search_seeds, upload_seed
-from ui_controls import RoundedButton, ThinScrollbar, CenteredToplevel as Toplevel, ParentDialogs
+from ui_controls import RoundedButton, ThinScrollbar, CenteredToplevel as Toplevel, ParentDialogs, show_ready_main_window
 from daniya_persona import (
     CHARACTER_PROMPT as daniya_character_prompt,
     DIALOGUE_PROMPT as daniya_dialogue_prompt,
@@ -96,6 +96,7 @@ DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
 APP_VERSION = "1.5.4"
+APP_BUILD = 2
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -188,6 +189,8 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
     ("v1.5.4", """v1.5.4 正式版 · 本地设置继承与在线种子库
+本次修复：设置检测跳过只有默认任务配置的空安装目录；确认前显示实际主题、键位与预设名称，重启后核对导入文件。
+启动先完成布局与绘制再显示主窗口，修复打开时短暂黑块。
 新增“检测本地设置”：寻找其他本地最新版本，确认后转换键位、主题、桌宠、轴与预设等设置，并重启；执行后无法撤回。
 ZIP首次启动自动检测；更新后自动继承原设置。设置保存在EXE旁边，避免更新替换运行文件时丢失。
 下载增加官方入口重试、进度与分阶段错误提示；更新后正常显示新版窗口，并保留失败恢复。
@@ -4057,6 +4060,10 @@ class TemplateCropper:
 class App:
     def __init__(self, root: Tk):
         self.root = root
+        try:
+            self._settings_import_receipt = verify_import_receipt(USER_SETTINGS_DIR)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            self._settings_import_receipt = {'failed': [str(exc)]}
         preferred_pet_id = self._load_pet_preference()
         self.theme_id = self._load_theme_preference()
         self.pet_id = self._select_startup_pet(preferred_pet_id, self.theme_id)
@@ -4192,6 +4199,7 @@ class App:
         self._load_config(silent=True)
         self._refresh_templates()
         self._drain_logs()
+        self.root.after(200, self._report_settings_import)
         self.root.protocol("WM_DELETE_WINDOW", self._close_app)
         self._start_stop_hotkey()
         self.root.after(120, self._start_desktop_pet)
@@ -8505,6 +8513,16 @@ class App:
         self.update_worker.start()
 
     @staticmethod
+    def _release_build(release: dict) -> int:
+        match = re.search(r'<!--\s*WWBS_BUILD:\s*(\d{1,6})\s*-->', str(release.get('body', '')))
+        return int(match[1]) if match else 1
+
+    @classmethod
+    def _release_is_newer(cls, tag: str, release: dict) -> bool:
+        remote, current = cls._version_tuple(tag), cls._version_tuple(APP_VERSION)
+        return remote > current or (remote == current and cls._release_build(release) > APP_BUILD)
+
+    @staticmethod
     def _select_update_release(releases: list) -> tuple[str, dict, dict]:
         """Include prereleases, ranking by version rather than upload date."""
         if not isinstance(releases, list):
@@ -8588,6 +8606,17 @@ class App:
         self.status.set('本地设置未修改')
         messagebox.showerror('本地设置检测失败', error, parent=self.root)
 
+    def _report_settings_import(self):
+        receipt = self._settings_import_receipt
+        if not receipt:
+            return
+        if receipt.get('failed'):
+            error = '重启后以下设置未通过核对：'+ '、'.join(receipt['failed'])
+            self._log(error)
+            messagebox.showerror('本地设置继承未完成', error, parent=self.root)
+        else:
+            self._log(f"已继承并核对 {receipt['version']} 的 {len(receipt['hashes'])} 项设置。来源：{receipt['source']}")
+
     def _offer_local_settings(self, plan, automatic):
         self._settings_scan_running = False
         if automatic:
@@ -8595,12 +8624,12 @@ class App:
         if plan is None:
             self.status.set('没有找到其他版本的本地设置')
             if not automatic:
-                messagebox.showinfo('本地设置', '没有找到其他版本的设置。请将旧版本完整解压目录放在当前目录旁、下载、桌面或文档目录中。', parent=self.root)
+                messagebox.showinfo('本地设置', '没有找到其他版本的用户设置。未使用过的安装包仅含默认任务配置，会被跳过。请将用过的旧版本完整目录放在当前目录旁、下载、桌面或文档目录中。', parent=self.root)
             return
         if self.worker and self.worker.is_alive():
             self.status.set('检测已完成；请停止任务后重新检测')
             return
-        items = '\n'.join('• '+SETTINGS[name] for name in plan.payloads)
+        items = describe_import(plan)
         dialog, controls, text = self._rotation_seed_window(
             '继承本地设置', '确认后覆盖当前对应设置并重启程序。执行后无法撤回。')
         self._settings_import_window = dialog
@@ -8617,6 +8646,7 @@ class App:
                 return
             try:
                 apply_import(plan, USER_SETTINGS_DIR)
+                save_import_receipt(plan, USER_SETTINGS_DIR)
                 save_discovery_state(USER_SETTINGS_DIR, APP_VERSION, str(plan.source.root))
             except (OSError, ValueError) as exc:
                 messagebox.showerror('继承失败', str(exc), parent=dialog)
@@ -8633,7 +8663,7 @@ class App:
 
     def _show_available_update(self, tag: str, release: dict, asset: dict) -> None:
         self.status.set("远程更新检查完成")
-        if self._version_tuple(tag) <= self._version_tuple(APP_VERSION):
+        if not self._release_is_newer(tag, release):
             messagebox.showinfo("检查更新", f"暂未发现比 wwbs {APP_VERSION} 更新的版本（含beta测试版）。", parent=self.root)
             return
         previous = getattr(self, "_update_offer_window", None)
@@ -8680,7 +8710,7 @@ class App:
         scrollbar.configure(command=notes_text.yview)
         scrollbar.pack(side=RIGHT, fill="y")
         notes_text.pack(side=LEFT, fill=BOTH, expand=True)
-        notes = str(release.get("body", "")).strip() or "该版本没有填写更新说明。"
+        notes = re.sub(r'<!--\s*WWBS_BUILD:\s*\d{1,6}\s*-->', '', str(release.get("body", ""))).strip() or "该版本没有填写更新说明。"
         notes_text.insert("1.0", notes)
         notes_text.configure(state="disabled")
         footer = Frame(body, bg=COLORS["app_bg"])
@@ -9819,8 +9849,9 @@ def main() -> None:
     except Exception:
         pass
     root = Tk()
+    root.withdraw()
     App(root)
-    root.after(0, signal_update_ready)
+    show_ready_main_window(root, signal_update_ready)
     root.mainloop()
 
 

@@ -143,7 +143,11 @@ def discover_latest(current: Path, current_version: str, roots: list[Path], *, c
                 if resolved != current:
                     version = installation_version(folder)
                     files = settings_files(folder)
-                    if files and version and version_key(version) != version_key(current_version):
+                    # Every fresh ZIP contains weekly_tasks.json. It alone is
+                    # not evidence of a user's settings and must not outrank
+                    # an older installation containing their real preferences.
+                    personalized = any(name != 'weekly_tasks.json' for name in files)
+                    if personalized and version and version_key(version) != version_key(current_version):
                         found.append(Installation(resolved, version, files))
                 continue
             if depth >= 4:
@@ -323,3 +327,54 @@ def snapshot_settings(current: Path, destination: Path) -> None:
 
 def fingerprint(plan: ImportPlan) -> str:
     return hashlib.sha256(b''.join(name.encode()+data for name, data in sorted(plan.payloads.items()))).hexdigest()
+
+
+def describe_import(plan: ImportPlan) -> str:
+    """Summarize the actual converted data, so a source can be checked before applying."""
+    lines = []
+    for name, payload in plan.payloads.items():
+        data = json.loads(payload)
+        detail = ''
+        if name == 'theme-settings.json':
+            detail = str(data.get('theme', ''))
+        elif name == 'combat-settings.json':
+            detail = f"技能 {data.get('skill_key', 'E')}；大招 {data.get('ultimate_key', 'R')}"
+        elif name == 'combat-presets.json':
+            detail = '、'.join(str(p['name']) for p in data['presets'])
+        elif name == 'pet-settings.json':
+            detail = str(data.get('pet', ''))
+        elif name == 'daily-settings.json':
+            detail = str(data.get('zone', ''))
+        lines.append('• '+SETTINGS[name]+('：'+detail if detail else ''))
+    return '\n'.join(lines)
+
+
+def save_import_receipt(plan: ImportPlan, target: Path) -> None:
+    hashes = {name: hashlib.sha256(payload).hexdigest() for name, payload in plan.payloads.items()}
+    receipt = {'source': str(plan.source.root), 'version': plan.source.version,
+               'hashes': hashes, 'pending': True}
+    (target/'local-settings-import.json').write_text(json.dumps(receipt, ensure_ascii=False), encoding='utf-8')
+
+
+def verify_import_receipt(target: Path):
+    """Check imported files before UI loaders can write any preferences."""
+    path = target/'local-settings-import.json'
+    try:
+        receipt = json.loads(path.read_text(encoding='utf-8'))
+        if receipt.get('pending') is not True:
+            return None
+        failed = []
+        for name, digest in receipt['hashes'].items():
+            if name not in SETTINGS:
+                raise ValueError('本地设置导入记录无效')
+            try:
+                matches = hashlib.sha256((target/name).read_bytes()).hexdigest() == digest
+            except OSError:
+                matches = False
+            if not matches:
+                failed.append(SETTINGS[name])
+        receipt.update(pending=False, failed=failed)
+        path.write_text(json.dumps(receipt, ensure_ascii=False), encoding='utf-8')
+        return receipt
+    except FileNotFoundError:
+        return None

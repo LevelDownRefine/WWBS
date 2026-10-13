@@ -45,6 +45,43 @@ class LocalSettingsTests(unittest.TestCase):
             self.assertEqual(result.root,old.resolve())
             self.assertIsNone(settings.discover_latest(parent/'current','1.5.4',[parent],cancelled=lambda:True))
 
+    def test_fresh_newer_zip_does_not_hide_real_older_user_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            self.installation(parent, 'fresh-beta4', '1.5.4 beta4', {'weekly_tasks.json': {'tasks': []}})
+            used = self.installation(parent, 'used-beta3', '1.5.4 beta3', {
+                'theme-settings.json': {'theme': 'cartethyia'},
+                'combat-settings.json': {'skill_key': 'XBUTTON2', 'ultimate_key': 'XBUTTON1'},
+                'combat-presets.json': default_store()})
+            source = settings.discover_latest(parent/'current', '1.5.4', [parent])
+            self.assertEqual(source.root, used.resolve())
+            target = parent/'current'
+            plan = settings.prepare_import(source, target)
+            settings.apply_import(plan, target)
+            settings.save_import_receipt(plan, target)
+            result = settings.verify_import_receipt(target)
+            self.assertEqual(result['failed'], [])
+            self.assertEqual(len(result['hashes']), 3)
+            self.assertIsNone(settings.verify_import_receipt(target))
+            self.assertIn('XBUTTON2', settings.describe_import(plan))
+            self.assertIn('cartethyia', settings.describe_import(plan))
+
+    def test_restart_verification_reports_changed_imported_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory)
+            source = settings.Installation(target/'old', '1.5.4 beta3', {})
+            plan = settings.ImportPlan(source, {'theme-settings.json': b'{"theme":"cartethyia"}'}, {})
+            settings.save_import_receipt(plan, target)
+            (target/'theme-settings.json').write_text('{"theme":"simple"}')
+            self.assertEqual(settings.verify_import_receipt(target)['failed'], ['程序主题'])
+
+    def test_same_version_repair_is_compared_using_package_revision(self):
+        with patch.object(app, 'APP_BUILD', 1):
+            self.assertTrue(app.App._release_is_newer('v1.5.4', {'body': '<!-- WWBS_BUILD:2 -->'}))
+            self.assertFalse(app.App._release_is_newer('v1.5.4', {'body': ''}))
+        self.assertFalse(app.App._release_is_newer('v1.5.4', {'body': '<!-- WWBS_BUILD:2 -->'}))
+        self.assertFalse(app.App._release_is_newer('v1.5.3', {'body': '<!-- WWBS_BUILD:999 -->'}))
+
     def test_plan_is_read_only_and_apply_carries_theme_keys_axis_and_modes(self):
         with tempfile.TemporaryDirectory() as directory:
             parent=Path(directory)
