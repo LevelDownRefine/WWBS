@@ -1,8 +1,95 @@
 """Shared rounded controls for WWBS pages and application dialogs."""
 import tkinter as tk
+import ctypes
+from ctypes import wintypes
+import re
 from tkinter import font as tkfont
 from functools import lru_cache
 from math import cos, sin, pi
+
+
+def work_area(owner):
+    try:
+        class MonitorInfo(ctypes.Structure):
+            _fields_ = [('size', wintypes.DWORD), ('monitor', wintypes.RECT),
+                        ('work', wintypes.RECT), ('flags', wintypes.DWORD)]
+        user32 = ctypes.windll.user32
+        user32.MonitorFromWindow.restype = wintypes.HANDLE
+        user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        monitor = user32.MonitorFromWindow(owner.winfo_id(), 2)
+        info = MonitorInfo()
+        info.size = ctypes.sizeof(info)
+        if user32.GetMonitorInfoW(ctypes.c_void_p(monitor), ctypes.byref(info)):
+            return info.work.left, info.work.top, info.work.right, info.work.bottom
+    except (AttributeError, OSError, TypeError):
+        pass
+    return (owner.winfo_vrootx(), owner.winfo_vrooty(),
+            owner.winfo_vrootx()+owner.winfo_vrootwidth(),
+            owner.winfo_vrooty()+owner.winfo_vrootheight()-40)
+
+
+class CenteredToplevel(tk.Toplevel):
+    """Center application dialogs before their first visible frame."""
+    def __init__(self, master=None, **options):
+        self._requested_size = None
+        super().__init__(master, **options)
+        self.withdraw()
+        self.after_idle(self._center_first_frame)
+
+    def geometry(self, value=None):
+        if value and (match := re.match(r'(\d+)x(\d+)', value)):
+            self._requested_size = tuple(map(int, match.groups()))
+        return super().geometry(value)
+
+    wm_geometry = geometry
+
+    def _center_first_frame(self):
+        try:
+            if not self.winfo_exists():
+                return
+            if getattr(self, '_centered_by_app', False):
+                return
+            if self.overrideredirect():  # Drag cards follow the pointer.
+                self.deiconify()
+                return
+            # Packer requests are queued after construction of this window.
+            # Resolve them before measuring, while it is still withdrawn.
+            self.update_idletasks()
+            if not self.winfo_exists():
+                return
+            owner = self.master.winfo_toplevel()
+            self.transient(owner)
+            left, top, right, bottom = work_area(owner)
+            decoration = max(32, owner.winfo_rooty()-owner.winfo_y())
+            requested = self._requested_size or (self.winfo_reqwidth(), self.winfo_reqheight())
+            width, height = max(requested[0], self.winfo_reqwidth()), max(requested[1], self.winfo_reqheight())
+            maximum_width, maximum_height = max(1, right-left-32), max(1, bottom-top-decoration-32)
+            minimum_width, minimum_height = self.minsize()
+            self.minsize(min(minimum_width, maximum_width), min(minimum_height, maximum_height))
+            width, height = min(width, maximum_width), min(height, maximum_height)
+            x = max(left+16, min(owner.winfo_x()+(owner.winfo_width()-width)//2, right-width-16))
+            y = max(top+16, min(owner.winfo_y()+(owner.winfo_height()-height)//2, bottom-height-decoration-16))
+            super().geometry(f'{width}x{height}{x:+d}{y:+d}')
+            self.deiconify()
+        except tk.TclError:
+            pass
+
+
+class ParentDialogs:
+    """Supply the main window as the owner of otherwise unparented native dialogs."""
+    def __init__(self, module):
+        self.module = module
+
+    def __getattr__(self, name):
+        value = getattr(self.module, name)
+        if not callable(value) or not name.startswith(('ask', 'show')):
+            return value
+        def invoke(*args, **options):
+            owner = tk._default_root
+            if owner is not None and 'parent' not in options:
+                options['parent'] = owner
+            return value(*args, **options)
+        return invoke
 
 
 @lru_cache(maxsize=64)

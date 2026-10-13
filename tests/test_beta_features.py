@@ -162,6 +162,9 @@ class UpdateTests(unittest.TestCase):
                     (directory / "wwbs.exe").write_text(content)
                     (directory / "_internal/python312.dll").write_text(content)
                 (target / "pet-chat-history.json").write_text("keep")
+                (target / 'theme-settings.json').write_text('{"theme":"jingran"}')
+                (root / 'settings').mkdir()
+                (root / 'settings' / 'theme-settings.json').write_text('{"theme":"aemeath"}')
                 preamble = "function Get-Process { return $null }\nfunction Start-Sleep {}\n"
                 preamble += "function Start-Process { [IO.File]::WriteAllText($env:WWBS_UPDATE_READY,$env:WWBS_UPDATE_TOKEN); return [pscustomobject]@{HasExited=$" + str(early_exit).lower() + "} }\n"
                 script = root / "update.ps1"
@@ -171,6 +174,8 @@ class UpdateTests(unittest.TestCase):
                 self.assertEqual((target / "wwbs.exe").read_text(), "old" if early_exit else "new")
                 self.assertEqual((target / "_internal/python312.dll").read_text(), "old" if early_exit else "new")
                 self.assertEqual((target / "pet-chat-history.json").read_text(), "keep")
+                self.assertEqual(json.loads((target/'theme-settings.json').read_text())['theme'],
+                                 'jingran' if early_exit else 'aemeath')
                 self.assertTrue((root / "update.log").is_file())
 
     def make_package(self, path, prefix=""):
@@ -223,7 +228,7 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("@('wwbs.exe', '_internal')", script)
         self.assertIn("Original files restored", script)
         self.assertNotIn("Remove-Item", script)
-        self.assertIn("-WindowStyle Hidden", script)
+        self.assertIn("-WindowStyle Normal", script)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,165 @@
+from copy import deepcopy
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import Mock, patch
+
+import app
+from combat_rotation import default_store
+import local_settings as settings
+
+
+class LocalSettingsTests(unittest.TestCase):
+    def installation(self, parent, folder, version, values):
+        root = parent/folder
+        (root/'_internal').mkdir(parents=True)
+        (root/'wwbs.exe').write_bytes(b'fixture')
+        (root/'_internal'/'wwbs-version.json').write_text(json.dumps({'version': version}))
+        for name, value in values.items():
+            (root/'_internal'/name).write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+        return root
+
+    def test_latest_version_is_selected_and_current_version_and_directory_are_excluded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent=Path(directory)
+            current=self.installation(parent,'current','1.5.4',{'pet-settings.json':{'pet':'daniya'}})
+            self.installation(parent,'same','1.5.4',{'pet-settings.json':{'pet':'aemeath'}})
+            self.installation(parent,'old','1.5.4 beta3',{'pet-settings.json':{'pet':'daniya'}})
+            newest=self.installation(parent,'newer','1.5.4 beta4',{'pet-settings.json':{'pet':'cartethyia'}})
+            result=settings.discover_latest(current,'1.5.4',[parent])
+            self.assertEqual(result.root,newest.resolve())
+
+    def test_embedded_executable_version_beats_stale_readme(self):
+        root=Path('_release-work/wwbs-v1.5.4-beta4/wwbs')
+        if not (root/'wwbs.exe').exists():
+            self.skipTest('local release fixture is optional')
+        self.assertEqual(settings.installation_version(root),'1.5.4 beta4')
+
+    def test_newest_version_without_settings_is_not_a_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent=Path(directory)
+            self.installation(parent,'no-settings','1.8.0',{})
+            old=self.installation(parent,'with-settings','1.5.3',{'theme-settings.json':{'theme':'jingran'}})
+            result=settings.discover_latest(parent/'current','1.5.4',[parent])
+            self.assertEqual(result.root,old.resolve())
+            self.assertIsNone(settings.discover_latest(parent/'current','1.5.4',[parent],cancelled=lambda:True))
+
+    def test_plan_is_read_only_and_apply_carries_theme_keys_axis_and_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent=Path(directory)
+            target=parent/'target'
+            target.mkdir()
+            axis=default_store()
+            axis['presets'][0]['name']='自己的轴'
+            axis['presets'][0]['slot_order']=[3,2,1]
+            values={'theme-settings.json':{'theme':'cartethyia'},
+                    'combat-settings.json':{'skill_key':'XBUTTON2','ultimate_key':'XBUTTON1'},
+                    'combat-presets.json':axis,'pet-display-settings.json':{'percent':'85%','visible':False}}
+            original=deepcopy(values)
+            source_root=self.installation(parent,'old','1.5.4 beta4',values)
+            source=settings.Installation(source_root,'1.5.4 beta4',settings.settings_files(source_root))
+            plan=settings.prepare_import(source,target)
+            self.assertEqual(list(target.iterdir()),[])
+            self.assertEqual(values,original)
+            settings.apply_import(plan,target)
+            theme=json.loads((target/'theme-settings.json').read_text())
+            self.assertEqual(theme,{'theme':'cartethyia','explicit':True,'source':'theme-picker'})
+            imported=json.loads((target/'combat-presets.json').read_text(encoding='utf-8'))
+            self.assertEqual(imported['presets'][0]['slot_order'],[3,2,1])
+            self.assertEqual(imported['modes'],axis['modes'])
+            self.assertEqual(json.loads((target/'pet-display-settings.json').read_text())['percent'],85)
+
+    def test_changed_target_after_preview_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            target=root/'target'
+            target.mkdir()
+            source_root=self.installation(root,'source','1.5.3',{'theme-settings.json':{'theme':'simple'}})
+            plan=settings.prepare_import(settings.Installation(source_root,'1.5.3',settings.settings_files(source_root)),target)
+            (target/'theme-settings.json').write_text('changed')
+            with self.assertRaisesRegex(ValueError,'已改变'):
+                settings.apply_import(plan,target)
+            self.assertEqual((target/'theme-settings.json').read_text(),'changed')
+
+    def test_corrupt_settings_abort_before_any_target_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            source_root=self.installation(root,'source','1.5.3',{'combat-presets.json':{'presets':[]},
+                                                                 'theme-settings.json':{'theme':'simple'}})
+            target=root/'target'
+            with self.assertRaises(ValueError):
+                settings.prepare_import(settings.Installation(source_root,'1.5.3',settings.settings_files(source_root)),target)
+            self.assertFalse(target.exists())
+
+    def test_write_failure_restores_original_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            source_root=self.installation(root,'source','1.5.3',{'theme-settings.json':{'theme':'simple'},
+                                                             'pet-settings.json':{'pet':'daniya'}})
+            target=root/'target'
+            target.mkdir()
+            (target/'theme-settings.json').write_text('original')
+            plan=settings.prepare_import(settings.Installation(source_root,'1.5.3',settings.settings_files(source_root)),target)
+            real=settings.os.replace
+            calls=[0]
+            def replace(source,destination):
+                calls[0]+=1
+                if calls[0]==2:
+                    raise OSError('fixture failure')
+                return real(source,destination)
+            with patch.object(settings.os,'replace',side_effect=replace),self.assertRaises(OSError):
+                settings.apply_import(plan,target)
+            self.assertEqual((target/'theme-settings.json').read_text(),'original')
+            self.assertFalse((target/'pet-settings.json').exists())
+
+    def test_update_snapshot_includes_internal_settings_without_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            old=self.installation(root,'old','1.5.3',{'theme-settings.json':{'theme':'jingran'},
+                    'cartethyia-agent-settings.json':{'model':'local','api_key':'secret'}})
+            settings.snapshot_settings(old,root/'snapshot')
+            data=json.loads((root/'snapshot'/'cartethyia-agent-settings.json').read_text())
+            self.assertNotIn('api_key',data)
+            self.assertEqual(data['model'],'local')
+
+    def test_old_updater_backup_bootstraps_all_preferences_into_executable_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            bundled=root/'_internal'
+            bundled.mkdir()
+            backup=root/'.wwbs-update-backup-fixture'
+            old=backup/'_internal'
+            old.mkdir(parents=True)
+            for name,value in {'theme-settings.json':{'theme':'aemeath'},
+                               'pet-display-settings.json':{'percent':85},
+                               'weekly_tasks.json':{'tasks':[]}}.items():
+                (old/name).write_text(json.dumps(value))
+            settings.bootstrap_own_settings(root,bundled)
+            self.assertTrue((root/'weekly_tasks.json').exists())
+            self.assertEqual(json.loads((root/'theme-settings.json').read_text())['theme'],'aemeath')
+            (old/'pet-display-settings.json').write_text('{"percent":115}')
+            settings.bootstrap_own_settings(root,bundled)
+            self.assertEqual(json.loads((root/'pet-display-settings.json').read_text())['percent'],85)
+
+    def test_cancel_confirmation_never_calls_apply(self):
+        ui=app.App.__new__(app.App)
+        ui.root,ui.status,ui.worker=Mock(),Mock(),None
+        ui._rotation_seed_window=Mock(return_value=(Mock(),Mock(),Mock()))
+        commands={}
+        def button(_parent,*,text,command,**_options):
+            commands[text]=command
+            return Mock()
+        ui._ui_button=button
+        source=settings.Installation(Path('fixture'),'1.5.3',{})
+        plan=settings.ImportPlan(source,{'theme-settings.json':b'{}'},{'theme-settings.json':None})
+        with patch.object(app,'apply_import') as apply, patch.object(app,'Label',return_value=Mock()):
+            ui._offer_local_settings(plan,False)
+            commands['取消']()
+            apply.assert_not_called()
+        ui._rotation_seed_window.assert_called_once()
+        self.assertIn('执行后无法撤回',ui._rotation_seed_window.call_args.args[1])
+
+
+if __name__=='__main__':
+    unittest.main()

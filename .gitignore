@@ -42,3 +42,9 @@ pet-chat-history.tmp
 .wwbs-update-backup-*/
 pet-runs/
 wwbs-sillytavern-kit.zip
+.netlify/
+node_modules/
+local-settings-discovery.json
+combat-settings.json
+ui-settings.json
+connection-settings.json

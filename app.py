@@ -10,7 +10,6 @@ import secrets
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.request
@@ -19,7 +18,7 @@ import zipfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from tkinter import BOTH, END, LEFT, RIGHT, TOP, X, BooleanVar, Canvas, Checkbutton, Entry, Frame, Label, Listbox, StringVar, Text, Tk, Toplevel, TclError, filedialog, messagebox, simpledialog, ttk
+from tkinter import BOTH, END, LEFT, RIGHT, TOP, X, BooleanVar, Canvas, Checkbutton, Entry, Frame, Label, Listbox, StringVar, Text, Tk, TclError, filedialog, messagebox, simpledialog, ttk
 from tkinter import font as tkfont
 
 from PIL import Image, ImageDraw, ImageTk
@@ -29,11 +28,16 @@ from image_matcher import TemplateMatcher
 from windows_client import ClientWindowController
 from desktop_pet import DesktopPet
 from chat_history import ChatHistory
-from update_manager import prepare_update, install_script, signal_update_ready
+from update_manager import (create_update_work, download_asset, prepare_update, install_script,
+                            signal_update_ready)
+from local_settings import (SETTINGS, apply_import, bootstrap_own_settings, default_search_roots,
+                            discover_latest, discovery_needed, prepare_import, save_discovery_state,
+                            snapshot_settings)
 from weekly_rewards import WeeklyLimitReached, WeeklyRewardsVision
 from combat_rotation import ACTION_SPECS, COMBAT_MODES, SLOT_NAMES, BattleMonitor, IdleAttackWorker, RotationClock, active_modules, default_store, load_store, new_module, save_store, validate_store
 from combat_seed import decode_seed, export_seed, import_seed
-from ui_controls import RoundedButton, ThinScrollbar
+from seed_library import download_seed, search_seeds, upload_seed
+from ui_controls import RoundedButton, ThinScrollbar, CenteredToplevel as Toplevel, ParentDialogs
 from daniya_persona import (
     CHARACTER_PROMPT as daniya_character_prompt,
     DIALOGUE_PROMPT as daniya_dialogue_prompt,
@@ -80,13 +84,18 @@ from sillytavern_bridge import PORT as SILLYTAVERN_BRIDGE_PORT, SillyTavernBridg
 
 
 APP_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG = APP_DIR / "weekly_tasks.json"
+messagebox = ParentDialogs(messagebox)
+filedialog = ParentDialogs(filedialog)
+simpledialog = ParentDialogs(simpledialog)
+USER_SETTINGS_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else APP_DIR
+BUNDLED_DEFAULT_CONFIG = APP_DIR / "weekly_tasks.json"
+DEFAULT_CONFIG = USER_SETTINGS_DIR / "weekly_tasks.json"
 TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.5.4 beta4"
+APP_VERSION = "1.5.4"
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -149,15 +158,16 @@ def apply_windows_taskbar_icon(window, icon_path: Path) -> bool:
     except Exception:
         pass
     return False
-THEME_CONFIG = APP_DIR / "theme-settings.json"
-PET_CONFIG = APP_DIR / "pet-settings.json"
-PET_DISPLAY_CONFIG = APP_DIR / "pet-display-settings.json"
-COMBAT_CONFIG = APP_DIR / "combat-settings.json"
-DAILY_CONFIG = APP_DIR / "daily-settings.json"
-UI_CONFIG = APP_DIR / "ui-settings.json"
-APP_SETTINGS_CONFIG = APP_DIR / "app-settings.json"
+THEME_CONFIG = USER_SETTINGS_DIR / "theme-settings.json"
+PET_CONFIG = USER_SETTINGS_DIR / "pet-settings.json"
+PET_DISPLAY_CONFIG = USER_SETTINGS_DIR / "pet-display-settings.json"
+COMBAT_CONFIG = USER_SETTINGS_DIR / "combat-settings.json"
+DAILY_CONFIG = USER_SETTINGS_DIR / "daily-settings.json"
+UI_CONFIG = USER_SETTINGS_DIR / "ui-settings.json"
+APP_SETTINGS_CONFIG = USER_SETTINGS_DIR / "app-settings.json"
+CONNECTION_CONFIG = USER_SETTINGS_DIR / "connection-settings.json"
 UPDATE_NOTICE_CONFIG = COMBAT_PRESETS_CONFIG.with_name('update-notice.json')
-CARTETHYIA_AGENT_CONFIG = APP_DIR / "cartethyia-agent-settings.json"
+CARTETHYIA_AGENT_CONFIG = USER_SETTINGS_DIR / "cartethyia-agent-settings.json"
 DANIYA_THEME_PACK = APP_DIR / "optional-themes" / "daniya-theme.wwbstheme"
 AEMEATH_THEME_PACK = APP_DIR / "optional-themes" / "aemeath-theme.wwbstheme"
 JINGRAN_THEME_PACK = APP_DIR / "optional-themes" / "jingran-theme.wwbstheme"
@@ -177,6 +187,15 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    ("v1.5.4", """v1.5.4 正式版 · 本地设置继承与在线种子库
+新增“检测本地设置”：寻找其他本地最新版本，确认后转换键位、主题、桌宠、轴与预设等设置，并重启；执行后无法撤回。
+ZIP首次启动自动检测；更新后自动继承原设置。设置保存在EXE旁边，避免更新替换运行文件时丢失。
+下载增加官方入口重试、进度与分阶段错误提示；更新后正常显示新版窗口，并保留失败恢复。
+种子以【种子名】开头，名称最多10字；默认轴缩至32字符，仍保留原预设名并兼容三代旧种子。
+新增种子上传、名称搜索与下载导入；公开分享仅含轴数据，下载新增预设而不覆盖已有轴。
+4C次数及其他弹窗统一居中；简约主题初始1280×1320，角色主题1280×1410，小屏幕自动适配。
+汇总beta阶段的日常活跃度、周常响应、普攻衔接和光球45%置信度修复。
+完整说明见 release-notes-v1.5.4.md。"""),
     ("v1.5.4 beta4", """v1.5.4 beta4 · 光球识别置信度
 光球定位最低置信度改为45%（0.45），定位与靠近搜索使用同一阈值。
 完整说明见 release-notes-v1.5.4-beta4.md。"""),
@@ -4064,6 +4083,15 @@ class App:
         self.expected_resolution = StringVar(value="1920x1080")
         self.adb_path = StringVar(value="adb")
         self.device_id = StringVar(value="")
+        try:
+            saved_connection = json.loads(CONNECTION_CONFIG.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            saved_connection = {}
+        if isinstance(saved_connection, dict):
+            for key in ('target_mode', 'window_title', 'expected_resolution', 'adb_path', 'device_id'):
+                value = saved_connection.get(key)
+                if isinstance(value, str) and (key != 'target_mode' or value in {'client','adb'}):
+                    getattr(self,key).set(value)
         self.combat_skill_key = StringVar(value=self._load_combat_skill_key())
         self.combat_ultimate_key = StringVar(value=self._load_combat_ultimate_key())
         self.daily_zone = StringVar(value=self._load_daily_zone())
@@ -4106,7 +4134,7 @@ class App:
             bridge=self.sillytavern_bridge,
         )
         self._agent_chat_busy = False
-        self.chat_history = ChatHistory(APP_DIR / "pet-chat-history.json")
+        self.chat_history = ChatHistory(USER_SETTINGS_DIR / "pet-chat-history.json")
         self.dry_run = BooleanVar(value=True)
         self.status = StringVar(value="准备就绪")
         self.device_status = StringVar(value="窗口未检测")
@@ -4159,6 +4187,8 @@ class App:
         self._last_task_started_at = 0.0
 
         self._build_ui()
+        for key in ('target_mode','window_title','expected_resolution','adb_path','device_id'):
+            getattr(self,key).trace_add('write', self._save_connection_settings)
         self._load_config(silent=True)
         self._refresh_templates()
         self._drain_logs()
@@ -4170,6 +4200,8 @@ class App:
             self._log("检测到未开启管理员模式，已通过管理员模式打开")
         else:
             self.root.after(300, self._show_startup_notice_once)
+        if getattr(sys, 'frozen', False) and not os.environ.get('WWBS_UPDATE_READY'):
+            self.root.after(1200, self._startup_detect_local_settings)
 
     @staticmethod
     def _theme_pack_valid(theme_id: str, path: Path | None = None) -> bool:
@@ -4615,7 +4647,7 @@ class App:
             y = self.root.winfo_y() + max(0, (self.root.winfo_height() - height) // 2)
         x = max(10, min(screen_w - width - 10, x))
         y = max(10, min(screen_h - height - 50, y))
-        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.geometry(f"{width}x{height}{x:+d}{y:+d}")
         dialog.grab_set()
         editor.focus_force()
         self.root.wait_window(dialog)
@@ -5000,8 +5032,10 @@ class App:
         shell.pack(fill=BOTH, expand=True, padx=14, pady=14)
         Label(body, text="4C刷取次数", font=(FONT_FAMILY, 13, "bold"),
               bg=COLORS["panel_alt"], fg=COLORS["text"]).pack(anchor="w")
-        Label(body, text="要刷取多少次？会自动记住上次的次数（1–9999）。",
-              bg=COLORS["panel_alt"], fg=COLORS["muted"]).pack(anchor="w", pady=(6, 12))
+        hint = Label(body, text="要刷取多少次？会自动记住上次的次数（1–9999）。",
+                     bg=COLORS["panel_alt"], fg=COLORS["muted"], wraplength=310, justify=LEFT, anchor='w')
+        hint.pack(fill=X, pady=(6,12))
+        hint.bind('<Configure>', lambda event: hint.configure(wraplength=max(160,event.width-4)))
         value = StringVar(value=str(initial))
         input_shell, input_body = self._rounded_panel(body, padding=6,
                                                       color=COLORS["panel"],
@@ -5427,6 +5461,7 @@ class App:
     @staticmethod
     def _reserve_row_controls(parent, stretch):
         """Allocate action widths before giving remaining space to a picker."""
+        stretch = getattr(stretch, '_rounded_shell', stretch)
         children = parent.winfo_children()
         for child in children:
             child.pack_forget()
@@ -5437,6 +5472,7 @@ class App:
     def _ask_text(self, title, prompt, *, initialvalue='', parent=None):
         owner = parent or self.root
         dialog = Toplevel(owner)
+        dialog._centered_by_app = True
         dialog.withdraw()
         dialog.title(title)
         dialog.transient(owner)
@@ -5465,7 +5501,7 @@ class App:
         y = owner.winfo_y() + (owner.winfo_height()-height)//2
         x = max(owner.winfo_vrootx(), min(x, owner.winfo_vrootx()+owner.winfo_vrootwidth()-width))
         y = max(owner.winfo_vrooty(), min(y, owner.winfo_vrooty()+owner.winfo_vrootheight()-height-32))
-        dialog.geometry(f'{width}x{height}+{x}+{y}')
+        dialog.geometry(f'{width}x{height}{x:+d}{y:+d}')
         dialog.deiconify()
         entry.focus_force()
         entry.select_range(0, END)
@@ -5557,7 +5593,7 @@ class App:
                 y = picker.winfo_rooty() - (visible * row_height + 8 + entry_height) - 2
             total_height = visible * row_height + 8 + entry_height
             y = max(screen_top + 8, min(y, screen_bottom - total_height - 8))
-            window.geometry(f"{width}x{total_height}+{x}+{y}")
+            window.geometry(f"{width}x{total_height}{x:+d}{y:+d}")
             outside_binding = None
 
             def close_popup() -> None:
@@ -5918,11 +5954,11 @@ class App:
                 card._drag_started = True
                 draw()
                 offset_x, offset_y = card._drag_offset
-                ghost.geometry(f"+{event.x_root - offset_x}+{event.y_root - offset_y}")
+                ghost.geometry(f"{event.x_root-offset_x:+d}{event.y_root-offset_y:+d}")
                 ghost.deiconify()
             if card._drag_started:
                 offset_x, offset_y = card._drag_offset
-                card._drag_ghost.geometry(f"+{event.x_root - offset_x}+{event.y_root - offset_y}")
+                card._drag_ghost.geometry(f"{event.x_root-offset_x:+d}{event.y_root-offset_y:+d}")
                 card._drag_ghost.lift()
                 top = self.start_left_canvas.winfo_rooty()
                 bottom = top + self.start_left_canvas.winfo_height()
@@ -6380,7 +6416,7 @@ class App:
         window.update_idletasks()
         x = max(0, (screen_width - window.winfo_width()) // 2)
         y = max(0, (screen_height - window.winfo_height()) // 2)
-        window.geometry(f"+{x}+{y}")
+        window.geometry(f"{x:+d}{y:+d}")
         window.grab_set()
 
     def _scroll_detail_log(self, event) -> str:
@@ -6480,6 +6516,7 @@ class App:
     def _rotation_seed_window(self, title: str, prompt: str):
         self._close_rounded_picker()
         dialog = Toplevel(self.root)
+        dialog._centered_by_app = True
         dialog.withdraw()
         dialog.title(title)
         dialog.transient(self.root)
@@ -6517,17 +6554,18 @@ class App:
         def show_centered():
             if not dialog.winfo_exists():
                 return
-            width = min(760, max(520, self.root.winfo_width()-40))
-            height = 520
-            left, top = self.root.winfo_vrootx(), self.root.winfo_vrooty()
-            right, bottom = left+self.root.winfo_vrootwidth(), top+self.root.winfo_vrootheight()
+            left, top, right, bottom = self._update_work_area()
+            decoration = max(32, self.root.winfo_rooty()-self.root.winfo_y())
+            width = min(760, max(520, self.root.winfo_width()-40), right-left-32)
+            height = min(520, bottom-top-decoration-32)
+            dialog.minsize(min(520, width), min(440, height))
             # geometry() positions the decorated window; use the owner's frame
             # origin rather than its client origin to avoid a title-bar offset.
             x = self.root.winfo_x() + (self.root.winfo_width()-width)//2
             y = self.root.winfo_y() + (self.root.winfo_height()-height)//2
-            x = max(left, min(x, right-width))
-            y = max(top, min(y, bottom-height-32))
-            dialog.geometry(f"{width}x{height}+{x}+{y}")
+            x = max(left+16, min(x, right-width-16))
+            y = max(top+16, min(y, bottom-height-decoration-16))
+            dialog.geometry(f"{width}x{height}{x:+d}{y:+d}")
             dialog.deiconify()
             dialog.lift()
             text.focus_set()
@@ -6537,14 +6575,23 @@ class App:
     def _rotation_export_seed(self):
         if not self._rotation_save():
             return None
-        seed = export_seed(self._rotation_current_preset())
+        preset = json.loads(json.dumps(self._rotation_current_preset()))
+        seed = export_seed(preset)
         shared = decode_seed(seed)
         dialog, body, text = self._rotation_seed_window(
             "生成战斗轴种子",
-            "种子包含当前预设的角色顺序、驻场时间及全部模块参数。复制给对方后，可在支持种子的版本中导入；无需联网。",
+            "种子保留原预设名、角色顺序、驻场时间及模块参数。种子名最多10字，用于前缀和在线搜索；生成和复制无需联网，上传后公开共享。",
         )
         text.insert("1.0", seed)
         text.configure(state="disabled")
+        name = StringVar(value=shared['seed_name'])
+        row = Frame(body, bg=COLORS['panel'])
+        row.pack(fill=X, pady=(10, 0))
+        Label(row, text='种子名（最多10字）', bg=COLORS['panel']).pack(side=LEFT)
+        name_entry = self._rounded_entry(row, textvariable=name, width=14)
+        name_entry.pack(side=LEFT, fill=X, expand=True, padx=8)
+        name_entry.configure(validate='key', validatecommand=(dialog.register(lambda value: len(value) <= 10), '%P'))
+        state = {'seed': seed, 'name': shared['seed_name']}
         status = StringVar(value=f"种子标识：{shared['share_id']}")
         status_label = Label(body, textvariable=status, bg=COLORS["panel"], fg=COLORS["muted"],
                              wraplength=650, justify=LEFT, anchor="w")
@@ -6552,7 +6599,25 @@ class App:
         status_label.bind("<Configure>", lambda e: status_label.configure(wraplength=max(160, e.width-4)))
         footer = Frame(body, bg=COLORS["panel"])
         footer.pack(fill=X)
+        def generate():
+            try:
+                generated = export_seed(preset, seed_name=name.get())
+            except ValueError as exc:
+                status.set(str(exc))
+                return None
+            state.update(seed=generated, name=name.get().strip())
+            text.configure(state='normal')
+            text.delete('1.0', END)
+            text.insert('1.0', generated)
+            text.configure(state='disabled')
+            status.set(f'已生成【{state["name"]}】，共{len(generated)}个字符。')
+            return generated
+        def current():
+            return generate() if name.get().strip() != state['name'] else state['seed']
         def copy():
+            seed = current()
+            if seed is None:
+                return
             try:
                 self.root.clipboard_clear()
                 self.root.clipboard_append(seed)
@@ -6560,8 +6625,118 @@ class App:
                 status.set("复制失败，请在种子框中选中文字后手动复制。")
                 return
             status.set("已复制完整种子，可以发送给对方。")
+        def upload():
+            seed = current()
+            if seed is None:
+                return
+            if not messagebox.askyesno('上传种子', f'上传【{state["name"]}】后，其他人可以按名称搜索和下载。\n只分享战斗轴参数，是否上传？',
+                                       parent=dialog, default='no'):
+                return
+            self._seed_library_job(dialog, status, lambda: upload_seed(seed),
+                lambda result: status.set('已上传；同名同轴已存在。' if result.get('duplicate') else '上传成功，其他人可以搜索此名称。'))
         self._ui_button(footer, text="关闭", command=dialog.destroy).pack(side=RIGHT)
         self._ui_button(footer, text="复制种子", command=copy, style="Primary.TButton").pack(side=RIGHT, padx=8)
+        self._ui_button(footer, text='生成种子', command=generate).pack(side=RIGHT, padx=8)
+        self._ui_button(footer, text='上传种子', command=upload).pack(side=RIGHT, padx=8)
+        self._wrap_button_row(footer)
+        return dialog
+
+    def _seed_library_job(self, dialog, status, work, complete):
+        if getattr(dialog, '_seed_job_running', False):
+            return
+        dialog._seed_job_running = True
+        status.set('正在连接在线种子库…')
+        def finish(result=None, error=''):
+            if not dialog.winfo_exists():
+                return
+            dialog._seed_job_running = False
+            if error:
+                status.set(error)
+            else:
+                complete(result)
+        def run():
+            try:
+                result = work()
+                self.root.after(0, lambda: finish(result))
+            except Exception as exc:
+                error = str(exc)
+                try:
+                    self.root.after(0, lambda: finish(error=error))
+                except (TclError, RuntimeError):
+                    pass
+        threading.Thread(target=run, daemon=True, name='wwbs-seed-library').start()
+
+    def _rotation_online_seed_library(self):
+        dialog, body, text = self._rotation_seed_window(
+            '在线种子库', '按名称搜索公开种子。下载会新增带“（导入）”的预设，已有预设和模式分配保留。')
+        text.configure(state='disabled')
+        state = {'items': [], 'selected': None}
+        name = StringVar(value='')
+        status = StringVar(value='输入名称搜索；留空可浏览种子。')
+        row = Frame(body, bg=COLORS['panel'])
+        row.pack(fill=X, pady=(10, 0))
+        Label(row, text='种子名称', bg=COLORS['panel']).pack(side=LEFT)
+        entry = self._rounded_entry(row, textvariable=name)
+        entry.pack(side=LEFT, fill=X, expand=True, padx=8)
+        entry.configure(validate='key', validatecommand=(dialog.register(lambda value: len(value) <= 10), '%P'))
+        def select(index):
+            state['selected'] = index
+            text.tag_remove('selected', '1.0', END)
+            text.tag_add('selected', f'{index+1}.0', f'{index+1}.end')
+            text.tag_configure('selected', background=COLORS['panel_alt'])
+            status.set(f'已选择【{state["items"][index]["name"]}】')
+        def display(result):
+            items, truncated = result
+            state.update(items=items, selected=None)
+            text.configure(state='normal')
+            text.delete('1.0', END)
+            for index, item in enumerate(items):
+                text.insert(END, f'{item["name"]}　·　{item.get("modules", "?")}个模块\n', f'item{index}')
+                text.tag_bind(f'item{index}', '<ButtonRelease-1>', lambda _event, i=index: select(i))
+            text.configure(state='disabled')
+            if items:
+                select(0)
+                status.set(f'找到{len(items)}个种子，点击条目后下载。'+('结果较多，请缩小搜索范围。' if truncated else ''))
+            else:
+                status.set('没有找到这个名称。')
+        def search():
+            query = name.get()
+            self._seed_library_job(dialog, status, lambda: search_seeds(query), display)
+        self._ui_button(row, text='搜索', command=search).pack(side=RIGHT)
+        self._reserve_row_controls(row, entry)
+        entry.bind('<Return>', lambda _event: search())
+        hint = Label(body, textvariable=status, bg=COLORS['panel'], fg=COLORS['muted'], justify=LEFT)
+        hint.pack(fill=X, pady=10)
+        hint.bind('<Configure>', lambda event: hint.configure(wraplength=max(160, event.width-4)))
+        def import_downloaded(seed):
+            if not self._rotation_save():
+                status.set('当前预设未保存，下载未导入。')
+                return
+            try:
+                updated, identity = import_seed(self.rotation_store, seed)
+                save_store(COMBAT_PRESETS_CONFIG, updated)
+            except (ValueError, OSError) as exc:
+                status.set(f'导入失败：{exc}')
+                return
+            self.rotation_store = updated
+            self._rotation_editing_id = identity
+            preset = self._rotation_current_preset()
+            self.rotation_choice.set(preset['name'])
+            self._rotation_refresh_picker()
+            self._rotation_rebuild_cards()
+            status.set(f'已下载并新增：{preset["name"]}')
+        def download():
+            index = state['selected']
+            if index is None:
+                status.set('请先搜索并选择一条种子。')
+                return
+            identity = state['items'][index]['id']
+            self._seed_library_job(dialog, status, lambda: download_seed(identity), import_downloaded)
+        footer = Frame(body, bg=COLORS['panel'])
+        footer.pack(fill=X)
+        self._ui_button(footer, text='关闭', command=dialog.destroy).pack(side=RIGHT)
+        self._ui_button(footer, text='下载并导入', width=16, style='Primary.TButton',
+                        command=download).pack(side=RIGHT, padx=8)
         return dialog
 
     def _rotation_import_seed(self):
@@ -6844,7 +7019,7 @@ class App:
         dialog.update_idletasks()
         width, height = max(440, dialog.winfo_reqwidth()), max(300, dialog.winfo_reqheight())
         dialog.minsize(width, height)
-        dialog.geometry(f"{width}x{height}+{self.root.winfo_rootx()+60}+{self.root.winfo_rooty()+60}")
+        dialog.geometry(f"{width}x{height}{self.root.winfo_rootx()+60:+d}{self.root.winfo_rooty()+60:+d}")
         dialog.bind("<Escape>", lambda _event: dialog.destroy())
 
     def _rotation_rebuild_cards(self) -> None:
@@ -6976,7 +7151,7 @@ class App:
                                        (("<B1-Motion>", motion), ("<ButtonRelease-1>", release), ("<Escape>", release))]
                 draw()
             ox, oy = card._drag_offset
-            card._drag_ghost.geometry(f"+{event.x_root-ox}+{event.y_root-oy}")
+            card._drag_ghost.geometry(f"{event.x_root-ox:+d}{event.y_root-oy:+d}")
             card._drag_ghost.deiconify()
             target_slot = min(self._rotation_columns, key=lambda n: abs(event.x_root -
                                (self._rotation_columns[n]["canvas"].winfo_rootx()+self._rotation_columns[n]["canvas"].winfo_width()/2)))
@@ -7147,7 +7322,7 @@ class App:
                 header._bindings = [(seq, self.root.bind(seq, callback, add="+")) for seq, callback in
                                     (("<B1-Motion>", motion), ("<ButtonRelease-1>", release), ("<Escape>", release))]
             ox, oy = header._offset
-            header._drag_ghost.geometry(f"+{event.x_root-ox}+{event.y_root-oy}")
+            header._drag_ghost.geometry(f"{event.x_root-ox:+d}{event.y_root-oy:+d}")
             header._drag_ghost.deiconify()
             nearest = min(self._rotation_columns, key=lambda n: abs(event.x_root -
                           (self._rotation_columns[n]["shell"].winfo_rootx() +
@@ -7205,6 +7380,7 @@ class App:
             self._rounded_button(toolbar, name, callback, width=68, primary=name == "保存").pack(side=LEFT, padx=(0, 6))
         self._ui_button(toolbar, text="生成种子", command=self._rotation_export_seed).pack(side=LEFT)
         self._ui_button(toolbar, text="导入种子", command=self._rotation_import_seed).pack(side=LEFT)
+        self._ui_button(toolbar, text="在线种子库", width=14, command=self._rotation_online_seed_library).pack(side=LEFT)
         self._reserve_row_controls(toolbar, self.rotation_picker_parent)
         modes_shell, modes_body = self._rounded_panel(self.rotation_tab, padding=10)
         modes_shell.pack(fill=X, pady=(0, 8))
@@ -7389,6 +7565,17 @@ class App:
         Label(self.settings_tab, text="高级设置", font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
         Label(self.settings_tab, text="普通使用 PC 客户端模式即可。只有使用模拟器时才需要切换到 ADB。", fg="#5f6b7a").pack(anchor="w", pady=(2, 12))
 
+        local_box = self._card_body(self.settings_tab)
+        local_box.pack(fill=X, pady=(0, 14))
+        Label(local_box, text="本地设置", font=(FONT_FAMILY, 11, "bold"),
+              bg=COLORS['panel_alt']).pack(anchor='w')
+        hint = Label(local_box, text="检测其他本地版本，确认后继承键位、主题、桌宠和战斗预设；执行后无法撤回。",
+                     bg=COLORS['panel_alt'], fg=COLORS['muted'], justify=LEFT, anchor='w')
+        hint.pack(fill=X, pady=(6, 10))
+        hint.bind('<Configure>', lambda event: hint.configure(wraplength=max(180, event.width-4)))
+        self._ui_button(local_box, text="检测本地设置", width=16,
+                        command=self._detect_local_settings).pack(anchor='w')
+
         theme_box = self._card_body(self.settings_tab)
         theme_box.pack(fill=X, pady=(0, 14))
         Label(theme_box, text="程序主题", font=(FONT_FAMILY, 11, "bold"), bg=COLORS["panel_alt"]).pack(anchor="w")
@@ -7569,6 +7756,16 @@ class App:
 
         self._update_mode_label()
         self._bind_mousewheel_tree(self.settings_tab, self.settings_scroll_canvas)
+
+    def _save_connection_settings(self, *_arguments) -> None:
+        data = {key:getattr(self,key).get() for key in
+                ('target_mode','window_title','expected_resolution','adb_path','device_id')}
+        try:
+            temporary = CONNECTION_CONFIG.with_suffix('.tmp')
+            temporary.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
+            temporary.replace(CONNECTION_CONFIG)
+        except OSError:
+            self.status.set('连接设置未保存，请检查目录写入权限')
 
     def _select_theme(self, theme_id: str) -> None:
         if theme_id in THEME_DEFINITIONS and not self._theme_pack_valid(theme_id):
@@ -8110,6 +8307,10 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _close_app(self) -> None:
+        if getattr(self, '_settings_scan_cancel', None) is not None:
+            self._settings_scan_cancel.set()
+        if getattr(self, '_update_cancelled', None) is not None:
+            self._update_cancelled.set()
         self.stop_event.set()
         self.sillytavern_bridge.stop()
         if self.pet_id == "aemeath":
@@ -8348,12 +8549,87 @@ class App:
 
     def _configure_main_window_size(self) -> None:
         left, top, right, bottom = self._update_work_area()
-        width = min(1010, max(1, right-left-60))
-        height = min(1100, max(1, bottom-top-60))
-        x, y = left+(right-left-width)//2, top+(bottom-top-height)//2
+        decoration = max(32, self.root.winfo_rooty()-self.root.winfo_y())+8
+        width = min(1280, max(1, right-left-60))
+        desired_height = 1320 if getattr(self, 'theme_id', 'simple') == 'simple' else 1410
+        height = min(desired_height, max(1, bottom-top-decoration-40))
+        x, y = left+(right-left-width)//2, top+(bottom-top-height-decoration)//2
         self.root.geometry(f"{width}x{height}{x:+d}{y:+d}")
         self.root.minsize(min(900, width), min(720, height))
         self.root.resizable(True, True)
+
+    def _startup_detect_local_settings(self) -> None:
+        if discovery_needed(USER_SETTINGS_DIR, APP_VERSION):
+            self._detect_local_settings(automatic=True)
+
+    def _detect_local_settings(self, automatic=False) -> None:
+        if getattr(self, '_settings_scan_running', False):
+            return
+        if getattr(self, '_update_installing', False) or (self.worker and self.worker.is_alive()):
+            if not automatic:
+                messagebox.showinfo('本地设置', '请先停止任务或等待更新完成，再检测设置。', parent=self.root)
+            return
+        self._settings_scan_running = True
+        self._settings_scan_cancel = threading.Event()
+        self.status.set('正在检测其他本地版本的设置…')
+        def work():
+            try:
+                source = discover_latest(USER_SETTINGS_DIR, APP_VERSION, default_search_roots(USER_SETTINGS_DIR),
+                                         cancelled=self._settings_scan_cancel.is_set)
+                plan = prepare_import(source, USER_SETTINGS_DIR) if source else None
+                self.root.after(0, lambda: self._offer_local_settings(plan, automatic))
+            except Exception as exc:
+                error = str(exc)
+                self.root.after(0, lambda: self._local_settings_error(error))
+        threading.Thread(target=work, daemon=True, name='wwbs-local-settings').start()
+
+    def _local_settings_error(self, error):
+        self._settings_scan_running = False
+        self.status.set('本地设置未修改')
+        messagebox.showerror('本地设置检测失败', error, parent=self.root)
+
+    def _offer_local_settings(self, plan, automatic):
+        self._settings_scan_running = False
+        if automatic:
+            save_discovery_state(USER_SETTINGS_DIR, APP_VERSION)
+        if plan is None:
+            self.status.set('没有找到其他版本的本地设置')
+            if not automatic:
+                messagebox.showinfo('本地设置', '没有找到其他版本的设置。请将旧版本完整解压目录放在当前目录旁、下载、桌面或文档目录中。', parent=self.root)
+            return
+        if self.worker and self.worker.is_alive():
+            self.status.set('检测已完成；请停止任务后重新检测')
+            return
+        items = '\n'.join('• '+SETTINGS[name] for name in plan.payloads)
+        dialog, controls, text = self._rotation_seed_window(
+            '继承本地设置', '确认后覆盖当前对应设置并重启程序。执行后无法撤回。')
+        self._settings_import_window = dialog
+        text.insert('1.0', f'来源版本：{plan.source.version}\n来源目录：{plan.source.root}\n\n将继承：\n{items}')
+        text.configure(state='disabled')
+        Label(controls, text='执行后无法撤回', fg='#c63b44', bg=COLORS['panel'],
+              font=(FONT_FAMILY,11,'bold')).pack(fill=X, pady=(10,0))
+        def cancel():
+            self.status.set('已取消，当前设置未修改')
+            dialog.destroy()
+        def apply():
+            if getattr(self, '_update_installing', False) or (self.worker and self.worker.is_alive()):
+                messagebox.showinfo('本地设置', '请先停止任务或等待更新完成。', parent=dialog)
+                return
+            try:
+                apply_import(plan, USER_SETTINGS_DIR)
+                save_discovery_state(USER_SETTINGS_DIR, APP_VERSION, str(plan.source.root))
+            except (OSError, ValueError) as exc:
+                messagebox.showerror('继承失败', str(exc), parent=dialog)
+                return
+            self._log(f'已继承 {plan.source.version} 的本地设置，正在重启。')
+            dialog.destroy()
+            self._restart_app()
+        cancel_button = self._ui_button(controls, text='取消', command=cancel)
+        cancel_button.pack(side=RIGHT, pady=10)
+        self._ui_button(controls, text='确认继承并重启', width=18, style='Primary.TButton',
+                        command=apply).pack(side=RIGHT, padx=8, pady=10)
+        dialog.after_idle(dialog.grab_set)
+        dialog.after_idle(cancel_button.focus_set)
 
     def _show_available_update(self, tag: str, release: dict, asset: dict) -> None:
         self.status.set("远程更新检查完成")
@@ -8365,6 +8641,7 @@ class App:
             previous.destroy()
         self._close_rounded_picker()
         window = Toplevel(self.root)
+        window._centered_by_app = True
         window.withdraw()
         window.title("发现新版本")
         window.transient(self.root)
@@ -8415,11 +8692,12 @@ class App:
         window._update_footer = footer
         self.root.update_idletasks()
         left, top, right, bottom = self._update_work_area()
-        available_width, available_height = max(240, right-left-32), max(220, bottom-top-64)
+        decoration = max(32, self.root.winfo_rooty()-self.root.winfo_y())
+        available_width, available_height = max(240, right-left-32), max(220, bottom-top-decoration-32)
         width, height = min(760, available_width), min(560, available_height)
         window.minsize(min(480, available_width), min(300, available_height))
         x = max(left+16, min(self.root.winfo_x()+(self.root.winfo_width()-width)//2, right-width-16))
-        y = max(top+16, min(self.root.winfo_y()+(self.root.winfo_height()-height)//2, bottom-height-48))
+        y = max(top+16, min(self.root.winfo_y()+(self.root.winfo_height()-height)//2, bottom-height-decoration-16))
         window.geometry(f"{width}x{height}{x:+d}{y:+d}")
         window.deiconify()
         window.lift()
@@ -8436,6 +8714,7 @@ class App:
             return
         close()
         self._update_installing = True
+        self._update_cancelled = threading.Event()
         self.status.set(f"正在下载 {tag}...")
         threading.Thread(target=self._download_and_install_update, args=(tag, asset), daemon=True).start()
 
@@ -8445,22 +8724,33 @@ class App:
         messagebox.showerror("更新未完成", error_text, parent=self.root)
 
     def _download_and_install_update(self, tag: str, asset: dict) -> None:
-        work_dir = Path(tempfile.mkdtemp(prefix="wwbs_update_"))
-        zip_path = work_dir / UPDATE_ASSET_NAME
+        phase = '准备更新'
         try:
-            request = urllib.request.Request(
-                str(asset["browser_download_url"]),
-                headers={"User-Agent": f"wwbs/{APP_VERSION}"},
-            )
-            with urllib.request.urlopen(request, timeout=120) as response, zip_path.open("wb") as output:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    output.write(chunk)
-
-            staged = prepare_update(zip_path, work_dir / "extract", asset.get("size", 0), asset.get("digest") or "")
             target_dir = Path(sys.executable).resolve().parent
+            work_dir = create_update_work(target_dir)
+            zip_path = work_dir / UPDATE_ASSET_NAME
+            phase = '下载安装包'
+            last_progress = [0.]
+            def progress(received, total):
+                now = time.monotonic()
+                if now-last_progress[0] < .15 and received != total:
+                    return
+                last_progress[0] = now
+                detail = f'{received*100//total}%' if total else f'{received//1024//1024} MB'
+                try:
+                    self.root.after(0, lambda: self.status.set(f'正在下载 {tag}：{detail}'))
+                except (TclError, RuntimeError):
+                    self._update_cancelled.set()
+            download_asset(asset, zip_path, version=APP_VERSION, progress=progress,
+                           cancelled=self._update_cancelled.is_set)
+
+            phase = '校验安装包'
+            staged = prepare_update(zip_path, work_dir / "extract", asset.get("size", 0), asset.get("digest") or "")
+            phase = '保存当前设置'
+            snapshot_settings(target_dir, work_dir/'settings')
+            if self._update_cancelled.is_set():
+                return
+            phase = '启动更新程序'
             script_path = work_dir / "update.ps1"
             script = install_script(staged, target_dir, work_dir, os.getpid())
             script_path.write_text(script, encoding="utf-8-sig")
@@ -8468,10 +8758,13 @@ class App:
                 ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            self.root.after(0, self.root.destroy)
+            self.root.after(0, self._close_app)
         except Exception as exc:
             error_text = str(exc)
-            self.root.after(0, lambda: self._show_update_error(f"下载 {tag} 失败：{error_text}"))
+            try:
+                self.root.after(0, lambda: self._show_update_error(f"{phase}失败：{error_text}\n原程序未替换。"))
+            except (TclError, RuntimeError):
+                pass
 
     def _calculate_probability(self) -> None:
         try:
@@ -8911,6 +9204,10 @@ class App:
         self._log(f"已删除任务：{task.name}")
 
     def _start_worker(self, tasks: list[WeeklyTask]) -> None:
+        settings_dialog = getattr(self, '_settings_import_window', None)
+        if settings_dialog is not None and settings_dialog.winfo_exists():
+            messagebox.showinfo('本地设置', '请先确认或取消本地设置导入，再启动任务。', parent=settings_dialog)
+            return
         if getattr(self, "_update_installing", False):
             messagebox.showinfo("正在更新", "更新准备期间不能启动自动任务。", parent=self.root)
             return
@@ -9473,6 +9770,9 @@ def ensure_default_config() -> None:
     TEMPLATES_DIR.mkdir(exist_ok=True)
     if DEFAULT_CONFIG.exists():
         return
+    if BUNDLED_DEFAULT_CONFIG.exists() and BUNDLED_DEFAULT_CONFIG.resolve() != DEFAULT_CONFIG.resolve():
+        shutil.copy2(BUNDLED_DEFAULT_CONFIG, DEFAULT_CONFIG)
+        return
     sample = [
         WeeklyTask(
             name="图像识别点击示例",
@@ -9510,6 +9810,9 @@ def ensure_default_config() -> None:
 
 
 def main() -> None:
+    if getattr(sys, 'frozen', False):
+        bootstrap_own_settings(USER_SETTINGS_DIR, APP_DIR)
+        sys.modules['aemeath_persona'].STATE_FILE = USER_SETTINGS_DIR/'aemeath-language-state.json'
     ensure_default_config()
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ybpan34.wwbs.1.4.7")

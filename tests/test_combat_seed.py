@@ -22,9 +22,9 @@ def wrap_payload(payload):
 
 
 def payload_from_seed(seed):
-    if seed.startswith(("WWBS2.", "WWBS3.")):
+    if seed.startswith(("WWBS2.", "WWBS3.", "【")):
         preset = decode_seed(seed)
-        return {"v": 1, "uid": preset["share_id"], "n": preset["name"],
+        return {"v": 1, "uid": preset["share_id"].ljust(32, '0'), "n": preset["name"],
                 "o": preset["slot_order"], "t": [preset["slot_times"][str(n)] for n in (1, 2, 3)],
                 "m": [[m["kind"], m["slot"], m["value"], m["interval"]] for m in preset["modules"]]}
     content = seed.split(".")[1]
@@ -65,7 +65,7 @@ class CombatSeedTests(unittest.TestCase):
 
     def test_corruption_truncation_and_unknown_version_are_rejected(self):
         for seed in (self.seed[:-3], self.seed[:-1]+("1" if self.seed[-1] != "1" else "0"),
-                     self.seed.replace("WWBS3", "WWBS9"), "", "not a code", "WWBS1.a.0123456789abcdef"):
+                     self.seed.replace("】4.", "】9."), "", "not a code", "WWBS1.a.0123456789abcdef"):
             with self.subTest(seed=seed[:40]), self.assertRaises(ValueError):
                 decode_seed(seed)
 
