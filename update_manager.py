@@ -6,6 +6,75 @@ import stat
 import zipfile
 from pathlib import Path, PurePosixPath
 import tempfile
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+from urllib.parse import urlsplit, urlunsplit
+
+from local_settings import SETTINGS
+
+
+def create_update_work(target: Path) -> Path:
+    path = target/('.wwbs-update-work-'+uuid.uuid4().hex)
+    try:
+        path.mkdir()
+    except OSError as exc:
+        raise OSError('当前安装目录不可写，请以管理员身份运行软件后更新。原程序未改动。') from exc
+    return path
+
+
+def download_asset(asset: dict, destination: Path, *, version: str, progress=lambda *_: None,
+                   cancelled=lambda: False, opener=urllib.request.urlopen, sleep=time.sleep) -> None:
+    expected = int(asset.get('size') or 0)
+    if expected < 0 or expected > 512*1024*1024:
+        raise ValueError('安装包大小不符合预期')
+    base = str(asset['browser_download_url'])
+    errors = []
+    for attempt in range(3):
+        if cancelled():
+            raise InterruptedError('更新已取消，原程序未改动')
+        parts = urlsplit(base)
+        if parts.scheme != 'https' or parts.hostname not in {'github.com', 'api.github.com'}:
+            raise ValueError('安装包下载地址无效')
+        query = parts.query+('&' if parts.query else '')+'wwbs_update='+str(time.time_ns())
+        url = urlunsplit((parts.scheme, parts.netloc, parts.path, query, ''))
+        headers = {'User-Agent': 'wwbs/'+version, 'Cache-Control': 'no-cache',
+                   'Accept': 'application/octet-stream'}
+        # The release-asset API is a second official download entry point.
+        if attempt == 1 and asset.get('url'):
+            api = urlsplit(str(asset['url']))
+            if api.scheme == 'https' and api.hostname == 'api.github.com':
+                url = str(asset['url'])
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            progress(0, expected)
+            total = 0
+            with opener(request, timeout=30) as response, destination.open('wb') as output:
+                while True:
+                    if cancelled():
+                        raise InterruptedError('更新已取消，原程序未改动')
+                    data = response.read(256*1024)
+                    if not data:
+                        break
+                    if total == 0 and data[:4] != b'PK\x03\x04':
+                        raise ValueError('下载入口未返回ZIP安装包')
+                    total += len(data)
+                    if total > (expected or 512*1024*1024):
+                        raise ValueError('下载内容超过安装包标记大小')
+                    output.write(data)
+                    progress(total, expected)
+            if not total or (expected and total != expected):
+                raise ValueError('安装包下载不完整')
+            return
+        except InterruptedError:
+            raise
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            errors.append(str(exc))
+            if attempt < 2:
+                sleep(.5*(attempt+1))
+    raise RuntimeError('安装包下载失败（已重试3次）：'+errors[-1])
 
 
 def signal_update_ready() -> None:
@@ -15,8 +84,12 @@ def signal_update_ready() -> None:
     if not filename or not re.fullmatch(r"[0-9a-f]{32}", token):
         return
     path = Path(filename).resolve()
-    if (path.name != "ready" or not path.parent.name.startswith("wwbs_update_")
-            or path.parent.parent != Path(tempfile.gettempdir()).resolve()):
+    temporary = (path.parent.name.startswith('wwbs_update_')
+                 and path.parent.parent == Path(tempfile.gettempdir()).resolve())
+    beside_app = (re.fullmatch(r'\.wwbs-update-work-[0-9a-f]{32}', path.parent.name)
+                  and getattr(sys, 'frozen', False)
+                  and path.parent.parent == Path(sys.executable).resolve().parent)
+    if path.name != 'ready' or not (temporary or beside_app):
         return
     path.write_text(token, encoding="ascii")
 
@@ -72,6 +145,10 @@ $log = Join-Path $work 'update.log'
 $backup = Join-Path $target ('.wwbs-update-backup-' + [guid]::NewGuid().ToString('N'))
 $old = @()
 $installed = @()
+$settingNames = @({', '.join(quote(Path(name)) for name in SETTINGS)})
+$settingsSource = Join-Path $work 'settings'
+$oldSettings = @()
+$settingsBackedUp = $false
 try {{
     $deadline = (Get-Date).AddSeconds(90)
     while (Get-Process -Id {int(process_id)} -ErrorAction SilentlyContinue) {{
@@ -79,6 +156,15 @@ try {{
         Start-Sleep -Milliseconds 500
     }}
     New-Item -ItemType Directory -Path $backup | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $backup 'settings') | Out-Null
+    foreach ($name in $settingNames) {{
+        $path = Join-Path $target $name
+        if (Test-Path -LiteralPath $path) {{
+            Copy-Item -LiteralPath $path -Destination (Join-Path (Join-Path $backup 'settings') $name)
+            $oldSettings += $name
+        }}
+    }}
+    $settingsBackedUp = $true
     foreach ($name in @('wwbs.exe', '_internal')) {{
         $dest = [IO.Path]::GetFullPath((Join-Path $target $name))
         $prefix = [IO.Path]::GetFullPath($target).TrimEnd('\\') + '\\'
@@ -90,10 +176,16 @@ try {{
         $installed += $name
         Copy-Item -LiteralPath (Join-Path $source $name) -Destination $dest -Recurse
     }}
+    foreach ($name in $settingNames) {{
+        $saved = Join-Path $settingsSource $name
+        if (Test-Path -LiteralPath $saved) {{
+            Copy-Item -LiteralPath $saved -Destination (Join-Path $target $name) -Force
+        }}
+    }}
     $exe = Join-Path $target 'wwbs.exe'
     $env:WWBS_UPDATE_READY = Join-Path $work 'ready'
     $env:WWBS_UPDATE_TOKEN = [guid]::NewGuid().ToString('N')
-    $child = Start-Process -FilePath $exe -WorkingDirectory $target -WindowStyle Hidden -PassThru
+    $child = Start-Process -FilePath $exe -WorkingDirectory $target -WindowStyle Normal -PassThru
     $deadline = (Get-Date).AddSeconds(45)
     while ($true) {{
         if ($child.HasExited) {{ throw 'New process exited during startup.' }}
@@ -116,6 +208,14 @@ try {{
         foreach ($name in $old) {{
             Move-Item -LiteralPath (Join-Path $backup $name) -Destination (Join-Path $target $name)
         }}
+        if ($settingsBackedUp) {{ foreach ($name in $settingNames) {{
+            $path = Join-Path $target $name
+            if ($oldSettings -contains $name) {{
+                Copy-Item -LiteralPath (Join-Path (Join-Path $backup 'settings') $name) -Destination $path -Force
+            }} elseif ((Test-Path -LiteralPath $path) -and $backup -and (Test-Path -LiteralPath $backup)) {{
+                Move-Item -LiteralPath $path -Destination (Join-Path $backup ('failed-' + $name))
+            }}
+        }} }}
         $failure += "`nOriginal files restored. Please restart WWBS manually."
     }} catch {{ $failure += "`nRollback incomplete: " + $_.ToString() }}
     $failure | Out-File -LiteralPath $log -Encoding utf8

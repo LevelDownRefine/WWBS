@@ -1,0 +1,24 @@
+# WWBS 在线种子库
+
+公开接口：`https://wwbs-seed-library.netlify.app/.netlify/functions/seeds`
+
+软件只上传当前生成的战斗轴种子。服务校验WWBS4格式、名称长度、校验码、角色顺序、驻场时间与模块参数后保存；数据为公开共享内容。
+
+## 接口
+
+- `POST`，JSON `{"seed":"【名字】4.…"}`：上传或返回相同名称、相同轴的已有条目。
+- `GET ?name=关键词`：名称包含检索，最多显示50项，未填名称时浏览条目。
+- `GET ?id=条目编号`：下载完整种子。
+- `GET ?health=1`：健康检查。
+
+种子对象与检索索引使用Netlify Blobs持久保存。索引按记录独立创建，避免共享索引的并发覆盖；可在上传失败后重试补齐索引。函数提供请求大小和访问频率限制。
+
+## 维护
+
+在本目录执行 `npm ci` 和 `npm test`。部署使用Netlify CLI，项目ID：`157c28f8-ec69-49f9-b68b-26fe4e5ddcc1`。
+
+预览：`npx netlify deploy --site 157c28f8-ec69-49f9-b68b-26fe4e5ddcc1 --build`。
+
+发布：`npx netlify deploy --site 157c28f8-ec69-49f9-b68b-26fe4e5ddcc1 --build --prod`。
+
+`.netlify`目录和部署授权不提交到源码。生产使用固定存储名，不在预览部署中写入测试数据；单元检查使用内存存储。

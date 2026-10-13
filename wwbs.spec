@@ -8,6 +8,7 @@ a = Analysis(
     datas=[
         ('templates', 'templates'),
         ('weekly_tasks.json', '.'),
+        ('wwbs-version.json', '.'),
         ('wwbs.ico', '.'),
         ('assets/run-notice', 'assets/run-notice'),
         ('pet-assets/pink-lace-chibi/frames', 'pet-assets/pink-lace-chibi/frames'),

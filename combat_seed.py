@@ -24,6 +24,10 @@ from combat_rotation import COMBAT_MODES, MAX_PRESET_NAME, validate_store
 PREFIX = "WWBS1"
 SHORT_PREFIX = "WWBS2"
 COMPACT_PREFIX = "WWBS3"
+NAMED_PREFIX = '4.'
+MAX_SEED_NAME = 10
+# Frozen WWBS4 data layout: name flag, order, times and action headers.
+NAMED_DICT = bytes.fromhex('00000019000f00050f00050607086901232569011422292269011e27690150600064')
 # Frozen default payload (without the random identifier). Never derive this
 # dictionary from the app's current defaults: old seeds must stay compatible.
 SHORT_DICT = bytes.fromhex("000fe9bb98e8aea4e68898e69697e8bdb40019000f00050f00050607086901232569011422292269011e27690150600064")
@@ -60,7 +64,7 @@ def _number(value) -> bytes:
     return b"\x02" + struct.pack("<d", value)
 
 
-def export_seed(preset: dict) -> str:
+def _export_third_generation(preset: dict) -> str:
     checked = _checked_preset(preset)
     name = checked["name"].encode("utf-8")
     raw = bytearray(uuid.uuid4().bytes)
@@ -93,6 +97,110 @@ def export_seed(preset: dict) -> str:
     body = min(candidates, key=len)
     packet = body + hashlib.sha256(body).digest()[:8]
     return COMPACT_PREFIX + "." + base64.urlsafe_b64encode(packet).decode("ascii").rstrip("=")
+
+
+def validate_seed_name(name: str) -> str:
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > MAX_SEED_NAME:
+        raise ValueError('种子名称须为1到10个字')
+    name = name.strip()
+    if any(ord(character) < 32 or character in '【】' for character in name):
+        raise ValueError('种子名称不能包含换行或【】')
+    return name
+
+
+def export_seed(preset: dict, *, seed_name: str | None = None) -> str:
+    checked = _checked_preset(preset)
+    automatic_name = re.sub(r'[【】\x00-\x1f]', '', checked['name']).strip()[:MAX_SEED_NAME] or '战斗轴'
+    alias = validate_seed_name(seed_name if seed_name is not None else automatic_name)
+    # Keep the original preset name when it differs from the short display name.
+    raw = bytearray([int(alias != checked['name'])])
+    if raw[0]:
+        name = checked['name'].encode('utf-8')
+        raw.extend(_uint(len(name)))
+        raw.extend(name)
+    raw.append(SHORT_ORDERS.index(tuple(checked['slot_order'])))
+    for slot in (1, 2, 3):
+        raw.extend(_number(checked['slot_times'][str(slot)]))
+    raw.extend(_uint(len(checked['modules'])))
+    kinds = [row[0] for row in SHORT_ACTIONS]
+    for item in checked['modules']:
+        index = kinds.index(item['kind'])
+        _, value, interval = SHORT_ACTIONS[index]
+        header = index | ((item['slot']-1) << 4)
+        header |= 64 if item['value'] != value else 0
+        header |= 128 if item['interval'] != interval else 0
+        raw.append(header)
+        if header & 64:
+            raw.extend(_number(item['value']))
+        if header & 128:
+            raw.extend(_number(item['interval']))
+    compressor = zlib.compressobj(9, wbits=-15, zdict=NAMED_DICT)
+    compressed = compressor.compress(raw)+compressor.flush()
+    choices = [(0, bytes(raw)), (1, compressed)]
+    if raw == NAMED_DICT:
+        choices.append((2, b''))
+    mode, data = min(choices, key=lambda item: len(item[1]))
+    body = bytes([mode])+uuid.uuid4().bytes[:12]+data
+    packet = body+struct.pack('<I', zlib.crc32(alias.encode('utf-8')+body))
+    return f'【{alias}】'+NAMED_PREFIX+base64.urlsafe_b64encode(packet).decode().rstrip('=')
+
+
+def _decode_named(name: str, content: str) -> dict:
+    name = validate_seed_name(name)
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', content):
+        raise ValueError('种子格式错误')
+    packet = base64.b64decode(content+'='*(-len(content)%4), altchars=b'-_', validate=True)
+    if base64.urlsafe_b64encode(packet).decode().rstrip('=') != content or len(packet) < 17:
+        raise ValueError('种子内容不完整')
+    body = packet[:-4]
+    if struct.unpack('<I', packet[-4:])[0] != zlib.crc32(name.encode('utf-8')+body):
+        raise ValueError('种子校验失败，内容可能不完整或被改动')
+    mode, identifier, raw = body[0], body[1:13].hex(), body[13:]
+    if mode == 2:
+        if raw:
+            raise ValueError('种子默认轴格式错误')
+        raw = NAMED_DICT
+    elif mode == 1:
+        inflater = zlib.decompressobj(wbits=-15, zdict=NAMED_DICT)
+        raw = inflater.decompress(raw, MAX_PAYLOAD_BYTES+1)
+        if len(raw) > MAX_PAYLOAD_BYTES or not inflater.eof or inflater.unused_data or inflater.unconsumed_tail:
+            raise ValueError('种子压缩格式错误')
+    elif mode != 0:
+        raise ValueError('不支持这个种子内容版本')
+    reader = _Reader(raw)
+    name_flag = reader.take(1)[0]
+    if name_flag == 1:
+        length = reader.uint()
+        if not 1 <= length <= MAX_PRESET_NAME*4:
+            raise ValueError('原预设名称过长')
+        preset_name = reader.take(length).decode('utf-8')
+    elif name_flag == 0:
+        preset_name = name
+    else:
+        raise ValueError('种子名称格式错误')
+    order = reader.take(1)[0]
+    if order >= len(SHORT_ORDERS):
+        raise ValueError('种子角色顺序无效')
+    times = {str(slot): reader.number() for slot in (1, 2, 3)}
+    count = reader.uint()
+    if not 1 <= count <= 100:
+        raise ValueError('种子须包含1到100个模块')
+    modules = []
+    for _ in range(count):
+        header = reader.take(1)[0]
+        index, slot = header & 15, ((header >> 4) & 3)+1
+        if index >= len(SHORT_ACTIONS) or slot > 3:
+            raise ValueError('种子模块类型或角色位无效')
+        kind, value, interval = SHORT_ACTIONS[index]
+        modules.append({'id': uuid.uuid4().hex, 'kind': kind, 'slot': slot,
+                        'value': reader.number() if header & 64 else value,
+                        'interval': reader.number() if header & 128 else interval})
+    if reader.offset != len(raw):
+        raise ValueError('种子包含无法识别的内容')
+    preset = _checked_preset({'id': uuid.uuid4().hex, 'name': preset_name,
+                             'slot_order': list(SHORT_ORDERS[order]), 'slot_times': times, 'modules': modules})
+    preset.update(share_id=identifier, seed_name=name)
+    return preset
 
 
 class _Reader:
@@ -191,6 +299,16 @@ def decode_seed(seed: str) -> dict:
     try:
         if not isinstance(seed, str) or len(seed) > MAX_SEED_CHARS * 2:
             raise ValueError("种子过长")
+        seed = seed.strip()
+        if seed.startswith('【'):
+            end = seed.find('】')
+            if end < 0:
+                raise ValueError('种子名称不完整')
+            name = seed[1:end].replace('\r', '').replace('\n', '').replace('\t', '')
+            body = ''.join(seed[end+1:].split())
+            if not body.startswith(NAMED_PREFIX):
+                raise ValueError('不支持这个种子版本，请升级程序')
+            return _decode_named(name, body[len(NAMED_PREFIX):])
         seed = "".join(seed.split())  # Tolerate chat wrapping and trailing newlines.
         if len(seed) > MAX_SEED_CHARS:
             raise ValueError("种子过长")
