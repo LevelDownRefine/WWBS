@@ -63,7 +63,8 @@ class SettingsStartupTests(unittest.TestCase):
                 ready = []
                 with patch.object(root, 'deiconify', side_effect=show):
                     show_ready_main_window(root, lambda: ready.append(True))
-                root.update_idletasks()
+                root.after(80, root.quit)
+                root.mainloop()
                 self.assertTrue(root.winfo_ismapped())
                 self.assertTrue(exposed)
                 self.assertEqual(exposed[0], 0.0)
