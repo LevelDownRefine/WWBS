@@ -104,6 +104,7 @@ def show_ready_main_window(root, on_ready=lambda: None):
 
     def reveal():
         root.attributes('-alpha', 1.0)
+        root._main_frame_ready = True
         on_ready()
     root.after(40, reveal)
 
