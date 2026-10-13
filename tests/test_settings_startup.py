@@ -1,0 +1,78 @@
+from contextlib import ExitStack
+import json
+from pathlib import Path
+import tempfile
+import tkinter as tk
+import unittest
+from unittest.mock import patch
+
+import app
+from combat_rotation import default_store
+from local_settings import Installation, apply_import, prepare_import, save_import_receipt, settings_files
+from ui_controls import show_ready_main_window
+
+
+class SettingsStartupTests(unittest.TestCase):
+    def test_real_ui_loaders_use_imported_keys_theme_and_axis_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as patches:
+            base = Path(directory)
+            source, target = base/'old', base/'current'
+            (source/'_internal').mkdir(parents=True)
+            target.mkdir()
+            axis = default_store()
+            axis['presets'][0]['name'] = '我的排轴'
+            axis['presets'][0]['slot_order'] = [3, 2, 1]
+            values = {'theme-settings.json': {'theme': 'cartethyia'},
+                      'combat-settings.json': {'skill_key': 'XBUTTON2', 'ultimate_key': 'XBUTTON1'},
+                      'combat-presets.json': axis, 'pet-settings.json': {'pet': 'cartethyia'},
+                      'pet-display-settings.json': {'percent': 85, 'visible': False}}
+            for name, value in values.items():
+                (source/'_internal'/name).write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+            plan = prepare_import(Installation(source, '1.5.4 beta3', settings_files(source)), target)
+            apply_import(plan, target)
+            save_import_receipt(plan, target)
+            patches.enter_context(patch.object(app, 'USER_SETTINGS_DIR', target))
+            for constant, name in {'THEME_CONFIG': 'theme-settings.json', 'COMBAT_CONFIG': 'combat-settings.json',
+                    'PET_CONFIG': 'pet-settings.json', 'PET_DISPLAY_CONFIG': 'pet-display-settings.json',
+                    'COMBAT_PRESETS_CONFIG': 'combat-presets.json', 'DAILY_CONFIG': 'daily-settings.json',
+                    'APP_SETTINGS_CONFIG': 'app-settings.json', 'UI_CONFIG': 'ui-settings.json',
+                    'CARTETHYIA_AGENT_CONFIG': 'cartethyia-agent-settings.json',
+                    'CONNECTION_CONFIG': 'connection-settings.json'}.items():
+                patches.enter_context(patch.object(app, constant, target/name))
+            for method in ('_load_config', '_refresh_templates', '_start_stop_hotkey', '_start_desktop_pet',
+                           '_scan_local_models', '_show_startup_notice_once'):
+                patches.enter_context(patch.object(app.App, method))
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                ui = app.App(root)
+                self.assertFalse(root.winfo_ismapped())
+                self.assertEqual(ui.theme_id, 'cartethyia')
+                self.assertEqual(ui.combat_skill_key.get(), app.App._combat_binding_display('XBUTTON2'))
+                self.assertEqual(ui.combat_ultimate_key.get(), app.App._combat_binding_display('XBUTTON1'))
+                self.assertEqual(ui.pet_id, 'cartethyia')
+                self.assertEqual(ui.pet_size.get(), '85%')
+                self.assertEqual(ui.rotation_store['presets'][0]['name'], '我的排轴')
+                self.assertEqual(ui.rotation_store['presets'][0]['slot_order'], [3, 2, 1])
+                self.assertEqual(ui._settings_import_receipt['failed'], [])
+                exposed = []
+                real_show = root.deiconify
+                def show():
+                    exposed.append(root.attributes('-alpha'))
+                    real_show()
+                ready = []
+                with patch.object(root, 'deiconify', side_effect=show):
+                    show_ready_main_window(root, lambda: ready.append(True))
+                root.update_idletasks()
+                self.assertTrue(root.winfo_ismapped())
+                self.assertTrue(exposed)
+                self.assertEqual(exposed[0], 0.0)
+                self.assertEqual(root.attributes('-alpha'), 1.0)
+                self.assertEqual(ready, [True])
+                self.assertTrue(all(canvas.find_all() for canvas, _title in ui._nav_buttons))
+            finally:
+                root.destroy()
+
+
+if __name__ == '__main__':
+    unittest.main()

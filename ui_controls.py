@@ -92,6 +92,19 @@ class ParentDialogs:
         return invoke
 
 
+def show_ready_main_window(root, on_ready=lambda: None):
+    """Finish layout and paint while invisible, then expose the first complete frame."""
+    root.update_idletasks()
+    root.attributes('-alpha', 0.0)
+    root.deiconify()
+    root.update_idletasks()
+
+    def reveal():
+        root.attributes('-alpha', 1.0)
+        on_ready()
+    root.after_idle(reveal)
+
+
 @lru_cache(maxsize=64)
 def _round_arc(radius):
     return tuple((radius*cos(i*pi/16), radius*sin(i*pi/16)) for i in range(9))
