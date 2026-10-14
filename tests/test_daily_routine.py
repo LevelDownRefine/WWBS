@@ -570,14 +570,14 @@ class DailyRoutineTests(unittest.TestCase):
         runner._daily_battle_task_present = Mock(return_value=False)
         runner._daily_reward_orb_location = Mock(return_value=(None, None, 0))
         runner._sleep_interruptible = lambda _: runner.stop_event.set()
-        image = Mock(size=(1920, 1080))
+        image = Image.new('RGB', (1920, 1080), (20,30,40))
         context = Mock()
         context.__enter__ = Mock(return_value=image)
         context.__exit__ = Mock(return_value=False)
         with patch.object(app.Image, 'open', return_value=context):
             with self.assertRaises(RuntimeError):
                 runner._collect_daily_reward(1)
-        controller.move_mouse_relative.assert_called_once_with(260, 0)
+        controller.move_mouse_relative.assert_called_once_with(app.ORB_SCAN_STEP, 0)
 
     def test_daily_healing_is_disabled_by_default(self):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)

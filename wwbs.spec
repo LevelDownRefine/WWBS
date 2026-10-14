@@ -11,6 +11,7 @@ a = Analysis(
         ('wwbs-version.json', '.'),
         ('wwbs.ico', '.'),
         ('assets/run-notice', 'assets/run-notice'),
+        ('assets/rain', 'assets/rain'),
         ('pet-assets/pink-lace-chibi/frames', 'pet-assets/pink-lace-chibi/frames'),
         ('pet-assets/aemeath-chibi/frames-sharp', 'pet-assets/aemeath-chibi/frames-sharp'),
         ('pet-assets/jingran-chibi/frames', 'pet-assets/jingran-chibi/frames'),

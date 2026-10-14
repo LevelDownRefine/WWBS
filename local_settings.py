@@ -25,6 +25,7 @@ SETTINGS = {
     'cartethyia-agent-settings.json': '桌宠连接设置', 'weekly_tasks.json': '任务配置',
     'pet-chat-history.json': '桌宠聊天记录', 'aemeath-language-state.json': '桌宠语言状态',
     'connection-settings.json': '窗口、分辨率与设备连接',
+    'rain-settings.json': 'Boss战自动播放雨爱（雨量、清晰度与音量）',
 }
 MAX_SETTINGS_BYTES = 2*1024*1024
 VERSION_PATTERN = r'\d+\.\d+\.\d+(?:[ .-]*(?:alpha|beta|rc)[ .-]*\d*)?'
@@ -224,6 +225,9 @@ def convert_settings(name: str, raw):
             raise ValueError('连接模式无效')
         if any(not isinstance(value,str) or len(value)>4096 for value in data.values()):
             raise ValueError('连接设置无效')
+    elif name == 'rain-settings.json':
+        from rain_effect import normalize_rain_settings
+        return normalize_rain_settings(data)
     return data
 
 
