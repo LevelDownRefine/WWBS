@@ -58,7 +58,7 @@ class OrbDirectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.object(app,'APP_DIR',Path(directory)):
             runner=self.runner(directory,[(960,300,.8)]*4,[None,None,None,Mock()])
             scan=Mock(complete=False,best=Mock(confidence=.8))
-            scan.return_delta.return_value=-260
+            scan.return_delta.return_value=-app.ORB_SCAN_STEP
             order=[]
             def observe(*_):
                 order.append('observe')
