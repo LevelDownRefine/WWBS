@@ -51,7 +51,8 @@ class SettingsStartupTests(unittest.TestCase):
                 self.assertTrue(ui._settings_progress_window.winfo_exists())
                 deadline = time.monotonic()+2.5
                 def wait_for_confirmation():
-                    if ui._settings_import_window is not None and ui._settings_import_window.winfo_ismapped():
+                    window = getattr(ui, '_settings_import_window', None)
+                    if window is not None and window.winfo_ismapped():
                         root.quit()
                     elif time.monotonic() >= deadline:
                         root.quit()
