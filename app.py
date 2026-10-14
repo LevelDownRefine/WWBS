@@ -37,6 +37,11 @@ from weekly_rewards import WeeklyLimitReached, WeeklyRewardsVision
 from combat_rotation import ACTION_SPECS, COMBAT_MODES, SLOT_NAMES, BattleMonitor, IdleAttackWorker, RotationClock, active_modules, default_store, load_store, new_module, save_store, validate_store
 from combat_seed import decode_seed, export_seed, import_seed
 from seed_library import download_seed, search_seeds, upload_seed
+from rain_effect import RAIN_MODES, RAIN_LEVELS, RAIN_STRENGTHS, load_rain_settings, normalize_rain_settings
+from rain_overlay import DesktopRain
+from rain_music import RainMusic
+from reward_orb_scan import ORB_DIRECT_CONFIDENCE, ORB_SCAN_STEP, OrbDirectionSweep
+from boss_rain import BossRainWatcher
 from ui_controls import RoundedButton, ThinScrollbar, CenteredToplevel as Toplevel, ParentDialogs, show_ready_main_window
 from daniya_persona import (
     CHARACTER_PROMPT as daniya_character_prompt,
@@ -95,8 +100,8 @@ DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.5.4"
-APP_BUILD = 4
+APP_VERSION = "1.5.5 beta1"
+APP_BUILD = 1
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -167,6 +172,8 @@ DAILY_CONFIG = USER_SETTINGS_DIR / "daily-settings.json"
 UI_CONFIG = USER_SETTINGS_DIR / "ui-settings.json"
 APP_SETTINGS_CONFIG = USER_SETTINGS_DIR / "app-settings.json"
 CONNECTION_CONFIG = USER_SETTINGS_DIR / "connection-settings.json"
+RAIN_CONFIG = USER_SETTINGS_DIR / 'rain-settings.json'
+RAIN_MUSIC_ASSET = APP_DIR / 'assets' / 'rain' / '雨爱.mp3'
 UPDATE_NOTICE_CONFIG = COMBAT_PRESETS_CONFIG.with_name('update-notice.json')
 CARTETHYIA_AGENT_CONFIG = USER_SETTINGS_DIR / "cartethyia-agent-settings.json"
 DANIYA_THEME_PACK = APP_DIR / "optional-themes" / "daniya-theme.wwbstheme"
@@ -188,6 +195,14 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    ("v1.5.5 beta1", """v1.5.5 beta1 · Boss战自动播放雨爱
+设置页主题设置上方新增“关闭 / 持续下雨 / Boss战自动”三档开关，每次启动默认关闭。
+雨幕覆盖整个桌面，显示玻璃水滴、水痕与细雨，支持鼠标穿透，不抢焦点。
+持续模式在任务期间照常下雨；Boss模式检测顶部长血条，短暂隐藏8秒内保持效果。
+下雨时循环播放内置的固定曲目《雨爱》，可调整雨量、清晰度与音量，关闭雨幕同时停止歌曲。
+日常找奖励光球先转完整一圈，再选择最高置信度方向；途中超过0.80就直接前往。
+雨幕参数支持本地设置继承；保留1.5.4的日常领取、本地设置检测、种子兼容与更新修复。
+完整说明见 release-notes-v1.5.5-beta1.md。"""),
     ("v1.5.4", """v1.5.4 正式版 · 本地设置继承与在线种子库
 日常领取取消分数拦截：进入活跃行迹、领取上方任务奖励后，直接领取100宝箱，超过100或数字识别失败不再跳过。
 修复检测本地设置按钮无响应：启动完成后检测，立即显示可取消的检测进度；检测结果、错误与超时会明确反馈。
@@ -2552,6 +2567,8 @@ class TaskRunner:
         screenshot = APP_DIR / "_runtime_screenshot.png"
         deadline = time.monotonic() + 75.0
         previous_forward_confidence: float | None = None
+        sweep = None
+        approaching = False
         while time.monotonic() < deadline and not self.stop_event.is_set():
             self._capture_for_matching(screenshot)
             prompt = self._find_daily_reward_prompt(screenshot)
@@ -2566,6 +2583,9 @@ class TaskRunner:
                 return False
             with Image.open(screenshot) as captured:
                 width, height = captured.size
+                scan_image = captured.copy()
+            if self.stop_event.is_set():
+                break
             if prompt is not None:
                 self.controller.release_keys()
                 self.controller.press_key("F", 100)
@@ -2573,20 +2593,30 @@ class TaskRunner:
                 self._sleep_interruptible(0.2)
                 self._claim_daily_double_reward(cycle_index)
                 return True
-            if target_x is None or density <= DAILY_REWARD_ORB_MIN_CONFIDENCE:
-                self.controller.move_mouse_relative(260, 0)
-                self.log(
-                    f"    奖励光球置信度 {density:.2f} 未超过"
-                    f"{DAILY_REWARD_ORB_MIN_CONFIDENCE:.2f}，向右转动搜索。"
-                )
+            valid = target_x is not None and density > DAILY_REWARD_ORB_MIN_CONFIDENCE
+            stalled = self._daily_reward_movement_stalled(previous_forward_confidence, density)
+            if valid and density > ORB_DIRECT_CONFIDENCE:
+                approaching, sweep = True, None
+                self.log(f"    光球置信度 {density:.2f} 超过0.80，直接前往。")
+            elif not valid or stalled:
+                approaching = False
+            if not approaching:
+                if sweep is None:
+                    sweep = OrbDirectionSweep()
+                    self.log("    开始水平转满一圈，记录各方向光球置信度；超过0.80时直接前往。")
+                sweep.observe(scan_image, target_x, density)
                 previous_forward_confidence = None
-            elif self._daily_reward_movement_stalled(previous_forward_confidence, density):
-                self.controller.move_mouse_relative(260, 0)
-                self.log(
-                    f"    靠近后光球置信度未提升（{previous_forward_confidence:.2f} → {density:.2f}），"
-                    "停止直走并转向重新寻找。"
-                )
-                previous_forward_confidence = None
+                if sweep.complete:
+                    if sweep.best is not None:
+                        self.log(f"    已转满一圈，选择最高置信度 {sweep.best.confidence:.2f} 的方向。")
+                        self._turn_daily_reward_camera(sweep.return_delta())
+                        approaching = True
+                    else:
+                        self.log("    已转满一圈，未找到有效光球，重新扫描。")
+                    sweep = None
+                    continue  # Fresh screenshot at the selected direction before moving.
+                self.controller.move_mouse_relative(ORB_SCAN_STEP, 0)
+                sweep.advance(ORB_SCAN_STEP)
             else:
                 offset = target_x - width * 0.5
                 if abs(offset) > width * 0.05:
@@ -2596,6 +2626,13 @@ class TaskRunner:
                 previous_forward_confidence = density
             self._sleep_interruptible(0.22)
         raise RuntimeError("奖励阶段未找到“领取奖励”提示，已停止以避免误操作。")
+
+    def _turn_daily_reward_camera(self, delta: int) -> None:
+        while delta and not self.stop_event.is_set():
+            step = max(-ORB_SCAN_STEP, min(ORB_SCAN_STEP, delta))
+            self.controller.move_mouse_relative(step, 0)
+            delta -= step
+            self._sleep_interruptible(.12)
 
     @staticmethod
     def _daily_reward_movement_stalled(previous: float | None, current: float) -> bool:
@@ -4133,6 +4170,17 @@ class App:
         self.chat_history = ChatHistory(USER_SETTINGS_DIR / "pet-chat-history.json")
         self.dry_run = BooleanVar(value=True)
         self.status = StringVar(value="准备就绪")
+        rain_settings = load_rain_settings(RAIN_CONFIG)
+        self.rain_mode = StringVar(value='关闭')  # Every launch is explicitly off.
+        self.rain_level = StringVar(value=rain_settings['level'])
+        self.rain_strength = StringVar(value=rain_settings['strength'])
+        self.rain_volume = StringVar(value=f"{rain_settings['volume']}%")
+        self.rain_status = StringVar(value='雨幕已关闭')
+        self.rain_overlay = None
+        self.rain_music = RainMusic()
+        self._boss_rain_watcher = None
+        self._boss_rain_active = False
+        self._rain_music_error = ''
         self.device_status = StringVar(value="窗口未检测")
         self.template_status = StringVar(value="模板 0 个")
         self.prob_astrite = StringVar(value="0")
@@ -7578,6 +7626,7 @@ class App:
         scan_status.pack(fill=X, pady=(8, 0))
         scan_status.bind('<Configure>', lambda event: scan_status.configure(wraplength=max(180, event.width-4)))
 
+        self._build_rain_settings()
         theme_box = self._card_body(self.settings_tab)
         theme_box.pack(fill=X, pady=(0, 14))
         Label(theme_box, text="程序主题", font=(FONT_FAMILY, 11, "bold"), bg=COLORS["panel_alt"]).pack(anchor="w")
@@ -7759,6 +7808,124 @@ class App:
         self._update_mode_label()
         self._bind_mousewheel_tree(self.settings_tab, self.settings_scroll_canvas)
 
+    def _build_rain_settings(self):
+        box = self._card_body(self.settings_tab)
+        box.pack(fill=X, pady=(0,14))
+        Label(box, text='Boss战自动播放雨爱', font=(FONT_FAMILY,11,'bold'), bg=COLORS['panel_alt']).pack(anchor='w')
+        modes = Frame(box, bg=COLORS['panel_alt'])
+        modes.pack(fill=X, pady=(10,8))
+        self._rain_mode_buttons = {}
+        for mode in RAIN_MODES:
+            button = self._ui_button(modes, text=mode, width=11,
+                                     command=lambda choice=mode: self._set_rain_mode(choice))
+            button.pack(side=LEFT, padx=(0,6))
+            self._rain_mode_buttons[mode] = button
+        self._wrap_button_row(modes)
+        appearance = Frame(box, bg=COLORS['panel_alt'])
+        appearance.pack(fill=X, pady=4)
+        Label(appearance, text='雨量', bg=COLORS['panel_alt']).pack(side=LEFT)
+        level_picker = self._rounded_picker(appearance, self.rain_level, tuple(RAIN_LEVELS), self._apply_rain_settings)
+        level_picker.configure(width=150)
+        level_picker.pack(side=LEFT, padx=(6,18))
+        Label(appearance, text='清晰度', bg=COLORS['panel_alt']).pack(side=LEFT)
+        strength_picker = self._rounded_picker(appearance, self.rain_strength, tuple(RAIN_STRENGTHS), self._apply_rain_settings)
+        strength_picker.configure(width=150)
+        strength_picker.pack(side=LEFT, padx=6)
+        audio = Frame(box, bg=COLORS['panel_alt'])
+        audio.pack(fill=X, pady=6)
+        Label(audio, text='音量', bg=COLORS['panel_alt']).pack(side=LEFT, padx=(0,6))
+        volume_picker = self._rounded_picker(audio, self.rain_volume, ('10%','30%','50%','80%','100%'), self._apply_rain_settings)
+        volume_picker.configure(width=150)
+        volume_picker.pack(side=LEFT)
+        Label(box, text='固定曲目：《雨爱》（循环播放）', bg=COLORS['panel_alt'], fg=COLORS['muted'],
+              anchor='w', justify=LEFT, wraplength=650).pack(fill=X, pady=(2,5))
+        Label(box, textvariable=self.rain_status, bg=COLORS['panel_alt'], fg=COLORS['primary'],
+              anchor='w', justify=LEFT, wraplength=650).pack(fill=X, pady=4)
+        Label(box, text='每次启动默认关闭；雨量、清晰度和音量会记住。持续模式不因任务暂停；Boss模式看顶部长血条，短暂隐藏8秒内保持雨幕。下雨时循环播放《雨爱》，关闭雨幕同时停止音乐。',
+              bg=COLORS['panel_alt'], fg=COLORS['muted'], anchor='w', justify=LEFT,
+              wraplength=650).pack(fill=X, pady=(4,0))
+        self._refresh_rain_buttons()
+
+    def _refresh_rain_buttons(self):
+        for mode, button in getattr(self, '_rain_mode_buttons', {}).items():
+            button.primary = mode == self.rain_mode.get()
+            button.draw()
+
+    def _set_rain_mode(self, mode):
+        self.rain_mode.set(mode)
+        self._apply_rain_settings()
+
+    def _apply_rain_settings(self):
+        data = normalize_rain_settings({'mode': self.rain_mode.get(), 'level': self.rain_level.get(),
+                 'strength': self.rain_strength.get(),
+                 'volume': int(self.rain_volume.get().rstrip('%'))})
+        try:
+            temporary = RAIN_CONFIG.with_suffix('.tmp')
+            temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+            temporary.replace(RAIN_CONFIG)
+        except OSError as exc:
+            self.rain_status.set(f'雨幕设置未保存：{exc}')
+            return
+        self._refresh_rain_buttons()
+        if data['mode'] != 'Boss战自动':
+            if self._boss_rain_watcher is not None:
+                self._boss_rain_watcher.close()
+                self._boss_rain_watcher = None
+            self._boss_rain_active = False
+        elif self._boss_rain_watcher is None:
+            self._boss_rain_active = False
+            self._boss_rain_watcher = BossRainWatcher(self.root, self.window_title.get(), self._on_boss_rain)
+        self._sync_rain(data)
+
+    def _on_boss_rain(self, active):
+        if active != self._boss_rain_active:
+            self._boss_rain_active = active
+            self._sync_rain()
+
+    def _sync_rain(self, data=None):
+        data = data or {'mode': self.rain_mode.get(), 'level': self.rain_level.get(),
+            'strength': self.rain_strength.get(),
+            'volume': int(self.rain_volume.get().rstrip('%'))}
+        active = data['mode'] == '持续下雨' or (data['mode'] == 'Boss战自动' and self._boss_rain_active)
+        if not active:
+            if self.rain_overlay is not None:
+                self.rain_overlay.close()
+                self.rain_overlay = None
+            self.rain_music.stop()
+            self.rain_status.set('Boss战自动：等待游戏顶部长血条' if data['mode'] == 'Boss战自动' else '雨幕已关闭')
+            return
+        try:
+            if self.rain_overlay is None:
+                self.rain_overlay = DesktopRain(self.root, data['level'], data['strength'], self._rain_render_error)
+            else:
+                self.rain_overlay.configure(data['level'], data['strength'])
+        except Exception as exc:
+            self._rain_render_error(str(exc))
+            return
+        try:
+            self.rain_music.start(RAIN_MUSIC_ASSET, data['volume'])
+            self._rain_music_error = ''
+        except Exception as exc:
+            self._rain_music_error = str(exc)
+        text = ('Boss血条已识别，雨幕正在下雨' if data['mode'] == 'Boss战自动' else '持续下雨中')
+        if self._rain_music_error:
+            text += '；雨爱未播放：'+self._rain_music_error
+        elif self.rain_music.playing:
+            text += '；雨爱正在循环播放'
+        self.rain_status.set(text)
+
+    def _rain_render_error(self, error):
+        if self._boss_rain_watcher is not None:
+            self._boss_rain_watcher.close()
+            self._boss_rain_watcher = None
+        if self.rain_overlay is not None:
+            self.rain_overlay.close()
+            self.rain_overlay = None
+        self.rain_music.stop()
+        self.rain_mode.set('关闭')
+        self._refresh_rain_buttons()
+        self.rain_status.set('雨幕未开启：'+error)
+
     def _save_connection_settings(self, *_arguments) -> None:
         data = {key:getattr(self,key).get() for key in
                 ('target_mode','window_title','expected_resolution','adb_path','device_id')}
@@ -7768,6 +7935,8 @@ class App:
             temporary.replace(CONNECTION_CONFIG)
         except OSError:
             self.status.set('连接设置未保存，请检查目录写入权限')
+        if getattr(self, '_boss_rain_watcher', None) is not None:
+            self._boss_rain_watcher.title = self.window_title.get()
 
     def _select_theme(self, theme_id: str) -> None:
         if theme_id in THEME_DEFINITIONS and not self._theme_pack_valid(theme_id):
@@ -8309,6 +8478,12 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _close_app(self) -> None:
+        if getattr(self, '_boss_rain_watcher', None) is not None:
+            self._boss_rain_watcher.close()
+        if getattr(self, 'rain_overlay', None) is not None:
+            self.rain_overlay.close()
+        if getattr(self, 'rain_music', None) is not None:
+            self.rain_music.stop()
         if getattr(self, '_settings_scan_cancel', None) is not None:
             self._settings_scan_cancel.set()
         if getattr(self, '_update_cancelled', None) is not None:

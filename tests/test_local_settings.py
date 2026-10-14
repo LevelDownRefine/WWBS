@@ -76,10 +76,11 @@ class LocalSettingsTests(unittest.TestCase):
             self.assertEqual(settings.verify_import_receipt(target)['failed'], ['程序主题'])
 
     def test_same_version_repair_is_compared_using_package_revision(self):
-        with patch.object(app, 'APP_BUILD', 1):
+        with patch.object(app, 'APP_VERSION', '1.5.4'), patch.object(app, 'APP_BUILD', 1):
             self.assertTrue(app.App._release_is_newer('v1.5.4', {'body': '<!-- WWBS_BUILD:2 -->'}))
             self.assertFalse(app.App._release_is_newer('v1.5.4', {'body': ''}))
-        self.assertFalse(app.App._release_is_newer('v1.5.4', {'body': '<!-- WWBS_BUILD:2 -->'}))
+        with patch.object(app, 'APP_VERSION', '1.5.4'), patch.object(app, 'APP_BUILD', 4):
+            self.assertFalse(app.App._release_is_newer('v1.5.4', {'body': '<!-- WWBS_BUILD:2 -->'}))
         self.assertFalse(app.App._release_is_newer('v1.5.3', {'body': '<!-- WWBS_BUILD:999 -->'}))
 
     def test_plan_is_read_only_and_apply_carries_theme_keys_axis_and_modes(self):
