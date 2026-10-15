@@ -107,7 +107,7 @@ class LayeredRainSurface:
         ctypes.memmove(self.bits, pixels, len(pixels))
         destination, origin = wintypes.POINT(x, y), wintypes.POINT(0, 0)
         size = Size(width, height)
-        blend = Blend(0, 0, RAIN_STRENGTHS.get(strength, 190), 1)
+        blend = Blend(0, 0, RAIN_STRENGTHS.get(strength, RAIN_STRENGTHS['标准']), 1)
         if not self.user.UpdateLayeredWindow(self.hwnd, self.screen_dc, ctypes.byref(destination),
                 ctypes.byref(size), self.memory_dc, ctypes.byref(origin), 0, ctypes.byref(blend), 2):
             raise ctypes.WinError(ctypes.get_last_error())

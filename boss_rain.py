@@ -41,7 +41,7 @@ def boss_bar_present(top_strip, game_size=None):
 
 
 class BossRainGate:
-    def __init__(self, grace=8.0):
+    def __init__(self, grace=5.0):
         self.grace, self.active, self.last_seen = grace, False, float('-inf')
 
     def update(self, present, now):
@@ -94,7 +94,7 @@ class BossRainWatcher:
             except queue.Empty:
                 pass
             self.results.put_nowait(active)
-            self.stop.wait(.7)
+            self.stop.wait(.25)
 
     def _poll(self):
         self._job = None

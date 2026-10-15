@@ -52,6 +52,32 @@ class RainTests(unittest.TestCase):
         image[880:887,650:1270] = (220,80,60)
         self.assertFalse(boss_bar_present(Image.fromarray(image)))
 
+    def test_reported_boss_bar_at_native_and_scaled_resolutions(self):
+        with Image.open(Path(__file__).parent/'fixtures'/'boss-rain-top-bar.png') as source:
+            for width, height in ((2560,1440), (1920,1080), (1280,720)):
+                with self.subTest(size=(width,height)):
+                    strip = source.resize((width, round(height*.11)), Image.Resampling.LANCZOS)
+                    self.assertTrue(boss_bar_present(strip, (width,height)))
+                    # The white lower bar remains visible when little health is left.
+                    strip.paste((40,75,80), (round(width*.34),round(height*.047),
+                                           round(width*.67),round(height*.065)))
+                    self.assertTrue(boss_bar_present(strip, (width,height)))
+                    # A name, the minimap and the scene without either bar are insufficient.
+                    strip.paste((40,75,80), (round(width*.34),round(height*.065),
+                                           round(width*.67),round(height*.080)))
+                    self.assertFalse(boss_bar_present(strip, (width,height)))
+
+    def test_boss_rain_stops_after_five_seconds_and_reappearance_resets_timer(self):
+        gate = BossRainGate()
+        self.assertTrue(gate.update(True,10))
+        self.assertTrue(gate.update(False,14.99))
+        self.assertFalse(gate.update(False,15))
+        self.assertTrue(gate.update(True,20))
+        self.assertTrue(gate.update(False,24))
+        self.assertTrue(gate.update(True,24.5))
+        self.assertTrue(gate.update(False,29.49))
+        self.assertFalse(gate.update(False,29.5))
+
     def test_auto_gate_preserves_rain_during_ultimate_and_unknown_background(self):
         gate = BossRainGate()
         self.assertTrue(gate.update(True,0))
