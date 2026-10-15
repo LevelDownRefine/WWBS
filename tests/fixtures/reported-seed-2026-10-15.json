@@ -1,0 +1,138 @@
+{
+  "seed": "【卡夏千（10.15）】4.AWBpvsh7kUkzvn6Ny2NgBargYRAQcWTgYmBnZeRoYxAIYmAVB2IBQVGRaQw8SQyMCksZmNXVABPtVa4",
+  "expected": {
+    "name": "卡夏千（10.15）",
+    "slot_order": [
+      3,
+      2,
+      1
+    ],
+    "slot_times": {
+      "1": 25.0,
+      "2": 12.0,
+      "3": 16.0
+    },
+    "modules": [
+      {
+        "kind": "attack_count",
+        "slot": 1,
+        "value": 10,
+        "interval": 0.0
+      },
+      {
+        "kind": "idle_attack",
+        "slot": 1,
+        "value": 20,
+        "interval": 0.0
+      },
+      {
+        "kind": "echo",
+        "slot": 1,
+        "value": 1,
+        "interval": 20.0
+      },
+      {
+        "kind": "skill",
+        "slot": 1,
+        "value": 1,
+        "interval": 5.0
+      },
+      {
+        "kind": "attack_count",
+        "slot": 1,
+        "value": 15,
+        "interval": 0.0
+      },
+      {
+        "kind": "approach",
+        "slot": 1,
+        "value": 0.09,
+        "interval": 0.75
+      },
+      {
+        "kind": "ultimate",
+        "slot": 1,
+        "value": 1,
+        "interval": 16.0
+      },
+      {
+        "kind": "jump_attack",
+        "slot": 2,
+        "value": 5,
+        "interval": 0.0
+      },
+      {
+        "kind": "echo",
+        "slot": 2,
+        "value": 1,
+        "interval": 20.0
+      },
+      {
+        "kind": "jump_attack",
+        "slot": 2,
+        "value": 5,
+        "interval": 0.0
+      },
+      {
+        "kind": "idle_attack",
+        "slot": 2,
+        "value": 20,
+        "interval": 0.0
+      },
+      {
+        "kind": "attack_count",
+        "slot": 2,
+        "value": 15,
+        "interval": 0.0
+      },
+      {
+        "kind": "skill",
+        "slot": 2,
+        "value": 1,
+        "interval": 5.0
+      },
+      {
+        "kind": "heavy_count",
+        "slot": 2,
+        "value": 1,
+        "interval": 0.0
+      },
+      {
+        "kind": "ultimate",
+        "slot": 2,
+        "value": 1,
+        "interval": 12.0
+      },
+      {
+        "kind": "jump_attack",
+        "slot": 3,
+        "value": 1,
+        "interval": 0.0
+      },
+      {
+        "kind": "idle_attack",
+        "slot": 3,
+        "value": 20,
+        "interval": 0.0
+      },
+      {
+        "kind": "skill",
+        "slot": 3,
+        "value": 1,
+        "interval": 3.0
+      },
+      {
+        "kind": "echo",
+        "slot": 3,
+        "value": 1,
+        "interval": 20.0
+      },
+      {
+        "kind": "ultimate",
+        "slot": 3,
+        "value": 1,
+        "interval": 15.0
+      }
+    ]
+  }
+}

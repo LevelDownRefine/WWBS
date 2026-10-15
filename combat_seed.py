@@ -24,7 +24,8 @@ from combat_rotation import COMBAT_MODES, MAX_PRESET_NAME, validate_store
 PREFIX = "WWBS1"
 SHORT_PREFIX = "WWBS2"
 COMPACT_PREFIX = "WWBS3"
-NAMED_PREFIX = '4.'
+NAMED_PREFIX = 'WWBS4.'
+LEGACY_NAMED_PREFIX = '4.'
 MAX_SEED_NAME = 10
 # Frozen WWBS4 data layout: name flag, order, times and action headers.
 NAMED_DICT = bytes.fromhex('00000019000f00050f00050607086901232569011422292269011e27690150600064')
@@ -299,16 +300,19 @@ def decode_seed(seed: str) -> dict:
     try:
         if not isinstance(seed, str) or len(seed) > MAX_SEED_CHARS * 2:
             raise ValueError("种子过长")
-        seed = seed.strip()
+        # Chat clients can insert invisible formatting characters during copy.
+        # Do not normalize visible name punctuation: the name is checksummed.
+        seed = re.sub(r'[\u200b-\u200f\u2060\ufeff]', '', seed).strip()
         if seed.startswith('【'):
             end = seed.find('】')
             if end < 0:
                 raise ValueError('种子名称不完整')
             name = seed[1:end].replace('\r', '').replace('\n', '').replace('\t', '')
             body = ''.join(seed[end+1:].split())
-            if not body.startswith(NAMED_PREFIX):
-                raise ValueError('不支持这个种子版本，请升级程序')
-            return _decode_named(name, body[len(NAMED_PREFIX):])
+            for prefix in (NAMED_PREFIX, LEGACY_NAMED_PREFIX):
+                if body.startswith(prefix):
+                    return _decode_named(name, body[len(prefix):])
+            raise ValueError('不支持这个种子版本，请升级程序')
         seed = "".join(seed.split())  # Tolerate chat wrapping and trailing newlines.
         if len(seed) > MAX_SEED_CHARS:
             raise ValueError("种子过长")

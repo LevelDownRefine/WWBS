@@ -1,11 +1,14 @@
 import io
+import hashlib
+import http.client
+import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 import urllib.error
 
-from update_manager import download_asset, signal_update_ready
+from update_manager import download_asset, signal_update_ready, refresh_release_asset
 
 
 class DownloadTests(unittest.TestCase):
@@ -23,7 +26,7 @@ class DownloadTests(unittest.TestCase):
             download_asset(self.asset(),path,version='1.5.4',opener=opened,sleep=sleep,progress=progress)
             self.assertEqual(path.read_bytes(),data)
             self.assertIn('wwbs_update=',opened.call_args_list[0].args[0].full_url)
-            self.assertEqual(opened.call_args_list[1].args[0].full_url,self.asset()['url'])
+            self.assertTrue(opened.call_args_list[1].args[0].full_url.startswith(self.asset()['url']+'?wwbs_update='))
             self.assertEqual(progress.call_args.args,(10,10))
 
     def test_html_and_failed_network_do_not_reach_install(self):
@@ -46,6 +49,64 @@ class DownloadTests(unittest.TestCase):
                 download_asset(self.asset(),root/'update.zip',version='1.5.4',opener=opener,cancelled=lambda:True)
             opener.assert_not_called()
             self.assertEqual(old.read_bytes(),b'old')
+
+    def test_truncated_http_stream_resumes_from_the_last_written_byte(self):
+        data=b'PK\x03\x04abcdef'
+        class Broken(io.BytesIO):
+            def read(self,_size):
+                if self.tell():
+                    raise http.client.IncompleteRead(b'',4)
+                return super().read(6)
+        class Partial(io.BytesIO):
+            status=206
+            headers={'Content-Range':'bytes 6-9/10'}
+        with tempfile.TemporaryDirectory() as directory:
+            target=Path(directory)/'update.zip'
+            opened=Mock(side_effect=[Broken(data),Partial(data[6:])])
+            download_asset(self.asset(),target,version='1.5.5 beta1',opener=opened,sleep=Mock())
+            self.assertEqual(target.read_bytes(),data)
+            self.assertEqual(opened.call_args_list[1].args[0].get_header('Range'),'bytes=6-')
+
+    def test_checksum_failure_retries_from_zero_and_never_returns_corrupt_data(self):
+        data=b'PK\x03\x04abcdef'
+        asset=self.asset()|{'digest':'sha256:'+hashlib.sha256(data).hexdigest()}
+        with tempfile.TemporaryDirectory() as directory:
+            target=Path(directory)/'update.zip'
+            opened=Mock(side_effect=[io.BytesIO(data[:-1]+b'x'),io.BytesIO(data)])
+            download_asset(asset,target,version='1.5.5 beta1',opener=opened,sleep=Mock())
+            self.assertEqual(target.read_bytes(),data)
+            self.assertIsNone(opened.call_args_list[1].args[0].get_header('Range'))
+
+    def test_replaced_release_asset_refreshes_size_id_and_checksum_before_retry(self):
+        data=b'PK\x03\x04abcdef'
+        old=self.asset(size=9)|{'id':1}
+        fresh=self.asset()|{'id':2,'digest':'sha256:'+hashlib.sha256(data).hexdigest()}
+        with tempfile.TemporaryDirectory() as directory:
+            target=Path(directory)/'update.zip'
+            returned=download_asset(old,target,version='1.5.5 beta1',
+                opener=Mock(side_effect=[io.BytesIO(data),io.BytesIO(data)]),refresh=Mock(return_value=fresh),sleep=Mock())
+            self.assertEqual(returned,fresh)
+            self.assertEqual(target.read_bytes(),data)
+
+    def test_refresh_uses_the_selected_release_tag_and_uncached_metadata(self):
+        fresh=self.asset()|{'id':2,'name':'wwbs-exe.zip','state':'uploaded'}
+        opened=Mock(return_value=io.BytesIO(json.dumps({'tag_name':'v1.5.5-beta1','assets':[fresh]}).encode()))
+        self.assertEqual(refresh_release_asset(self.asset(),'v1.5.5-beta1',opener=opened),fresh)
+        self.assertIn('/releases/tags/v1.5.5-beta1?wwbs_update=',opened.call_args.args[0].full_url)
+        wrong=Mock(return_value=io.BytesIO(json.dumps({'tag_name':'v9.0.0','assets':[fresh]}).encode()))
+        with self.assertRaisesRegex(RuntimeError,'版本信息不一致'):
+            refresh_release_asset(self.asset(),'v1.5.5-beta1',opener=wrong)
+
+    def test_invalid_resume_range_cannot_append_unrelated_bytes(self):
+        data=b'PK\x03\x04abcdef'
+        class Partial(io.BytesIO):
+            status=206
+            headers={'Content-Range':'bytes 5-9/10'}
+        with tempfile.TemporaryDirectory() as directory:
+            target=Path(directory)/'update.zip'
+            opened=Mock(side_effect=[io.BytesIO(data[:6]),Partial(data[5:]),io.BytesIO(data)])
+            download_asset(self.asset(),target,version='1.5.5 beta1',opener=opened,sleep=Mock())
+            self.assertEqual(target.read_bytes(),data)
 
     def test_startup_acknowledgement_accepts_update_work_beside_executable(self):
         import update_manager as manager

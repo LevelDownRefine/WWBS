@@ -1,5 +1,7 @@
 """Validate an onedir release before quitting; preserve user data during install."""
 import hashlib
+import http.client
+import json
 import os
 import re
 import stat
@@ -11,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from local_settings import SETTINGS
 
@@ -25,54 +27,123 @@ def create_update_work(target: Path) -> Path:
     return path
 
 
+def refresh_release_asset(asset, tag, *, opener=urllib.request.urlopen, cancelled=lambda: False):
+    """Refresh an asset by release tag, including its immutable ID and checksum."""
+    parts=urlsplit(str(asset.get('browser_download_url','')))
+    path=re.fullmatch(r'/([^/]+)/([^/]+)/releases/download/[^/]+/([^/]+)',parts.path)
+    if parts.scheme!='https' or parts.hostname!='github.com' or not path:
+        raise ValueError('安装包下载地址无效')
+    if cancelled():
+        raise InterruptedError('更新已取消，原程序未改动')
+    url=f'https://api.github.com/repos/{path[1]}/{path[2]}/releases/tags/{quote(tag,safe="")}?wwbs_update={time.time_ns()}'
+    request=urllib.request.Request(url,headers={'User-Agent':'WWBS/updater','Cache-Control':'no-cache',
+                                               'Accept':'application/vnd.github+json'})
+    try:
+        with opener(request,timeout=15) as response:
+            raw=response.read(2*1024*1024+1)
+        if len(raw)>2*1024*1024:
+            raise ValueError('版本信息过大')
+        release=json.loads(raw)
+        if not isinstance(release,dict) or release.get('tag_name')!=tag or release.get('draft'):
+            raise ValueError('版本信息不一致')
+        name=asset.get('name') or path[3]
+        fresh=next((item for item in release.get('assets',[]) if item.get('name')==name and item.get('state')=='uploaded'),None)
+        if fresh is None:
+            raise ValueError('当前版本的安装包尚未上传完成，请稍后重试')
+        return dict(fresh)
+    except (urllib.error.URLError,OSError,http.client.HTTPException,ValueError) as exc:
+        raise RuntimeError('刷新安装包信息失败：'+str(exc)) from exc
+
+
 def download_asset(asset: dict, destination: Path, *, version: str, progress=lambda *_: None,
-                   cancelled=lambda: False, opener=urllib.request.urlopen, sleep=time.sleep) -> None:
-    expected = int(asset.get('size') or 0)
-    if expected < 0 or expected > 512*1024*1024:
-        raise ValueError('安装包大小不符合预期')
-    base = str(asset['browser_download_url'])
+                   cancelled=lambda: False, opener=urllib.request.urlopen, sleep=time.sleep,
+                   refresh=None) -> dict:
+    asset=dict(asset)
     errors = []
+    restart=False
     for attempt in range(3):
         if cancelled():
             raise InterruptedError('更新已取消，原程序未改动')
+        expected = int(asset.get('size') or 0)
+        if expected < 0 or expected > 512*1024*1024:
+            raise ValueError('安装包大小不符合预期')
+        base = str(asset['browser_download_url'])
         parts = urlsplit(base)
         if parts.scheme != 'https' or parts.hostname not in {'github.com', 'api.github.com'}:
             raise ValueError('安装包下载地址无效')
         query = parts.query+('&' if parts.query else '')+'wwbs_update='+str(time.time_ns())
         url = urlunsplit((parts.scheme, parts.netloc, parts.path, query, ''))
         headers = {'User-Agent': 'wwbs/'+version, 'Cache-Control': 'no-cache',
-                   'Accept': 'application/octet-stream'}
+                   'Accept': 'application/octet-stream', 'Accept-Encoding':'identity'}
+        offset=destination.stat().st_size if attempt and destination.exists() and not restart else 0
+        if offset and (not expected or offset>=expected):
+            offset=0
+        if offset:
+            headers['Range']=f'bytes={offset}-'
         # The release-asset API is a second official download entry point.
         if attempt == 1 and asset.get('url'):
             api = urlsplit(str(asset['url']))
             if api.scheme == 'https' and api.hostname == 'api.github.com':
-                url = str(asset['url'])
+                query=api.query+('&' if api.query else '')+'wwbs_update='+str(time.time_ns())
+                url = urlunsplit((api.scheme,api.netloc,api.path,query,''))
         request = urllib.request.Request(url, headers=headers)
         try:
-            progress(0, expected)
-            total = 0
-            with opener(request, timeout=30) as response, destination.open('wb') as output:
-                while True:
-                    if cancelled():
-                        raise InterruptedError('更新已取消，原程序未改动')
-                    data = response.read(256*1024)
-                    if not data:
-                        break
-                    if total == 0 and data[:4] != b'PK\x03\x04':
-                        raise ValueError('下载入口未返回ZIP安装包')
-                    total += len(data)
-                    if total > (expected or 512*1024*1024):
-                        raise ValueError('下载内容超过安装包标记大小')
-                    output.write(data)
-                    progress(total, expected)
+            with opener(request, timeout=30) as response:
+                status=getattr(response,'status',200)
+                if status==206:
+                    content_range=response.headers.get('Content-Range','')
+                    match=re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)',content_range)
+                    if (not match or int(match[1])!=offset or int(match[2])<offset
+                            or int(match[2])>=int(match[3]) or (expected and int(match[3])!=expected)):
+                        raise ValueError('断点下载范围不一致')
+                else:
+                    offset=0  # A server may ignore Range: safely restart.
+                restart=False
+                progress(offset, expected)
+                total=offset
+                with destination.open('ab' if offset else 'wb') as output:
+                    while True:
+                        if cancelled():
+                            raise InterruptedError('更新已取消，原程序未改动')
+                        data = response.read(256*1024)
+                        if not data:
+                            break
+                        if total == 0 and data[:4] != b'PK\x03\x04':
+                            restart=True
+                            raise ValueError('下载入口未返回ZIP安装包')
+                        total += len(data)
+                        if total > (expected or 512*1024*1024):
+                            restart=True
+                            raise ValueError('下载内容超过安装包标记大小')
+                        output.write(data)
+                        progress(total, expected)
             if not total or (expected and total != expected):
                 raise ValueError('安装包下载不完整')
-            return
+            digest=asset.get('digest') or ''
+            if digest:
+                if not re.fullmatch(r'sha256:[0-9a-fA-F]{64}',digest):
+                    raise ValueError('无法识别更新包校验格式')
+                with destination.open('rb') as stream:
+                    actual=hashlib.file_digest(stream,'sha256').hexdigest()
+                if actual!=digest.split(':',1)[1].lower():
+                    restart=True
+                    raise ValueError('安装包SHA-256校验失败')
+            return asset
         except InterruptedError:
             raise
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException) as exc:
             errors.append(str(exc))
             if attempt < 2:
+                if refresh is not None:
+                    try:
+                        fresh=refresh()
+                        if any(fresh.get(key)!=asset.get(key) for key in ('id','size','digest')):
+                            restart=True
+                        asset=dict(fresh)
+                    except InterruptedError:
+                        raise
+                    except (RuntimeError,OSError,ValueError) as refresh_error:
+                        errors.append(str(refresh_error))
                 sleep(.5*(attempt+1))
     raise RuntimeError('安装包下载失败（已重试3次）：'+errors[-1])
 

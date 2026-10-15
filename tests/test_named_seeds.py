@@ -15,8 +15,8 @@ class NamedSeedTests(unittest.TestCase):
     def test_named_default_is_shorter_including_name_and_identifiers_are_unique(self):
         preset=default_store()['presets'][0]
         seeds=[export_seed(preset) for _ in range(20)]
-        self.assertTrue(all(seed.startswith('【默认战斗轴】4.') for seed in seeds))
-        self.assertTrue(all(len(seed)==32 for seed in seeds))
+        self.assertTrue(all(seed.startswith('【默认战斗轴】WWBS4.') for seed in seeds))
+        self.assertTrue(all(len(seed)==36 for seed in seeds))
         self.assertLess(len(seeds[0]),len(_export_third_generation(preset)))
         self.assertEqual(len(set(seeds)),20)
         self.assertEqual(snapshot(decode_seed(seeds[0])),snapshot(preset))
@@ -26,7 +26,7 @@ class NamedSeedTests(unittest.TestCase):
         preset['name']='这是已有的完整轴名称，不应被截断'
         alias='一二三四五六七八九十'
         seed=export_seed(preset,seed_name=alias)
-        self.assertTrue(seed.startswith('【'+alias+'】4.'))
+        self.assertTrue(seed.startswith('【'+alias+'】WWBS4.'))
         decoded=decode_seed(seed)
         self.assertEqual(decoded['seed_name'],alias)
         self.assertEqual(decoded['name'],preset['name'])

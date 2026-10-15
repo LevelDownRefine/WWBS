@@ -63,6 +63,7 @@ class UpdateDialogTests(unittest.TestCase):
         self.notes = '\n'.join(f'第{i}条更新说明：滚动查看全部内容。' for i in range(400))
 
     def tearDown(self):
+        self.ui._close_update_progress()
         self.root.destroy()
         gc.collect()
 
