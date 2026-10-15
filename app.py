@@ -101,7 +101,7 @@ DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
 APP_VERSION = "1.5.5 beta1"
-APP_BUILD = 2
+APP_BUILD = 3
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -200,6 +200,7 @@ UPDATE_HISTORY = [
 切人确认期间持续普攻，边识别边攻击；确认成功、战斗结束或停止时切回正常模块。
 软件内下载更新增加居中进度条、百分比与下载大小，校验和安装准备显示实际阶段，可取消下载。
 修复下载与校验失败：刷新包信息，连接中断支持重试和断点续传，SHA256不符重新下载。
+以后软件内更新仅检查正式版，自动跳过beta、alpha、rc及GitHub预发布；测试包可从GitHub手动下载。
 设置页主题设置上方新增“关闭 / 持续下雨 / Boss战自动”三档开关，每次启动默认关闭。
 雨幕覆盖整个桌面，显示玻璃水滴、水痕与细雨，支持鼠标穿透，不抢焦点。
 持续模式在任务期间照常下雨；Boss模式检测顶部长血条，短暂隐藏8秒内保持效果。
@@ -8711,19 +8712,21 @@ class App:
     @classmethod
     def _release_is_newer(cls, tag: str, release: dict) -> bool:
         remote, current = cls._version_tuple(tag), cls._version_tuple(APP_VERSION)
+        if release.get('prerelease') or remote[3] < 3:
+            return False
         return remote > current or (remote == current and cls._release_build(release) > APP_BUILD)
 
     @staticmethod
     def _select_update_release(releases: list) -> tuple[str, dict, dict]:
-        """Include prereleases, ranking by version rather than upload date."""
+        """Select installable stable releases, ranked by version."""
         if not isinstance(releases, list):
             raise RuntimeError("无法读取版本列表，请稍后重新检查。")
         candidates = []
         for release in releases:
-            if not isinstance(release, dict) or release.get("draft"):
+            if not isinstance(release, dict) or release.get("draft") or release.get('prerelease'):
                 continue
             tag = str(release.get("tag_name", "")).strip()
-            if App._version_tuple(tag) == (0, 0, 0, 0, 0):
+            if App._version_tuple(tag) == (0, 0, 0, 0, 0) or App._version_tuple(tag)[3] < 3:
                 continue
             asset = next((item for item in release.get("assets", [])
                           if item.get("name") == UPDATE_ASSET_NAME
@@ -8731,7 +8734,7 @@ class App:
             if asset:
                 candidates.append((tag, release, asset))
         if not candidates:
-            raise RuntimeError("已发布版本中没有找到可安装的 wwbs-exe.zip。")
+            raise RuntimeError("没有找到包含完整安装包的正式版本。")
         return max(candidates, key=lambda item: App._version_tuple(item[0]))
 
     def _update_work_area(self) -> tuple[int, int, int, int]:
@@ -8942,7 +8945,7 @@ class App:
     def _show_available_update(self, tag: str, release: dict, asset: dict) -> None:
         self.status.set("远程更新检查完成")
         if not self._release_is_newer(tag, release):
-            messagebox.showinfo("检查更新", f"暂未发现比 wwbs {APP_VERSION} 更新的版本（含beta测试版）。", parent=self.root)
+            messagebox.showinfo("检查更新", f"暂未发现比 wwbs {APP_VERSION} 更新的正式版。", parent=self.root)
             return
         previous = getattr(self, "_update_offer_window", None)
         if previous is not None and previous.winfo_exists():

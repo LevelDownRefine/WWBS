@@ -12,10 +12,17 @@ def release(tag, **fields):
 
 
 class UpdateDiscoveryTests(unittest.TestCase):
-    def test_newer_beta_is_included_even_when_not_first_in_list(self):
+    def test_newer_beta_is_skipped_even_when_its_version_is_larger(self):
         candidates = [release('v1.5.3'), release('v1.5.4-beta1', prerelease=True),
                       release('v1.5.4-beta2', prerelease=True)]
-        self.assertEqual(app.App._select_update_release(candidates)[0], 'v1.5.4-beta2')
+        self.assertEqual(app.App._select_update_release(candidates)[0], 'v1.5.3')
+
+    def test_all_test_tags_and_github_prereleases_are_skipped(self):
+        for tag in ('v1.6.0-beta1','v1.6.0-alpha2','v1.6.0-rc1'):
+            self.assertEqual(app.App._select_update_release([release(tag),release('v1.5.4')])[0],'v1.5.4')
+            self.assertFalse(app.App._release_is_newer(tag,{}))
+        self.assertEqual(app.App._select_update_release([release('v9.0.0',prerelease=True),release('v1.5.4')])[0],'v1.5.4')
+        self.assertFalse(app.App._release_is_newer('v9.0.0',{'prerelease':True}))
 
     def test_formal_version_beats_beta_with_same_version_number(self):
         self.assertEqual(app.App._select_update_release(
@@ -27,12 +34,12 @@ class UpdateDiscoveryTests(unittest.TestCase):
         empty = release('v1.6.0-beta1')
         empty['assets'] = []
         self.assertEqual(app.App._select_update_release([
-            release('v2.0.0', draft=True), unfinished, empty, release('v1.5.4-beta2')
-        ])[0], 'v1.5.4-beta2')
+            release('v2.0.0', draft=True), unfinished, empty, release('v1.5.4')
+        ])[0], 'v1.5.4')
         with self.assertRaises(RuntimeError):
             app.App._select_update_release([empty, unfinished])
 
-    def test_check_fetches_release_list_and_passes_beta_to_ui(self):
+    def test_check_fetches_release_list_and_passes_only_formal_release_to_ui(self):
         ui = app.App.__new__(app.App)
         ui.root, ui.status = Mock(), Mock()
         response = MagicMock()
@@ -50,7 +57,7 @@ class UpdateDiscoveryTests(unittest.TestCase):
         ui.update_worker.start.assert_called_once()
         self.assertIn('/releases?per_page=100', opened.call_args.args[0].full_url)
         ui.root.after.call_args.args[1]()
-        self.assertEqual(ui._show_available_update.call_args.args[0], 'v1.5.4-beta3')
+        self.assertEqual(ui._show_available_update.call_args.args[0], 'v1.5.3')
 
 
 class UpdateDialogTests(unittest.TestCase):
@@ -69,8 +76,8 @@ class UpdateDialogTests(unittest.TestCase):
 
     def show(self, work_area=(0, 0, 800, 560)):
         with patch.object(self.ui, '_update_work_area', return_value=work_area):
-            self.ui._show_available_update('v9.0.0-beta1',
-                                           {'body': self.notes, 'prerelease': True}, {})
+            self.ui._show_available_update('v9.0.0',
+                                           {'body': self.notes, 'prerelease': False}, {})
         self.root.update()
         return self.ui._update_offer_window
 
@@ -149,7 +156,7 @@ class UpdateDialogTests(unittest.TestCase):
             next(w for w in window._update_footer.winfo_children()
                  if w.cget('text') == '下载并安装').invoke()
             thread.return_value.start.assert_called_once()
-            self.assertEqual(thread.call_args.kwargs['args'][0], 'v9.0.0-beta1')
+            self.assertEqual(thread.call_args.kwargs['args'][0], 'v9.0.0')
             self.assertTrue(self.ui._update_installing)
             self.assertFalse(window.winfo_exists())
 
