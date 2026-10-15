@@ -20,6 +20,14 @@ const request=(method,query='',payload)=>new Request('https://library.example/se
 test('Python-generated data restores the same axes with every action and exact decimals',()=>{
   for(const fixture of fixtures)assert.deepEqual(readSeed(fixture.seed).axis,fixture.axis);
 });
+
+test('WWBS4 prefix and legacy 4 prefix decode to the same immutable record',()=>{
+  for(const fixture of fixtures) {
+    const branded=fixture.seed.replace('】4.','】WWBS4.');
+    assert.deepEqual(readSeed(branded).axis,fixture.axis);
+    assert.equal(readSeed(branded).id,readSeed(fixture.seed).id);
+  }
+});
 test('Changed named prefix and truncated or unsupported code are rejected',()=>{
   const code=fixtures[0].seed;
   for(const seed of [code.replace('默认','其他'),code.slice(0,-3),code.replace('】4.','】9.'),'anything'])

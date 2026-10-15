@@ -121,7 +121,7 @@ class ConfirmedSwitchTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, '不会跳过此角色'):
                 self.runner._select_rotation_slot(2, verify=True)
         self.assertEqual(self.runner._rotation_slot, 3)
-        self.assertTrue(all(key == '2' for key, _ in self.controller.events))
+        self.assertTrue(all(key in ('2','click') for key, _ in self.controller.events))
 
     def test_stop_during_confirmation_does_not_press_another_key(self):
         self.runner._capture_for_matching = lambda _: self.runner.stop_event.set()

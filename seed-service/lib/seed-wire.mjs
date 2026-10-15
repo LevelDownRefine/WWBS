@@ -20,7 +20,7 @@ export function crc32(buffer) {
 
 export function readSeed(seed) {
   if (typeof seed !== 'string' || seed.length > 24000) throw new Error('种子过长或格式错误');
-  const match = /^【([^【】\r\n]+)】4\.([A-Za-z0-9_-]+)$/.exec(seed.trim());
+  const match = /^【([^【】\r\n]+)】(?:WWBS)?4\.([A-Za-z0-9_-]+)$/.exec(seed.trim());
   if (!match) throw new Error('请上传当前版本生成的完整种子');
   const name = match[1];
   if (name.trim() !== name || Array.from(name).length > 10 || /[\u0000-\u001f]/.test(name)) throw new Error('种子名称须为1到10个字');

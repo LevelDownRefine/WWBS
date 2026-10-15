@@ -9,6 +9,7 @@ from combat_seed import decode_seed, import_seed
 
 
 FIXTURES = json.loads((Path(__file__).parent / 'fixtures' / 'seed-compatibility.json').read_text(encoding='utf-8'))
+REPORTED = json.loads((Path(__file__).parent / 'fixtures' / 'reported-seed-2026-10-15.json').read_text(encoding='utf-8'))
 
 
 def snapshot(preset):
@@ -18,6 +19,12 @@ def snapshot(preset):
 
 
 class SeedCompatibilityTests(unittest.TestCase):
+    def test_reported_named_seed_with_both_prefixes_and_chat_formatting(self):
+        for seed in (REPORTED['seed'], REPORTED['seed'].replace('】4.', '】WWBS4.'),
+                     '\ufeff'+REPORTED['seed'].replace('4.', '4.\u200b\n')):
+            with self.subTest(seed=seed[:24]):
+                self.assertEqual(snapshot(decode_seed(seed)), REPORTED['expected'])
+
     def test_all_published_seed_generations_restore_original_content(self):
         for fixture in FIXTURES:
             with self.subTest(format=fixture['label']):

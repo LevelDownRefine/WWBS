@@ -65,7 +65,7 @@ class CombatSeedTests(unittest.TestCase):
 
     def test_corruption_truncation_and_unknown_version_are_rejected(self):
         for seed in (self.seed[:-3], self.seed[:-1]+("1" if self.seed[-1] != "1" else "0"),
-                     self.seed.replace("】4.", "】9."), "", "not a code", "WWBS1.a.0123456789abcdef"):
+                     self.seed.replace("】WWBS4.", "】WWBS9."), "", "not a code", "WWBS1.a.0123456789abcdef"):
             with self.subTest(seed=seed[:40]), self.assertRaises(ValueError):
                 decode_seed(seed)
 
@@ -211,6 +211,19 @@ class CombatSeedUiTests(unittest.TestCase):
             self.button(dialog, "复制种子").invoke()
             self.button(dialog, "复制种子").invoke()
         self.assertEqual([call.args[0] for call in append.call_args_list], [seed, seed])
+
+    def test_reported_old_named_seed_and_wwbs_prefix_import_through_the_real_dialog(self):
+        fixture=json.loads((Path(__file__).parent/'fixtures'/'reported-seed-2026-10-15.json').read_text(encoding='utf-8'))
+        for seed in (fixture['seed'],fixture['seed'].replace('】4.','】WWBS4.')):
+            dialog=self.ui._rotation_import_seed()
+            self.textbox(dialog).insert('1.0',seed)
+            self.root.update()
+            self.button(dialog,'导入预设').invoke()
+            self.root.update()
+            self.assertFalse(dialog.winfo_exists())
+            actual=content(self.ui.rotation_store['presets'][-1])
+            actual['name']=fixture['expected']['name']
+            self.assertEqual(actual,fixture['expected'])
 
     def test_import_after_preview_uses_current_seed_without_another_preview(self):
         seed = export_seed(self.ui._rotation_current_preset())

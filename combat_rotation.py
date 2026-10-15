@@ -458,6 +458,10 @@ class IdleAttackWorker:
             self.pause_event.clear()
             self.condition.notify_all()
 
+    def arm_switch_confirmation(self, deadline):
+        # Switch confirmation uses plain clicks only, never a charged attack.
+        self.arm({'id': 'switch-confirmation', 'slot': 0, 'value': 0}, deadline)
+
     def pause(self):
         with self.condition:
             self.pause_event.set()
@@ -498,7 +502,7 @@ class IdleAttackWorker:
                         if self.state is None or now >= self.state[1]:
                             continue
                         heavy_every, deadline = self.state
-                        heavy = self.count >= heavy_every
+                        heavy = heavy_every > 0 and self.count >= heavy_every
                         hold_ms = min(self.heavy_hold_ms, max(1, int((deadline-now)*1000)))
                     if heavy:
                         if callable(getattr(type(self.controller), 'hold_left_button_cancelable', None)):

@@ -101,7 +101,7 @@ DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
 APP_VERSION = "1.5.5 beta1"
-APP_BUILD = 1
+APP_BUILD = 2
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -196,6 +196,9 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
     ("v1.5.5 beta1", """v1.5.5 beta1 · Boss战自动播放雨爱
+本次修复：种子支持【名字】WWBS4.…，继续兼容【名字】4.…及前三代；加入用户反馈种子的完整导入验证。
+切人确认期间持续普攻，边识别边攻击；确认成功、战斗结束或停止时切回正常模块。
+软件内下载更新增加居中进度条、百分比与下载大小，校验和安装准备显示实际阶段，可取消下载。
 设置页主题设置上方新增“关闭 / 持续下雨 / Boss战自动”三档开关，每次启动默认关闭。
 雨幕覆盖整个桌面，显示玻璃水滴、水痕与细雨，支持鼠标穿透，不抢焦点。
 持续模式在任务期间照常下雨；Boss模式检测顶部长血条，短暂隐藏8秒内保持效果。
@@ -1584,40 +1587,58 @@ class TaskRunner:
             return False
         native_check = callable(getattr(type(self.controller), 'active_character_slot', None))
         if native_check and (verify or self._rotation_slot != slot):
-            deadline = time.monotonic()+6.0
-            attempt, observed = 0, None
-            while time.monotonic() < deadline and not self.stop_event.is_set():
-                observed = self._read_rotation_slot()
-                if self._rotation_battle_finished or self.stop_event.is_set():
-                    return False
-                if observed is None and time.monotonic() < self._combat_animation_until:
-                    self._sleep_interruptible(.08)
-                    continue
-                if observed == slot:
-                    self._sleep_interruptible(.025)
-                    if self.stop_event.is_set():
-                        return False
-                    if (self._read_rotation_slot(check_end=False) == slot and not self._rotation_battle_finished
-                            and not self.stop_event.is_set()):
-                        self._rotation_slot = slot
-                        self.log(f"    已确认{SLOT_NAMES[slot]}上场，开始执行该角色模块。")
-                        return True
-                    if self._rotation_battle_finished:
-                        return False
-                attempt += 1
-                self.controller.release_keys(("W", "A", "S", "D", "SPACE", "1", "2", "3"))
-                self.controller.press_key(str(slot), 65)
-                self.log(f"    请求切到{SLOT_NAMES[slot]}（第{attempt}次），等待头像栏确认。")
-                self._sleep_interruptible(.08)
-            if self.stop_event.is_set():
-                return False
-            current = SLOT_NAMES.get(observed, '未识别')
-            raise RuntimeError(f"未能确认切到{SLOT_NAMES[slot]}，最后识别为{current}。已停止，不会跳过此角色继续切人。")
+            worker = getattr(self, '_rotation_idle_worker', None)
+            owned = not isinstance(worker, IdleAttackWorker)
+            if owned:
+                worker = IdleAttackWorker(self.controller, self.stop_event, threading.Lock(),
+                    attack_interval=self.MAIN_ATTACK_CLICK_INTERVAL,
+                    on_error=lambda exc: self.log(f'    切人确认时普攻失败：{exc}'))
+            try:
+                return self._confirm_rotation_slot(slot, worker)
+            finally:
+                if owned:
+                    worker.close()
+                else:
+                    worker.pause()
         if self._rotation_slot != slot:
             self.controller.press_key(str(slot), 65)
             self._rotation_slot = slot
-            self._sleep_interruptible(0.08)
         return not self.stop_event.is_set()
+
+    def _confirm_rotation_slot(self, slot, worker):
+        deadline = time.monotonic()+6.0
+        attempt, observed = 0, None
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            observed = self._read_rotation_slot()
+            if self._rotation_battle_finished or self.stop_event.is_set():
+                return False
+            if observed is None and time.monotonic() < self._combat_animation_until:
+                self._sleep_interruptible(.08)
+                continue
+            if observed == slot:
+                self._sleep_interruptible(.025)
+                if self.stop_event.is_set():
+                    return False
+                if (self._read_rotation_slot(check_end=False) == slot and not self._rotation_battle_finished
+                        and not self.stop_event.is_set()):
+                    self._rotation_slot = slot
+                    self.log(f"    已确认{SLOT_NAMES[slot]}上场，开始执行该角色模块。")
+                    return True
+                if self._rotation_battle_finished:
+                    return False
+            attempt += 1
+            with worker.input_lock:
+                if self.stop_event.is_set() or self._rotation_battle_finished:
+                    return False
+                self.controller.release_keys(("W", "A", "S", "D", "SPACE", "1", "2", "3"))
+                self.controller.press_key(str(slot), 65)
+            worker.arm_switch_confirmation(deadline)
+            self.log(f"    请求切到{SLOT_NAMES[slot]}（第{attempt}次），边普攻边确认头像栏。")
+            self._sleep_interruptible(.08)
+        if self.stop_event.is_set():
+            return False
+        current = SLOT_NAMES.get(observed, '未识别')
+        raise RuntimeError(f"未能确认切到{SLOT_NAMES[slot]}，最后识别为{current}。已停止，不会跳过此角色继续切人。")
 
     def _run_rotation_action(self, action: dict | None, rotation: RotationClock,
                              skill_key: str, ultimate_key: str,
@@ -9001,10 +9022,102 @@ class App:
         close()
         self._update_installing = True
         self._update_cancelled = threading.Event()
+        self._update_handoff_lock = threading.Lock()
+        self._update_launching = False
+        self._update_events = queue.Queue()
+        self._show_update_progress(tag)
         self.status.set(f"正在下载 {tag}...")
         threading.Thread(target=self._download_and_install_update, args=(tag, asset), daemon=True).start()
 
+    def _show_update_progress(self, tag):
+        window = Toplevel(self.root)
+        window.title('正在更新 WWBS')
+        window.configure(bg=COLORS['panel'])
+        window.geometry('520x230')
+        window.minsize(380,210)
+        self._update_progress_window = window
+        body=Frame(window,bg=COLORS['panel'],padx=20,pady=18)
+        body.pack(fill=BOTH,expand=True)
+        Label(body,text=f'更新到 {tag}',font=(FONT_FAMILY,12,'bold'),
+              bg=COLORS['panel'],fg=COLORS['text']).pack(anchor='w')
+        self._update_phase=StringVar(value='正在准备下载…')
+        self._update_detail=StringVar(value='连接下载服务器')
+        Label(body,textvariable=self._update_phase,bg=COLORS['panel'],fg=COLORS['text']).pack(anchor='w',pady=(12,8))
+        self._update_progress_bar=ttk.Progressbar(body,maximum=100,mode='indeterminate')
+        self._update_progress_bar.pack(fill=X)
+        self._update_progress_bar.start(15)
+        Label(body,textvariable=self._update_detail,bg=COLORS['panel'],fg=COLORS['muted']).pack(anchor='w',pady=(6,10))
+        self._update_cancel_button=self._ui_button(body,text='取消更新',command=self._cancel_update_download)
+        self._update_cancel_button.pack(side=RIGHT)
+        window.protocol('WM_DELETE_WINDOW',self._cancel_update_download)
+        window.bind('<Escape>',lambda _event:self._cancel_update_download())
+        self._update_progress_job=self.root.after(80,self._poll_update_progress)
+
+    def _cancel_update_download(self):
+        with self._update_handoff_lock:
+            if self._update_launching:
+                return
+            self._update_cancelled.set()
+        self._update_phase.set('正在取消更新…')
+        self._update_detail.set('取消后保留原程序和设置')
+        self._update_cancel_button.configure(state='disabled')
+
+    def _close_update_progress(self):
+        job=getattr(self,'_update_progress_job',None)
+        if job is not None:
+            self.root.after_cancel(job)
+            self._update_progress_job=None
+        window=getattr(self,'_update_progress_window',None)
+        if window is not None and window.winfo_exists():
+            self._update_progress_bar.stop()
+            window.destroy()
+        self._update_progress_window=None
+
+    def _poll_update_progress(self):
+        self._update_progress_job=None
+        while True:
+            try:
+                event=self._update_events.get_nowait()
+            except queue.Empty:
+                break
+            kind=event[0]
+            if kind=='download':
+                received,total=event[1:]
+                self._update_phase.set('正在下载安装包')
+                if total:
+                    percent=min(100,received*100/total)
+                    self._update_progress_bar.stop()
+                    self._update_progress_bar.configure(mode='determinate',value=percent)
+                    detail=f'{percent:.1f}% · {received/1048576:.1f} / {total/1048576:.1f} MB'
+                else:
+                    self._update_progress_bar.stop()
+                    self._update_progress_bar.configure(mode='indeterminate')
+                    self._update_progress_bar.start(15)
+                    detail=f'已下载 {received/1048576:.1f} MB'
+                self._update_detail.set(detail)
+                self.status.set('正在更新：'+detail)
+            elif kind=='phase':
+                self._update_progress_bar.stop()
+                self._update_progress_bar.configure(mode='indeterminate')
+                self._update_progress_bar.start(15)
+                self._update_phase.set(event[1])
+                self._update_detail.set('请稍候…')
+                self.status.set(event[1])
+            elif kind in ('error','cancelled','handoff'):
+                self._close_update_progress()
+                if kind=='handoff':
+                    self._close_app()
+                else:
+                    self._update_installing=False
+                    if kind=='error':
+                        self._show_update_error(event[1])
+                    else:
+                        self.status.set('更新已取消，原程序继续运行')
+                return
+        self._update_progress_job=self.root.after(80,self._poll_update_progress)
+
     def _show_update_error(self, error_text: str) -> None:
+        self._close_update_progress()
         self._update_installing = False
         self.status.set("更新未完成，原程序继续运行")
         messagebox.showerror("更新未完成", error_text, parent=self.root)
@@ -9022,35 +9135,41 @@ class App:
                 if now-last_progress[0] < .15 and received != total:
                     return
                 last_progress[0] = now
-                detail = f'{received*100//total}%' if total else f'{received//1024//1024} MB'
-                try:
-                    self.root.after(0, lambda: self.status.set(f'正在下载 {tag}：{detail}'))
-                except (TclError, RuntimeError):
-                    self._update_cancelled.set()
+                self._update_events.put(('download',received,total))
             download_asset(asset, zip_path, version=APP_VERSION, progress=progress,
                            cancelled=self._update_cancelled.is_set)
 
             phase = '校验安装包'
+            if self._update_cancelled.is_set():
+                self._update_events.put(('cancelled',))
+                return
+            self._update_events.put(('phase',phase))
             staged = prepare_update(zip_path, work_dir / "extract", asset.get("size", 0), asset.get("digest") or "")
             phase = '保存当前设置'
+            self._update_events.put(('phase',phase))
             snapshot_settings(target_dir, work_dir/'settings')
             if self._update_cancelled.is_set():
+                self._update_events.put(('cancelled',))
                 return
             phase = '启动更新程序'
+            self._update_events.put(('phase',phase))
             script_path = work_dir / "update.ps1"
             script = install_script(staged, target_dir, work_dir, os.getpid())
             script_path.write_text(script, encoding="utf-8-sig")
-            subprocess.Popen(
-                ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            self.root.after(0, self._close_app)
+            with self._update_handoff_lock:
+                if self._update_cancelled.is_set():
+                    self._update_events.put(('cancelled',))
+                    return
+                self._update_launching = True
+                subprocess.Popen(
+                    ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            self._update_events.put(('handoff',))
         except Exception as exc:
             error_text = str(exc)
-            try:
-                self.root.after(0, lambda: self._show_update_error(f"{phase}失败：{error_text}\n原程序未替换。"))
-            except (TclError, RuntimeError):
-                pass
+            self._update_events.put(('cancelled',) if self._update_cancelled.is_set()
+                else ('error',f"{phase}失败：{error_text}\n原程序未替换。"))
 
     def _calculate_probability(self) -> None:
         try:
