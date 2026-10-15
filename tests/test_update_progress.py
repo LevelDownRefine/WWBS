@@ -63,6 +63,7 @@ class UpdateProgressTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory,ExitStack() as patches:
             root=Path(directory)
             patches.enter_context(patch.object(app,'create_update_work',return_value=root))
+            patches.enter_context(patch.object(app,'refresh_release_asset',return_value={}))
             def download(_asset,_path,**options): options['progress'](50,100)
             patches.enter_context(patch.object(app,'download_asset',side_effect=download))
             patches.enter_context(patch.object(app,'prepare_update',return_value=root/'extract'))

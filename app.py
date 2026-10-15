@@ -28,7 +28,7 @@ from image_matcher import TemplateMatcher
 from windows_client import ClientWindowController
 from desktop_pet import DesktopPet
 from chat_history import ChatHistory
-from update_manager import (create_update_work, download_asset, prepare_update, install_script,
+from update_manager import (create_update_work, download_asset, refresh_release_asset, prepare_update, install_script,
                             signal_update_ready)
 from local_settings import (apply_import, bootstrap_own_settings, default_search_roots,
                             discover_latest, discovery_needed, prepare_import, save_discovery_state,
@@ -199,6 +199,7 @@ UPDATE_HISTORY = [
 本次修复：种子支持【名字】WWBS4.…，继续兼容【名字】4.…及前三代；加入用户反馈种子的完整导入验证。
 切人确认期间持续普攻，边识别边攻击；确认成功、战斗结束或停止时切回正常模块。
 软件内下载更新增加居中进度条、百分比与下载大小，校验和安装准备显示实际阶段，可取消下载。
+修复下载与校验失败：刷新包信息，连接中断支持重试和断点续传，SHA256不符重新下载。
 设置页主题设置上方新增“关闭 / 持续下雨 / Boss战自动”三档开关，每次启动默认关闭。
 雨幕覆盖整个桌面，显示玻璃水滴、水痕与细雨，支持鼠标穿透，不抢焦点。
 持续模式在任务期间照常下雨；Boss模式检测顶部长血条，短暂隐藏8秒内保持效果。
@@ -9128,6 +9129,12 @@ class App:
             target_dir = Path(sys.executable).resolve().parent
             work_dir = create_update_work(target_dir)
             zip_path = work_dir / UPDATE_ASSET_NAME
+            phase = '刷新安装包信息'
+            self._update_events.put(('phase',phase))
+            try:
+                asset=refresh_release_asset(asset,tag,cancelled=self._update_cancelled.is_set)
+            except RuntimeError:
+                self._update_events.put(('phase','尝试已有官方链接'))
             phase = '下载安装包'
             last_progress = [0.]
             def progress(received, total):
@@ -9136,8 +9143,9 @@ class App:
                     return
                 last_progress[0] = now
                 self._update_events.put(('download',received,total))
-            download_asset(asset, zip_path, version=APP_VERSION, progress=progress,
-                           cancelled=self._update_cancelled.is_set)
+            asset=download_asset(asset, zip_path, version=APP_VERSION, progress=progress,
+                           cancelled=self._update_cancelled.is_set,
+                           refresh=lambda:refresh_release_asset(asset,tag,cancelled=self._update_cancelled.is_set)) or asset
 
             phase = '校验安装包'
             if self._update_cancelled.is_set():
