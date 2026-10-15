@@ -300,20 +300,27 @@ def decode_seed(seed: str) -> dict:
     try:
         if not isinstance(seed, str) or len(seed) > MAX_SEED_CHARS * 2:
             raise ValueError("种子过长")
-        # Chat clients can insert invisible formatting characters during copy.
-        # Do not normalize visible name punctuation: the name is checksummed.
-        seed = re.sub(r'[\u200b-\u200f\u2060\ufeff]', '', seed).strip()
+        # Only wrapper/body formatting is unconditionally discarded. An old
+        # seed's original name may legitimately contain a zero-width character.
+        formatting = r'[\u200b-\u200f\u2060\ufeff]'
+        seed = re.sub(r'^(?:\s|'+formatting+r')+|(?:\s|'+formatting+r')+$', '', seed)
         if seed.startswith('【'):
             end = seed.find('】')
             if end < 0:
                 raise ValueError('种子名称不完整')
             name = seed[1:end].replace('\r', '').replace('\n', '').replace('\t', '')
-            body = ''.join(seed[end+1:].split())
+            body = re.sub(formatting, '', ''.join(seed[end+1:].split()))
             for prefix in (NAMED_PREFIX, LEGACY_NAMED_PREFIX):
                 if body.startswith(prefix):
-                    return _decode_named(name, body[len(prefix):])
+                    try:
+                        return _decode_named(name, body[len(prefix):])
+                    except ValueError:
+                        cleaned_name = re.sub(formatting, '', name)
+                        if cleaned_name == name:
+                            raise
+                        return _decode_named(cleaned_name, body[len(prefix):])
             raise ValueError('不支持这个种子版本，请升级程序')
-        seed = "".join(seed.split())  # Tolerate chat wrapping and trailing newlines.
+        seed = re.sub(formatting, '', "".join(seed.split()))
         if len(seed) > MAX_SEED_CHARS:
             raise ValueError("种子过长")
         if seed.startswith(COMPACT_PREFIX + "."):

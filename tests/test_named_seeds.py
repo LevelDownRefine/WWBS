@@ -42,6 +42,15 @@ class NamedSeedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'校验'):
             decode_seed(seed.replace('默认','其他'))
 
+    def test_original_zero_width_name_is_preserved_and_inserted_chat_formatting_is_tolerated(self):
+        preset=default_store()['presets'][0]
+        preset['name']='雨\u200b爱'
+        seed=export_seed(preset)
+        self.assertEqual(snapshot(decode_seed(seed)),snapshot(preset))
+        self.assertEqual(snapshot(decode_seed(seed.replace('】WWBS4.','】4.'))),snapshot(preset))
+        ordinary=export_seed(default_store()['presets'][0])
+        self.assertEqual(decode_seed(ordinary.replace('默认','默\u200b认'))['seed_name'],'默认战斗轴')
+
     def test_frozen_fourth_generation_defaults_ignore_future_app_defaults(self):
         preset=default_store()['presets'][0]
         seed=export_seed(preset)
