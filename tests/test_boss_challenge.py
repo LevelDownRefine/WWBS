@@ -53,22 +53,27 @@ class EntranceTests(unittest.TestCase):
         def schedule(phase,delay=1.1):
             state['pending'],state['pending_at']=phase,state['now']+delay
         def tap(x,y):
-            phase=state['phase'];inputs.append(phase)
+            phase=state['phase']
+            inputs.append(phase)
             if phase=='guide':
                 schedule('category')
             elif phase=='category':
                 schedule('list')
             elif phase=='target':
                 # First direct-challenge click is deliberately ignored by the game.
-                if state['missed']: schedule('level80')
+                if state['missed']:
+                    schedule('level80')
                 state['missed']=True
             elif phase=='level80':
                 self.assertGreater(y,570)  # Select 90 before the footer can be used.
                 schedule('level90')
-            elif phase=='level90': schedule('team')
+            elif phase=='level90':
+                schedule('team')
             elif phase=='team':
-                state['phase']='loading';schedule('battle',delay=4.)
-            else: self.fail('Unexpected input in '+phase)
+                state['phase']='loading'
+                schedule('battle',delay=4.)
+            else:
+                self.fail('Unexpected input in '+phase)
         runner=Mock(dry_run=False,stop_event=threading.Event())
         runner.controller.tap.side_effect=tap
         runner.controller.press_key.side_effect=lambda *_args:schedule('guide')
@@ -118,7 +123,8 @@ class EntranceTests(unittest.TestCase):
         entry=BossChallengeEntrance(ocr_factory=factory)
         self.assertTrue(entry.enter(runner))
         factory.assert_not_called()
-        runner.dry_run=False;runner.stop_event.set()
+        runner.dry_run=False
+        runner.stop_event.set()
         self.assertFalse(entry.enter(runner))
         factory.return_value.close.assert_called_once()
         runner.controller.tap.assert_not_called()
