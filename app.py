@@ -203,7 +203,7 @@ UPDATE_HISTORY = [
 以后软件内更新仅检查正式版，自动跳过beta、alpha、rc及GitHub预发布；测试包可从GitHub手动下载。
 设置页主题设置上方新增“关闭 / 持续下雨 / Boss战自动”三档开关，每次启动默认关闭。
 雨幕覆盖整个桌面，显示玻璃水滴、水痕与细雨，支持鼠标穿透，不抢焦点。
-持续模式在任务期间照常下雨；Boss模式检测顶部长血条，短暂隐藏不足5秒时保持效果。
+持续模式在任务期间照常下雨；Boss模式检测顶部居中、双层对齐的长血条，短暂隐藏不足5秒时保持效果。
 下雨时循环播放内置的固定曲目《雨爱》，可调整雨量、清晰度与音量，关闭雨幕同时停止歌曲。
 日常找奖励光球先转完整一圈，再选择最高置信度方向；途中超过0.80就直接前往。
 雨幕参数支持本地设置继承；保留1.5.4的日常领取、本地设置检测、种子兼容与更新修复。
@@ -7864,7 +7864,7 @@ class App:
               anchor='w', justify=LEFT, wraplength=650).pack(fill=X, pady=(2,5))
         Label(box, textvariable=self.rain_status, bg=COLORS['panel_alt'], fg=COLORS['primary'],
               anchor='w', justify=LEFT, wraplength=650).pack(fill=X, pady=4)
-        Label(box, text='每次启动默认关闭；雨量、清晰度和音量会记住。持续模式不因任务暂停；Boss模式看顶部长血条，短暂隐藏不足5秒时保持雨幕。下雨时循环播放《雨爱》，关闭雨幕同时停止音乐。',
+        Label(box, text='每次启动默认关闭；雨量、清晰度和音量会记住。持续模式不因任务暂停；Boss模式看顶部居中、双层对齐的长血条，短暂隐藏不足5秒时保持雨幕。下雨时循环播放《雨爱》，关闭雨幕同时停止音乐。',
               bg=COLORS['panel_alt'], fg=COLORS['muted'], anchor='w', justify=LEFT,
               wraplength=650).pack(fill=X, pady=(4,0))
         self._refresh_rain_buttons()

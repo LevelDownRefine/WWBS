@@ -42,6 +42,8 @@ class RainTests(unittest.TestCase):
                     thickness = max(3, round(height*.004))
                     image[y:y+thickness,left:right] = (180,180,180)
                     image[y:y+thickness,left:left+round((right-left)*remaining)] = (218,75,58)
+                    lower = y+round(height*.019)
+                    image[lower:lower+thickness,left:right] = (215,215,215)
                     self.assertTrue(boss_bar_present(Image.fromarray(image)))
 
     def test_bright_scene_small_enemy_bar_and_bottom_player_bar_do_not_trigger(self):
@@ -58,14 +60,33 @@ class RainTests(unittest.TestCase):
                 with self.subTest(size=(width,height)):
                     strip = source.resize((width, round(height*.11)), Image.Resampling.LANCZOS)
                     self.assertTrue(boss_bar_present(strip, (width,height)))
-                    # The white lower bar remains visible when little health is left.
+                    # A nearly empty main track still has the same two-track HUD.
                     strip.paste((40,75,80), (round(width*.34),round(height*.047),
                                            round(width*.67),round(height*.065)))
+                    self.assertFalse(boss_bar_present(strip, (width,height)))
+                    strip.paste((175,175,175), (round(width*.355),round(height*.054),
+                                              round(width*.645),round(height*.059)))
+                    strip.paste((218,75,58), (round(width*.355),round(height*.054),
+                                            round(width*.370),round(height*.059)))
                     self.assertTrue(boss_bar_present(strip, (width,height)))
                     # A name, the minimap and the scene without either bar are insufficient.
                     strip.paste((40,75,80), (round(width*.34),round(height*.065),
                                            round(width*.67),round(height*.080)))
                     self.assertFalse(boss_bar_present(strip, (width,height)))
+
+    def test_mob_bars_cannot_trigger_boss_rain_even_when_long_and_at_top(self):
+        for width,height in ((1280,720),(1920,1080),(2560,1440)):
+            for left,right in ((.32,.68),(.20,.52),(.43,.56)):
+                for white_track in (False,True):
+                    with self.subTest(size=(width,height),left=left,white_track=white_track):
+                        pixels = np.full((round(height*.11),width,3),30,dtype=np.uint8)
+                        y,thickness = round(height*.052),max(3,round(height*.005))
+                        pixels[y:y+thickness,round(width*left):round(width*right)] = (218,75,58)
+                        if white_track:
+                            # Ordinary enemies may have a second short stagger bar.
+                            lower=y+round(height*.019)
+                            pixels[lower:lower+thickness,round(width*.43):round(width*.57)] = 215
+                        self.assertFalse(boss_bar_present(Image.fromarray(pixels),(width,height)))
 
     def test_boss_rain_stops_after_five_seconds_and_reappearance_resets_timer(self):
         gate = BossRainGate()
