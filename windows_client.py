@@ -328,7 +328,8 @@ class ClientWindowController:
             or not self._capture_has_content(image)
             or self._capture_is_desktop_copy(image, bbox)
         ):
-            image, bbox = self._capture_foreground_client(tolerate_blank=tolerate_blank)
+            image, bbox = (self._capture_foreground_client(tolerate_blank=True) if tolerate_blank
+                           else self._capture_foreground_client())
             self.last_screen_bbox = bbox
             method = "foreground"
 

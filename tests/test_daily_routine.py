@@ -109,14 +109,13 @@ class DailyRoutineTests(unittest.TestCase):
         self.assertIs(result, candidate)
         runner.matcher.find_fast.assert_called_once()
 
-    def test_pet_menu_exposes_daily_weekly_and_4c_commands(self):
+    def test_pet_menu_exposes_daily_weekly_and_new_4c_cycle_commands(self):
         labels = dict(DesktopPet.COMMAND_LABELS)
         self.assertEqual(labels["周常拿满奖励"], "run_rewards")
         self.assertEqual(labels["周常拿满星声"], "run_astrite")
         self.assertEqual(labels["一键日常（2轮双倍）"], "run_daily")
-        self.assertEqual(labels["4C刷取"], "run_4c_custom")
-        self.assertNotIn("4C刷取（10次）", labels)
-        self.assertNotIn("4C刷取（自定义次数）", labels)
+        self.assertEqual(labels["4C刷取（10次）"], "run_4c_10")
+        self.assertEqual(labels["4C刷取（自定义次数）"], "run_4c_custom")
         self.assertNotIn("检测游戏窗口", labels)
         self.assertNotIn("4C刷取（5次）", labels)
         self.assertNotIn("启动（拿满奖励）", labels)

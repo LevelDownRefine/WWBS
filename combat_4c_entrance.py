@@ -1,194 +1,265 @@
-"""Configuration and navigation for the optional 4C boss challenge entry."""
-import time
+"""Verified entrance for the separate Warsong shortcut, based on PR #18."""
+from dataclasses import dataclass
 from pathlib import Path
+import re
+import time
 
+import numpy as np
 from PIL import Image
+
+from boss_rain import boss_bar_present
+from windows_ocr import WindowsOcr
 
 
 BOSS_AVATARS = {
-    "定序诸理之律": "warsong_dingxu_zhuli.png",
-    "失坠困智之庭": "warsong_shizhui_kunzhi.png",
-    "虚妄诞生之神": "warsong_xuwang_dansheng.png",
+    '定序诸理之律': 'warsong_dingxu_zhuli.png',
+    '失坠困智之庭': 'warsong_shizhui_kunzhi.png',
+    '虚妄诞生之神': 'warsong_xuwang_dansheng.png',
 }
-NO_BOSS_CHALLENGE = "无"
-BOSS_CHALLENGE_OPTIONS = (NO_BOSS_CHALLENGE, *BOSS_AVATARS)
+
+
+def normalized(text):
+    return re.sub(r'[^\w]', '', str(text)).lower()
+
+
+@dataclass(frozen=True)
+class TextBox:
+    text: str
+    x: float
+    y: float
+    width: float
+    height: float
+
+    @property
+    def center(self):
+        return round(self.x+self.width/2), round(self.y+self.height/2)
+
+
+@dataclass
+class EntranceFrame:
+    image: object
+    lines: list
+    battle: bool = False
+
+    def find(self, *texts, region=(0,0,1,1)):
+        width, height = self.image.size
+        for line in self.lines:
+            chars, owners = '', []
+            for word in line.get('words', []):
+                value = normalized(word.get('text', ''))
+                chars += value
+                owners.extend([word]*len(value))
+            for text in texts:
+                token = normalized(text)
+                matches = list(re.finditer(re.escape(token),chars)) if token else []
+                if not matches:
+                    continue
+                for match in matches:
+                    words = owners[match.start():match.end()]
+                    left, top = min(w['x'] for w in words), min(w['y'] for w in words)
+                    right = max(w['x']+w['width'] for w in words)
+                    bottom = max(w['y']+w['height'] for w in words)
+                    # The complete label must be visible, including its margin.
+                    if (max(4,width*region[0]) <= left < right <= min(width-4,width*region[2])
+                            and max(4,height*region[1]) <= top < bottom <= min(height-4,height*region[3])):
+                        return TextBox(text,left,top,right-left,bottom-top)
+        return None
 
 
 class BossChallengeEntrance:
-    DEFAULT_LEVEL = "80"
-    LEVEL_ROWS = {"80": 0.487, "90": 0.565}
+    LEVELS = ('80','90')
+    DEFAULT_LEVEL = '80'
     DEFAULT_TARGET = next(iter(BOSS_AVATARS))
-    _RUNTIME_SCREENSHOT = Path(__file__).resolve().parent / "_runtime_screenshot.png"
-    BOSS_ENTER_BATTLE_TIMEOUT = 60.0
-    BOSS_ENTER_BATTLE_POLL = 0.5
-    BOSS_ENTER_BATTLE_CONFIRMATIONS = 2
-    BOSS_CHALLENGE_LEVEL_X = 0.125
-    BOSS_ENTRY_TIMEOUT = 8.0
-    BOSS_CHALLENGE_CONFIRM = (0.800, 0.907)
-    BOSS_CHALLENGE_START = (0.859, 0.919)
-    BOSS_BOOK_CATEGORY = (0.24, 0.615)
-    BOSS_BOOK_TAB = (0.0385, 0.296)
-    BOSS_CHALLENGE_X = 0.888
-    BOSS_AVATAR_REGION = (0.385, 0.31, 0.464, 0.82)
-    BOSS_AVATAR_THRESHOLD = 0.78
-    BOSS_NAME_THRESHOLD = 0.015
-    BOSS_BAR_TRACK_THRESHOLD = 0.18
+    POLL = .20
+    RETRY_DELAY = 2.0
+    MAX_CLICKS = 3
+    STEP_TIMEOUT = 15.0
 
-    def __init__(
-        self, enabled: bool = False, level: str | None = None,
-        target: str | None = None,
-    ):
-        """初始化战歌重奏首领入口。
+    def __init__(self, target=None, level=None, *, ocr_factory=WindowsOcr):
+        self.target = target if isinstance(target,str) and target in BOSS_AVATARS else self.DEFAULT_TARGET
+        self.level = level if isinstance(level,str) and level in self.LEVELS else self.DEFAULT_LEVEL
+        self.ocr_factory = ocr_factory
+        self.ocr = None
+        self.screenshot = Path(__file__).resolve().parent/'_warsong_screenshot.png'
 
-        Args:
-            enabled: 是否在 4C 刷取前进入指定首领。
-            level: 战歌重奏的推荐等级；无效时使用默认等级。
-            target: 要挑战的首领名称；无效时使用默认首领。
+    def _capture(self, runner):
+        try:
+            runner.controller.screencap(self.screenshot, bring_to_front=True, tolerate_blank=True)
+        except TypeError:
+            runner._capture_for_matching(self.screenshot)
+        with Image.open(self.screenshot) as source:
+            image = source.convert('RGB')
+        width, height = image.size
+        battle = runner._overworld_hud_ready(self.screenshot) and boss_bar_present(
+            image.crop((0,0,width,round(height*.11))), image.size)
+        if battle or self.ocr is None or np.asarray(image.resize((80,45))).std() < 6:
+            lines = []
+        else:
+            lines = self.ocr.recognize(self.screenshot, cancelled=runner.stop_event.is_set)
+        return EntranceFrame(image,lines,bool(battle))
 
-        Raises:
-            ValueError: 开关类型无效。
-        """
-        if type(enabled) is not bool:
-            raise ValueError("战歌重奏开关必须是布尔值。")
-        self.enabled = enabled
-        self.level = level if isinstance(level, str) and level in self.LEVEL_ROWS else self.DEFAULT_LEVEL
-        self.target = target if isinstance(target, str) and target in BOSS_AVATARS else self.DEFAULT_TARGET
-
-    def wait_for_battle(self, runner, timeout: float | None = None) -> bool:
-        """等待副本加载完成并确认进入战斗。
-
-        Args:
-            runner: 提供截图、首领状态检测和停止信号的任务运行器。
-            timeout: 最长等待秒数；为 None 时使用默认超时时间。
-
-        Returns:
-            检测到首领名称或血条时返回 True；取消或超时时返回 False。
-        """
-        screenshot = self._RUNTIME_SCREENSHOT
-        limit = self.BOSS_ENTER_BATTLE_TIMEOUT if timeout is None else timeout
-        started = time.monotonic()
-        last_progress = started
-        confirmations = 0
-        runner.log(f"    战歌重奏：副本正在加载，等待进入战斗（最多 {limit:.0f} 秒）。")
-        while time.monotonic() - started < limit:
+    def _transition(self, runner, label, source, action, destination, *, timeout=None):
+        """Retry only while the old page is still verified; never advance on a timer."""
+        deadline = time.monotonic()+(self.STEP_TIMEOUT if timeout is None else timeout)
+        attempts, source_frames, ready_frames = 0, 0, 0
+        previous_source = None
+        last_click = float('-inf')
+        while time.monotonic() < deadline:
             if runner.stop_event.is_set():
-                return False
-            if self._loading_frame_has_boss_header(runner, screenshot):
-                confirmations += 1
-                if confirmations >= self.BOSS_ENTER_BATTLE_CONFIRMATIONS:
-                    elapsed = time.monotonic() - started
-                    runner.log(f"    战歌重奏：已进入战斗，检测到首领名字/血条（用时 {elapsed:.1f} 秒）。")
-                    return True
-            else:
-                confirmations = 0
-                now = time.monotonic()
-                if now - last_progress >= 10.0:
-                    last_progress = now
-                    runner.log(f"    战歌重奏：仍在加载，已等待 {now - started:.0f} 秒。")
-            runner._sleep_interruptible(self.BOSS_ENTER_BATTLE_POLL)
-        runner.log(f"    战歌重奏：等待进入战斗超时（{limit:.0f} 秒），未检测到首领名字/血条。")
-        return False
+                raise InterruptedError('战歌重奏已停止。')
+            frame = self._capture(runner)
+            ready = destination(frame)
+            ready_frames = ready_frames+1 if ready else 0
+            if ready_frames >= 2:
+                runner.log(f'    战歌重奏：已确认{label}。')
+                return frame
+            current = source(frame) if not ready else None
+            # Text anchors must remain in place in two fresh screenshots.
+            anchor = current.center if isinstance(current,TextBox) else current
+            stable = (current and previous_source is not None and
+                      (anchor == previous_source or (isinstance(anchor,tuple) and
+                       isinstance(previous_source,tuple) and
+                       max(abs(a-b) for a,b in zip(anchor,previous_source)) <= 4)))
+            source_frames = source_frames+1 if stable else int(bool(current))
+            previous_source = anchor if current else None
+            if (source_frames >= 2 and attempts < self.MAX_CLICKS and
+                    time.monotonic()-last_click >= self.RETRY_DELAY):
+                if runner.stop_event.is_set():
+                    raise InterruptedError('战歌重奏已停止。')
+                action(frame,current)
+                attempts += 1
+                last_click = time.monotonic()
+                source_frames = 0
+                runner.log(f'    战歌重奏：{label}，等待页面确认（点击 {attempts}/{self.MAX_CLICKS}）。')
+            runner._sleep_interruptible(self.POLL)
+        raise RuntimeError(f'战歌重奏「{label}」未能确认，已停止；请检查当前游戏页面后重试。')
 
-    def _loading_frame_has_boss_header(self, runner, screenshot: Path) -> bool:
-        """截取副本加载画面并检查首领信息。
+    @staticmethod
+    def _guide(frame):
+        return frame.find('活跃行迹','索拉指南','素材获取','讨伐强敌',region=(0,.01,.40,.18))
 
-        Args:
-            runner: 提供窗口截图和首领状态检测的任务运行器。
-            screenshot: 保存本次截图的路径。
+    @staticmethod
+    def _category(frame):
+        return frame.find('战歌重奏',region=(.08,.16,.37,.86))
 
-        Returns:
-            检测到首领名字或完整血条轨道时返回 True。
-        """
-        # 加载阶段可能短暂出现全黑帧，这里只允许入口等待过程跳过空白截图校验。
-        runner.controller.screencap(
-            screenshot, bring_to_front=not runner.dry_run, tolerate_blank=True,
-        )
-        return (
-            runner._boss_name_ratio(screenshot) >= self.BOSS_NAME_THRESHOLD
-            or runner._boss_bar_track_score(screenshot) >= self.BOSS_BAR_TRACK_THRESHOLD
-        )
+    @staticmethod
+    def _single(frame):
+        return frame.find('单人挑战',region=(.62,.78,.98,.98))
 
-    def enter(self, runner) -> bool:
-        """进入指定的战歌重奏首领并等待战斗开始。
+    @staticmethod
+    def _start(frame):
+        return frame.find('开启挑战',region=(.60,.78,.98,.98))
 
-        Args:
-            runner: 提供游戏输入、截图检测和停止信号的任务运行器。
-
-        Returns:
-            成功进入战斗或入口未启用时返回 True；任务取消时返回 False。
-
-        Raises:
-            RuntimeError: 未找到目标首领，或等待进入战斗超时。
-        """
-        if runner.stop_event.is_set():
-            return False
-        if not self.enabled:
-            return True
-        runner.log("    战歌重奏：打开索拉指南。")
-        runner.controller.press_key("F2", 100)
-        runner._sleep_interruptible(1.5)
-        for label, position in (
-            ("切换到「讨伐强敌」标签", self.BOSS_BOOK_TAB),
-            ("选择「战歌重奏」分类", self.BOSS_BOOK_CATEGORY),
-        ):
-            if runner.stop_event.is_set():
-                return False
-            runner.log(f"    战歌重奏：{label}。")
-            runner._tap_ratio(*position, 0.8)
-
-        deadline = time.monotonic() + self.BOSS_ENTRY_TIMEOUT
-        row_ratio = None
-        while time.monotonic() < deadline and not runner.stop_event.is_set():
-            row_ratio = self.entry_row_ratio(runner)
-            if row_ratio is not None:
-                break
-            runner._sleep_interruptible(self.BOSS_ENTER_BATTLE_POLL)
-        if runner.stop_event.is_set():
-            return False
-        if row_ratio is None:
-            raise RuntimeError(f"未定位到「{self.target}」条目，已停止4C刷取。")
-
-        for label, position, pause in (
-            (f"挑战「{self.target}」", (self.BOSS_CHALLENGE_X, row_ratio), 2.0),
-            (f"选择推荐等级{self.level}",
-             (self.BOSS_CHALLENGE_LEVEL_X, self.LEVEL_ROWS[self.level]), 0.5),
-            ("点击单人挑战", self.BOSS_CHALLENGE_CONFIRM, 1.0),
-            ("点击开启挑战", self.BOSS_CHALLENGE_START, 2.0),
-        ):
-            if runner.stop_event.is_set():
-                return False
-            runner.log(f"    战歌重奏：{label}。")
-            runner._tap_ratio(*position, pause)
-        if runner.stop_event.is_set():
-            return False
-        if self.wait_for_battle(runner):
-            return not runner.stop_event.is_set()
-        if runner.stop_event.is_set():
-            return False
-        raise RuntimeError("战歌重奏进入战斗超时，已停止4C刷取；请检查游戏画面后重试。")
-
-    def entry_row_ratio(self, runner) -> float | None:
-        """根据首领头像定位对应的挑战条目。
-
-        Args:
-            runner: 提供截图和模板匹配能力的任务运行器。
-
-        Returns:
-            「直接挑战」按钮的纵坐标比例；未找到首领头像时返回 None。
-        """
-        screenshot = self._RUNTIME_SCREENSHOT
-        template = BOSS_AVATARS[self.target]
-        runner._capture_for_matching(screenshot)
-        with Image.open(screenshot) as captured:
-            width, height = captured.size
-        left, top, right, bottom = self.BOSS_AVATAR_REGION
-        region = (
-            round(width * left), round(height * top),
-            round(width * right), round(height * bottom),
-        )
-        match = runner._find_daily_template(
-            template, threshold=self.BOSS_AVATAR_THRESHOLD, region=region, screenshot=screenshot,
-        )
-        if match is None:
+    def _row_button(self, frame, runner):
+        if not self._guide(frame) or not self._category(frame):
             return None
-        return (match.y + match.height / 2) / height
+        width,height = frame.image.size
+        target = frame.find(self.target,region=(.35,.24,.79,.86))
+        if target is None:
+            # Retain the contributor's native avatar templates as a text fallback.
+            target = runner._find_daily_template(
+                BOSS_AVATARS[self.target],threshold=.82,
+                region=(round(width*.37),round(height*.24),round(width*.49),round(height*.86)),
+                screenshot=self.screenshot)
+        if target is None:
+            return None
+        y = target.center[1]/height
+        return frame.find('直接挑战','前往',region=(.73,max(.24,y-.07),.98,min(.87,y+.07)))
+
+    def _level_row(self, frame):
+        if not self._single(frame):
+            return None
+        return frame.find('推荐等级'+self.level,'等级'+self.level,
+                          region=(.02,.22,.30,.82))
+
+    def _selected_level(self, frame):
+        row = self._level_row(frame)
+        if row is None:
+            return False
+        # A difficulty summary in the details panel is an explicit confirmation.
+        if frame.find('推荐等级'+self.level,'等级'+self.level,
+                      region=(.31,.16,.96,.78)):
+            return True
+        # Selected list rows use a pale plate; unselected rows are dark. Require
+        # its background on BOTH sides of the text, not bright glyphs alone.
+        return self._selection_plate(frame,row)
+
+    @staticmethod
+    def _selection_plate(frame, row):
+        width,height = frame.image.size
+        y1,y2 = max(0,round(row.y)), min(height,round(row.y+row.height))
+        pixels = np.asarray(frame.image)
+        pads = (pixels[y1:y2,max(0,round(row.x-width*.025)):max(0,round(row.x-width*.006))],
+                pixels[y1:y2,min(width,round(row.x+row.width+width*.006)):
+                       min(width,round(row.x+row.width+width*.025))])
+        return all(pad.size and float((pad.min(axis=2)>155).mean()) > .65 for pad in pads)
+
+    def _warsong_list(self, frame, runner):
+        category = self._category(frame)
+        if not category or not self._guide(frame):
+            return False
+        if self._selection_plate(frame,category):
+            return True
+        if frame.find('战歌重奏',region=(.36,.16,.97,.86)):
+            return True
+        for name in BOSS_AVATARS:
+            if frame.find(name,region=(.35,.24,.79,.86)):
+                return True
+        return bool(self._row_button(frame,runner))
+
+    def _tap(self, runner, _frame, box):
+        runner.controller.tap(*box.center)
+
+    def _find_row(self, runner):
+        # Search a bounded list. A clipped row is scrolled fully into view before
+        # its button can qualify; never click at an inferred fixed X coordinate.
+        for attempt in range(9):
+            frame = self._capture(runner)
+            if self._row_button(frame,runner):
+                return
+            if runner.stop_event.is_set():
+                raise InterruptedError('战歌重奏已停止。')
+            if not self._guide(frame) or not self._category(frame):
+                raise RuntimeError('战歌重奏列表尚未确认，已停止搜索首领。')
+            direction = -1 if attempt < 3 else 1
+            runner._swipe_ratio(.69,.48 if direction < 0 else .73,
+                                .69,.76 if direction < 0 else .40,380,.30)
+        raise RuntimeError(f'未找到完整可点击的「{self.target}」条目，已停止战歌重奏。')
+
+    def wait_for_battle(self, runner, timeout=60):
+        self._transition(runner,'进入战斗',lambda _frame:None,lambda *_args:None,
+                         lambda frame:frame.battle,timeout=timeout)
+
+    def enter(self, runner):
+        if runner.dry_run:
+            runner.log(f'    干运行：战歌重奏 {self.target}，等级 {self.level}；不操作游戏。')
+            return True
+        try:
+            self.ocr = self.ocr_factory()
+            self._transition(runner,'打开索拉指南',
+                lambda frame:runner._overworld_hud_ready(self.screenshot) and not frame.battle,
+                lambda *_args:runner.controller.press_key('F2',70),self._guide)
+            self._transition(runner,'讨伐强敌页面',self._guide,
+                lambda frame,_box:runner.controller.tap(round(frame.image.width*.0385),
+                                                       round(frame.image.height*.296)),self._category)
+            self._transition(runner,'战歌重奏分类',self._category,
+                lambda frame,box:self._tap(runner,frame,box),
+                lambda frame:self._warsong_list(frame,runner),timeout=8)
+            self._find_row(runner)
+            self._transition(runner,'首领挑战页面',lambda frame:self._row_button(frame,runner),
+                             lambda frame,box:self._tap(runner,frame,box),self._single)
+            self._transition(runner,f'推荐等级{self.level}',self._level_row,
+                             lambda frame,box:self._tap(runner,frame,box),self._selected_level)
+            self._transition(runner,'队伍与开启挑战页面',
+                             lambda frame:self._single(frame) if self._selected_level(frame) else None,
+                             lambda frame,box:self._tap(runner,frame,box),self._start)
+            self._transition(runner,'进入战斗',self._start,
+                             lambda frame,box:self._tap(runner,frame,box),
+                             lambda frame:frame.battle,timeout=60)
+            return True
+        except InterruptedError:
+            return False
+        finally:
+            if self.ocr is not None:
+                self.ocr.close()
+                self.ocr = None

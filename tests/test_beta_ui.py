@@ -27,9 +27,7 @@ class BetaUiTests(unittest.TestCase):
             parent = tk.Frame(instance.start_left_canvas)
             instance.start_left_canvas.create_window(0, 0, window=parent, anchor="nw", width=440)
             picker = instance._make_start_action_card(
-                parent, "daily", "每日任务", "拖动测试", run_task, "daily",
-                (("", instance.daily_zone, app.DAILY_ZONE_NAMES,
-                  instance._save_daily_zone),))
+                parent, "daily", "每日任务", "拖动测试", run_task, "daily", with_zone=True)
             instance._make_start_action_card(
                 parent, "weekly_rewards", "周常奖励", "第二项", run_task, "weekly")
             instance._repack_start_action_cards()
@@ -111,7 +109,6 @@ class BetaUiTests(unittest.TestCase):
                 for method in ("_load_config", "_refresh_templates", "_drain_logs", "_start_stop_hotkey"):
                     stack.enter_context(patch.object(app.App, method))
                 stack.enter_context(patch.object(app, "ChatHistory", return_value=ChatHistory(Path(tmp) / "history.json")))
-                stack.enter_context(patch.object(app, "COMBAT_CONFIG", Path(tmp) / "combat.json"))
                 instance = app.App(root)
                 labels = []
                 def visit(widget):
@@ -124,9 +121,7 @@ class BetaUiTests(unittest.TestCase):
                 visit(root)
                 for removed in ("ADB 路径", "设备 ID", "任务配置", "保存一张当前截图", "查看程序目录"):
                     self.assertNotIn(removed, labels)
-                self.assertIn("4C刷取", labels)
-                self.assertNotIn("4C刷取（10次）", labels)
-                self.assertNotIn("4C刷取（自定义次数）", labels)
+                self.assertIn("4C刷取（自定义次数）", labels)
                 self.assertTrue(any("关闭后恢复主动发言" in text for text in labels))
                 def texts_under(widget):
                     result = []
@@ -168,19 +163,22 @@ class BetaUiTests(unittest.TestCase):
                     return None
                 weekly_card = card_with_title(instance.start_tab, "周常拿满奖励")
                 self.assertIsNotNone(weekly_card)
-                self.assertEqual(len(instance._start_action_cards), 5)
+                self.assertEqual(len(instance._start_action_cards), 7)
+                self.assertIn('4C刷取（10次）',start_texts)
+                self.assertIn('4C刷取（自定义次数）',start_texts)
+                self.assertIn('战歌重奏自动刷取',start_texts)
+                auto_card=instance._start_action_cards['boss_challenge']
+                inputs=[control for row in auto_card.winfo_children()
+                        for control in row.winfo_children() if isinstance(control,tk.Entry)]
+                self.assertEqual(len(inputs),1)
+                self.assertEqual(inputs[0].get(),'30')
                 self.assertEqual(instance._start_action_order[0], "weekly_rewards")
                 daily_card = instance._start_action_cards["daily"]
-                self.assertTrue(any(
-                    getattr(control, "_is_rounded_picker", False)
-                    for row in daily_card.winfo_children()
-                    for control in row.winfo_children()
-                ))
+                self.assertTrue(any(getattr(child, "_is_rounded_picker", False)
+                                    for row in daily_card.winfo_children() for child in row.winfo_children()))
                 self.assertEqual(
-                    instance._normalize_start_action_order([
-                        "daily", "combat_4c_custom", "combat_4c_10", "unknown",
-                    ]),
-                    ["daily", "combat_4c", "weekly_rewards", "weekly_astrite", "tower"],
+                    instance._normalize_start_action_order(["daily", "daily", "unknown"]),
+                    ["daily", "weekly_rewards", "weekly_astrite", "combat_4c_10", "combat_4c_custom", "boss_challenge", "tower"],
                 )
                 second = instance._start_action_cards["weekly_astrite"]
                 third = instance._start_action_cards["daily"]
@@ -215,33 +213,6 @@ class BetaUiTests(unittest.TestCase):
                     self.assertIn(moved, start_texts)
                     self.assertNotIn(moved, settings_texts)
                 self.assertNotIn("保存键位", labels)
-                four_c_card = instance._start_action_cards["combat_4c"]
-                card_controls = [
-                    control
-                    for row in four_c_card.winfo_children()
-                    for control in row.winfo_children()
-                ]
-                self.assertEqual(
-                    sum(bool(getattr(control, "_is_rounded_picker", False))
-                        for control in card_controls),
-                    2,
-                )
-                self.assertTrue(any(getattr(control, "_is_rounded_entry", False)
-                                    for control in card_controls))
-                self.assertEqual(instance.boss_challenge_target.get(), "无")
-                count_shell = next(
-                    control for control in card_controls
-                    if getattr(control, "_is_rounded_entry", False)
-                )
-                count_entry = next(
-                    child for child in count_shell.winfo_children()
-                    if isinstance(child, tk.Entry)
-                )
-                root.deiconify()
-                root.update()
-                count_entry.event_generate("<Button-1>", x=8, y=8)
-                root.update()
-                self.assertIs(root.focus_get(), count_entry)
                 instance.agent_provider.set("DeepSeek API")
                 instance._change_agent_provider()
                 self.assertEqual(instance.cartethyia_agent_endpoint.get(), "https://api.deepseek.com")
