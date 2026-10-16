@@ -22,26 +22,64 @@ def boss_bar_present(top_strip, game_size=None):
     high, low = region.max(axis=2), region.min(axis=2)
     health = (red > 140) & (red > green*1.12) & (red > blue*1.22)
     track = (high > 105) & (high-low < 45)
+    white = (low > 145) & (high-low < 45)
     luminance = region.mean(axis=2)
     distance = max(3, round(height*.006))
-    # A bar has a thin horizontal edge against the scene, not a whole bright
-    # sky band. Long names, small enemy bars and the player's bottom bar fail.
+    bands = []
+    # Boss HUD has two thin, centered tracks with aligned ends. A single long
+    # enemy bar (even near the top), names and bright scenery are insufficient.
     for y in range(distance, region.shape[0]-distance):
         contrast = np.maximum(abs(luminance[y]-luminance[y-distance]),
                               abs(luminance[y]-luminance[y+distance])) > 18
+        color_edge = np.maximum(abs(region[y]-region[y-distance]),
+                                abs(region[y]-region[y+distance])).max(axis=1) > 45
+        contrast |= color_edge
         row = (health[y] | track[y]) & contrast
         positions = np.flatnonzero(row)
         if not len(positions):
             continue
         for group in np.split(positions, np.flatnonzero(np.diff(positions) > max(3, width*.003))+1):
-            span = int(group[-1]-group[0]+1)
-            if span >= width*.22 and len(group)/span > .75:
+            left, right = int(group[0]), int(group[-1])
+            span = right-left+1
+            center = (left+right)/2+round(width*.22)
+            if not width*.25 <= span <= width*.44 or len(group)/span < .85:
+                continue
+            if abs(center-width*.5) > width*.035:
+                continue
+            neutral = float(white[y, left:right+1].mean())
+            if bands and y-bands[-1]['bottom'] <= 2:
+                band = bands[-1]
+                band['bottom'] = y
+                band['rows'].append((left, right, neutral))
+            else:
+                bands.append({'top':y, 'bottom':y, 'rows':[(left,right,neutral)]})
+    offset = round(height*.032)
+    for main in bands:
+        top, bottom = main['top']+offset, main['bottom']+offset
+        if not height*.038 <= top <= height*.068:
+            continue
+        if not max(2, round(height*.001)) <= bottom-top+1 <= height*.015:
+            continue
+        main_left, main_right, _ = np.median(main['rows'], axis=0)
+        for lower in bands:
+            gap = lower['top']-main['bottom']
+            separation = lower['top']-main['top']
+            if not height*.004 <= gap or not height*.010 <= separation <= height*.035:
+                continue
+            thickness = lower['bottom']-lower['top']+1
+            if not max(2, round(height*.001)) <= thickness <= height*.012:
+                continue
+            lower_left, lower_right, neutral = np.median(lower['rows'], axis=0)
+            if neutral < .80:
+                continue
+            if max(abs(main_left-lower_left), abs(main_right-lower_right)) <= width*.015:
                 return True
     return False
 
 
+
 class BossRainGate:
-    def __init__(self, grace=8.0):
+    def __init__(self, grace=5.0):
         self.grace, self.active, self.last_seen = grace, False, float('-inf')
 
     def update(self, present, now):
@@ -94,7 +132,7 @@ class BossRainWatcher:
             except queue.Empty:
                 pass
             self.results.put_nowait(active)
-            self.stop.wait(.7)
+            self.stop.wait(.25)
 
     def _poll(self):
         self._job = None

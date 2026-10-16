@@ -10,8 +10,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 
-RAIN_LEVELS = {'轻雨': (45, 18), '中雨': (90, 42), '大雨': (160, 75)}
-RAIN_STRENGTHS = {'柔和': 135, '标准': 190, '明显': 245}
+RAIN_LEVELS = {'轻雨': (55, 26), '中雨': (115, 60), '大雨': (200, 105)}
+RAIN_STRENGTHS = {'柔和': 155, '标准': 220, '明显': 255}
 RAIN_MODES = ('关闭', '持续下雨', 'Boss战自动')
 DEFAULT_RAIN = {'mode': '关闭', 'level': '中雨', 'strength': '标准', 'volume': 30}
 
@@ -50,13 +50,13 @@ def water_drop(radius: int):
     shadow = np.maximum(-illumination, 0)*rim
     glint = np.exp(-((x+.32)**2+(y+.42)**2)/.018)
     lower_glint = np.exp(-((x-.32)**2+(y-.7)**2)/.035)
-    alpha = (body*11+highlight*115+shadow*70+glint*165+lower_glint*45)
+    alpha = (body*16+highlight*160+shadow*100+glint*205+lower_glint*65)
     alpha *= np.clip((1.04-distance)*14, 0, 1)
     pixels = np.zeros((height*scale, width*scale, 4), dtype=np.uint8)
     bright = np.clip(highlight+glint*2+lower_glint, 0, 1)
     for index, (low, high) in enumerate(((26, 230), (48, 246), (66, 255))):
         pixels[:, :, index] = (low+(high-low)*bright).astype(np.uint8)
-    pixels[:, :, 3] = np.clip(alpha, 0, 210).astype(np.uint8)
+    pixels[:, :, 3] = np.clip(alpha, 0, 235).astype(np.uint8)
     return Image.fromarray(pixels).resize((width, height), Image.Resampling.LANCZOS)
 
 
@@ -91,7 +91,7 @@ class RainScene:
         self.set_level(level)
 
     def _drop(self, initial=False):
-        radius = self.random.choices((2, 3, 4, 5, 6, 8, 10), (12, 18, 20, 18, 16, 10, 6))[0]
+        radius = self.random.choices((3, 4, 5, 6, 8, 10, 12), (12, 18, 20, 18, 16, 10, 6))[0]
         return GlassDrop(self.random.uniform(0, self.width),
                          self.random.uniform(0, self.height) if initial else -radius*4,
                          radius, self.random.uniform(.2, 5),
@@ -101,8 +101,8 @@ class RainScene:
     def _line(self, initial=False):
         return RainLine(self.random.uniform(0, self.width),
                         self.random.uniform(0, self.height) if initial else -30,
-                        self.random.uniform(120, 330), self.random.uniform(10, 30),
-                        self.random.randint(20, 48))
+                        self.random.uniform(120, 330), self.random.uniform(14, 36),
+                        self.random.randint(40, 80))
 
     def set_level(self, level):
         level = level if level in RAIN_LEVELS else '中雨'
@@ -142,7 +142,7 @@ class RainScene:
                     drop.wait = self.random.uniform(.2, 1.1)
             trail = drop.trail
             for before, after in zip(trail, trail[1:]):
-                alpha = round(26*max(0, 1-before[2]/2.4))
+                alpha = round(48*max(0, 1-before[2]/2.4))
                 draw.line((before[0], before[1], after[0], after[1]),
                           fill=(139, 173, 193, alpha), width=max(1, drop.radius//3))
                 draw.line((before[0]-.6, before[1], after[0]-.6, after[1]),
