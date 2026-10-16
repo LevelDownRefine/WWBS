@@ -163,14 +163,23 @@ class BetaUiTests(unittest.TestCase):
                     return None
                 weekly_card = card_with_title(instance.start_tab, "周常拿满奖励")
                 self.assertIsNotNone(weekly_card)
-                self.assertEqual(len(instance._start_action_cards), 6)
+                self.assertEqual(len(instance._start_action_cards), 7)
+                self.assertIn('4C刷取（10次）',start_texts)
+                self.assertIn('4C刷取（自定义次数）',start_texts)
+                self.assertIn('战歌重奏自动刷取',start_texts)
+                auto_card=instance._start_action_cards['boss_challenge']
+                inputs=[entry for row in auto_card.winfo_children()
+                        for control in row.winfo_children() for entry in control.winfo_children()
+                        if isinstance(entry,tk.Entry)]
+                self.assertEqual(len(inputs),1)
+                self.assertEqual(inputs[0].get(),'30')
                 self.assertEqual(instance._start_action_order[0], "weekly_rewards")
                 daily_card = instance._start_action_cards["daily"]
                 self.assertTrue(any(getattr(child, "_is_rounded_picker", False)
-                                    for child in daily_card.winfo_children()))
+                                    for row in daily_card.winfo_children() for child in row.winfo_children()))
                 self.assertEqual(
                     instance._normalize_start_action_order(["daily", "daily", "unknown"]),
-                    ["daily", "weekly_rewards", "weekly_astrite", "combat_4c_10", "combat_4c_custom", "tower"],
+                    ["daily", "weekly_rewards", "weekly_astrite", "combat_4c_10", "combat_4c_custom", "boss_challenge", "tower"],
                 )
                 second = instance._start_action_cards["weekly_astrite"]
                 third = instance._start_action_cards["daily"]

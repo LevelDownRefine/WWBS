@@ -270,7 +270,7 @@ class ClientWindowController:
             "ESCAPE": "ESC",
         }
         normalized = aliases.get(normalized, normalized)
-        if normalized in {"XBUTTON1", "XBUTTON2", "SPACE", "ESC"}:
+        if normalized in {"XBUTTON1", "XBUTTON2", "SPACE", "ESC", "F2"}:
             return normalized
         if len(normalized) == 1 and normalized.isascii() and normalized.isalnum():
             return normalized
@@ -285,6 +285,8 @@ class ClientWindowController:
             return 0x1B
         if normalized in {"XBUTTON1", "XBUTTON2"}:
             raise ValueError("鼠标侧键不能作为键盘事件发送。")
+        if normalized == "F2":
+            return 0x71
         if len(normalized) != 1 or not normalized.isascii() or not normalized.isalnum():
             raise ValueError(f"不支持的键盘按键: {key}")
         return ord(normalized)
@@ -307,7 +309,7 @@ class ClientWindowController:
         if sent != 1:
             raise RuntimeError("键盘操作发送失败，请尝试以管理员身份运行。")
 
-    def screencap(self, target: Path, bring_to_front: bool = False) -> str:
+    def screencap(self, target: Path, bring_to_front: bool = False, tolerate_blank: bool = False) -> str:
         self._ensure_window()
         if user32.IsIconic(self.hwnd):
             user32.ShowWindow(self.hwnd, SW_RESTORE)
@@ -326,7 +328,8 @@ class ClientWindowController:
             or not self._capture_has_content(image)
             or self._capture_is_desktop_copy(image, bbox)
         ):
-            image, bbox = self._capture_foreground_client()
+            image, bbox = (self._capture_foreground_client(tolerate_blank=True) if tolerate_blank
+                           else self._capture_foreground_client())
             self.last_screen_bbox = bbox
             method = "foreground"
 
@@ -398,7 +401,7 @@ class ClientWindowController:
         except (OSError, TypeError, ValueError):
             return None
 
-    def _capture_foreground_client(self) -> tuple[Image.Image, tuple[int, int, int, int]]:
+    def _capture_foreground_client(self, tolerate_blank: bool = False) -> tuple[Image.Image, tuple[int, int, int, int]]:
         already_front = user32.GetForegroundWindow() == self.hwnd and not user32.IsIconic(self.hwnd)
         self._focus_window()
         if user32.GetForegroundWindow() != self.hwnd:
@@ -414,7 +417,7 @@ class ClientWindowController:
             time.sleep(.03 if already_front and _attempt == 0 else .12)
             bbox = self._client_bbox()
             image = ImageGrab.grab(bbox=bbox, all_screens=True).convert("RGB")
-            if self._capture_has_content(image):
+            if self._capture_has_content(image) or tolerate_blank:
                 return image, bbox
         raise RuntimeError("游戏窗口已置前，但连续获取到空白画面。请确认游戏未最小化后重试。")
 

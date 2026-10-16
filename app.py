@@ -25,6 +25,7 @@ from PIL import Image, ImageDraw, ImageTk
 import numpy as np
 
 from image_matcher import TemplateMatcher
+from combat_4c_entrance import BOSS_AVATARS, BossChallengeEntrance
 from windows_client import ClientWindowController
 from desktop_pet import DesktopPet
 from chat_history import ChatHistory
@@ -101,7 +102,7 @@ DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
 APP_VERSION = "1.5.5 beta1"
-APP_BUILD = 4
+APP_BUILD = 5
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -200,6 +201,8 @@ UPDATE_HISTORY = [
 切人确认期间持续普攻，边识别边攻击；确认成功、战斗结束或停止时切回正常模块。
 软件内下载更新增加居中进度条、百分比与下载大小，校验和安装准备显示实际阶段，可取消下载。
 修复下载与校验失败：刷新包信息，连接中断支持重试和断点续传，SHA256不符重新下载。
+新增独立快捷任务「战歌重奏自动刷取」，支持三个Boss、80／90级和次数设置。
+进本每个页面连续确认后再继续，失败有限重试；正常游戏HUD与Boss长血条共同确认开战。原有4C入口保留。
 以后软件内更新仅检查正式版，自动跳过beta、alpha、rc及GitHub预发布；测试包可从GitHub手动下载。
 设置页主题设置上方新增“关闭 / 持续下雨 / Boss战自动”三档开关，每次启动默认关闭。
 雨幕覆盖整个桌面，显示玻璃水滴、水痕与细雨，支持鼠标穿透，不抢焦点。
@@ -1040,6 +1043,7 @@ class TaskRunner:
         rotation_presets: dict[str, list[dict]] | None = None,
         rotation_times: dict[str, dict] | None = None,
         rotation_orders: dict[str, list[int]] | None = None,
+        boss_challenge: BossChallengeEntrance | None = None,
     ):
         self.controller = controller
         self.log = log
@@ -1050,6 +1054,7 @@ class TaskRunner:
         self.combat_ultimate_key = combat_ultimate_key
         self.daily_zone_name = daily_zone_name
         self.daily_heal_enabled = bool(daily_heal_enabled)
+        self.boss_challenge = boss_challenge
         self.notice = notice or (lambda _message: None)
         self.rotation_modules = rotation_modules if rotation_modules is not None else active_modules(default_store())
         self.rotation_presets = rotation_presets or {}
@@ -1326,6 +1331,8 @@ class TaskRunner:
             f"大招键位 {ultimate_key}。"
         )
         try:
+            if self.boss_challenge is not None and not self.boss_challenge.enter(self):
+                return
             for cycle_index in range(1, cycle_count + 1):
                 if self.stop_event.is_set():
                     self.log("    收到停止信号，4C刷取已停止。")
@@ -1341,6 +1348,8 @@ class TaskRunner:
                     self.log(f"    已完成 {cycle_count} 轮战斗与吸收，停止4C刷取。")
                     return
                 self._restart_4c_challenge(cycle_index + 1)
+                if self.boss_challenge is not None:
+                    self.boss_challenge.wait_for_battle(self)
         finally:
             try:
                 self.controller.release_keys(("W", "A", "S", "D", "SPACE", "1", "2", "3", "4"))
@@ -4150,6 +4159,10 @@ class App:
                     getattr(self,key).set(value)
         self.combat_skill_key = StringVar(value=self._load_combat_skill_key())
         self.combat_ultimate_key = StringVar(value=self._load_combat_ultimate_key())
+        boss_options = self._load_boss_challenge_settings()
+        self.boss_challenge_target = StringVar(value=boss_options["target"])
+        self.boss_challenge_level = StringVar(value=boss_options["level"])
+        self.boss_challenge_count = StringVar(value=str(boss_options["count"]))
         self.daily_zone = StringVar(value=self._load_daily_zone())
         self.auto_shutdown_enabled = BooleanVar(value=self._load_auto_shutdown_enabled())
         self.pet_size = StringVar(value=f"{self._load_pet_size_percent()}%")
@@ -5858,7 +5871,7 @@ class App:
 
     @staticmethod
     def _normalize_start_action_order(saved) -> list[str]:
-        defaults = ["weekly_rewards", "weekly_astrite", "daily", "combat_4c_10", "combat_4c_custom", "tower"]
+        defaults = ["weekly_rewards", "weekly_astrite", "daily", "combat_4c_10", "combat_4c_custom", "boss_challenge", "tower"]
         if not isinstance(saved, list):
             return defaults
         ordered = []
@@ -5923,21 +5936,46 @@ class App:
             command()
 
     def _make_start_action_card(self, parent: Frame, key: str, title: str, detail: str,
-                                command, notice_key: str, with_zone: bool = False):
+                                command, notice_key: str, with_zone: bool = False, controls=()):
+        if with_zone:
+            controls = (("", self.daily_zone, DAILY_ZONE_NAMES, self._save_daily_zone),)
         title_line = tkfont.Font(root=self.root, family=FONT_FAMILY, size=11,
                                  weight="bold").metrics("linespace")
         detail_line = tkfont.Font(root=self.root, family=FONT_FAMILY, size=9).metrics("linespace")
-        height = max(86, 22 + title_line + detail_line + 14) + (44 if with_zone else 0)
+        header_height = max(86, 22 + title_line + detail_line + 14)
+        row_step = max(40, detail_line + 22)
+        row_top = header_height - 13
+        height = header_height + row_step * len(controls)
         card = Canvas(parent, height=height, width=360, bg=COLORS["panel"],
                       highlightthickness=0, cursor="hand2", takefocus=True)
         card._keep_canvas_style = True
         self._start_action_cards[key] = card
-        picker = None
-        picker_window = None
-        if with_zone:
-            picker = self._rounded_picker(card, self.daily_zone, DAILY_ZONE_NAMES,
-                                          self._save_daily_zone)
-            picker_window = card.create_window(55, 73, window=picker, anchor="nw")
+        control_rows = []
+        for index, (label, variable, values, on_change) in enumerate(controls):
+            row = Frame(card, bg=COLORS["panel_alt"])
+            if label:
+                Label(
+                    row, text=label, width=4, anchor="w",
+                    bg=COLORS["panel_alt"], fg=COLORS["muted"],
+                ).pack(side=LEFT)
+            if values is None:
+                widget = self._rounded_entry(row, textvariable=variable, width=8)
+                widget.bind("<Return>", on_change)
+                widget.bind("<FocusOut>", on_change, add="+")
+
+                def focus_entry(event) -> None:
+                    # 关闭下拉框后 Windows 可能暂时没有活动控件，需把焦点交还给输入框。
+                    self._close_rounded_picker()
+                    event.widget.focus_force()
+
+                widget.bind("<Button-1>", focus_entry)
+            else:
+                widget = self._rounded_picker(row, variable, values, on_change)
+            widget.pack(side=LEFT, fill=X, expand=True)
+            window = card.create_window(
+                55, row_top + index * row_step, window=row, anchor="nw",
+            )
+            control_rows.append((label, variable, values, widget, window))
 
         def draw(state: str = "default") -> None:
             card.delete("shape")
@@ -5968,8 +6006,8 @@ class App:
                              font=(FONT_FAMILY, 9, "bold"), tags="shape")
             card.create_text(width - 25, 34, text="›", fill=COLORS["text"],
                              font=(FONT_FAMILY, 19), tags="shape")
-            if picker_window is not None:
-                card.itemconfigure(picker_window, width=max(120, width - 80))
+            for _label, _variable, _values, _widget, window in control_rows:
+                card.itemconfigure(window, width=max(120, width - 80))
             card.tag_lower("shape")
 
         card.bind("<Configure>", lambda _event: draw())
@@ -6008,16 +6046,33 @@ class App:
                     kind = card.type(item)
                     options = {name: values[-1] for name, values in card.itemconfigure(item).items()}
                     getattr(surface, "create_" + kind)(*card.coords(item), **options)
-                if picker_window is not None:
+                if control_rows:
                     width = card.winfo_width()
-                    self._paint_rounded_card(surface, 55, 73, width - 25, 105, 9,
-                                             COLORS["line"])
-                    self._paint_rounded_card(surface, 56, 74, width - 26, 104, 8,
-                                             COLORS["panel"])
-                    surface.create_text(67, 89, text=self.daily_zone.get(), anchor="w",
-                                        fill=COLORS["text"], font=(FONT_FAMILY, 10))
-                    surface.create_text(width - 41, 89, text="⌄", fill=COLORS["muted"])
-                    card.itemconfigure(picker_window, state="hidden")
+                    for index, (label, variable, values, _widget, window) in enumerate(control_rows):
+                        top = row_top + index * row_step
+                        left = 55
+                        if label:
+                            surface.create_text(
+                                55, top + 16, text=label, anchor="w",
+                                fill=COLORS["muted"], font=(FONT_FAMILY, 10),
+                            )
+                            left = 91
+                        self._paint_rounded_card(
+                            surface, left, top, width - 25, top + 32, 9, COLORS["line"],
+                        )
+                        self._paint_rounded_card(
+                            surface, left + 1, top + 1, width - 26, top + 31, 8,
+                            COLORS["panel"],
+                        )
+                        surface.create_text(
+                            left + 12, top + 16, text=variable.get(), anchor="w",
+                            fill=COLORS["text"], font=(FONT_FAMILY, 10),
+                        )
+                        if values is not None:
+                            surface.create_text(
+                                width - 41, top + 16, text="⌄", fill=COLORS["muted"],
+                            )
+                        card.itemconfigure(window, state="hidden")
                 card._drag_ghost = ghost
                 card._drag_started = True
                 draw()
@@ -6046,13 +6101,13 @@ class App:
             if ghost is not None:
                 ghost.destroy()
                 card._drag_ghost = None
-            if picker_window is not None:
-                card.itemconfigure(picker_window, state="normal")
+            for _label, _variable, _values, _widget, window in control_rows:
+                card.itemconfigure(window, state="normal")
             draw("hover")
             if was_dragged:
                 self._save_start_action_order()
             elif not was_handle:
-                self._activate_start_action_card(card, event, command, notice_key, with_zone)
+                self._activate_start_action_card(card, event, command, notice_key, bool(control_rows))
 
         card.bind("<ButtonPress-1>", press)
         card.bind("<B1-Motion>", motion)
@@ -6060,7 +6115,7 @@ class App:
         card.bind("<Return>", lambda _event: command())
         card.bind("<space>", lambda _event: command())
         draw()
-        return picker
+        return control_rows[0][3] if control_rows else None
 
     def _build_theme_banner(self) -> None:
         definition = THEME_DEFINITIONS[self.theme_id]
@@ -6312,6 +6367,14 @@ class App:
                                      lambda: self._start_named_task_real("4C刷取", 10), "combat_4c")
         self._make_start_action_card(action_list, "combat_4c_custom", "4C刷取（自定义次数）", "运行前填写本次循环次数",
                                      self._start_custom_4c, "combat_4c")
+        self._make_start_action_card(
+            action_list, "boss_challenge", "战歌重奏自动刷取", "自动进本，使用4C战斗轴并吸收声骸",
+            self._start_boss_challenge, "boss_challenge", controls=(
+                ("关卡", self.boss_challenge_target, tuple(BOSS_AVATARS), self._save_boss_challenge_settings),
+                ("等级", self.boss_challenge_level, BossChallengeEntrance.LEVELS, self._save_boss_challenge_settings),
+                ("次数", self.boss_challenge_count, None, self._save_boss_challenge_settings),
+            ),
+        )
         self._make_start_action_card(action_list, "tower", "深塔挑战", "靠近光球后开战，挑战成功后停止",
                                      self._start_tower_challenge, "tower")
         self._repack_start_action_cards()
@@ -6429,6 +6492,13 @@ class App:
         return button
 
     def _show_run_notice(self, notice_key: str) -> None:
+        if notice_key == 'boss_challenge':
+            messagebox.showinfo('战歌重奏自动刷取',
+                '从可打开索拉指南的大世界开始。\n\n'
+                '选择关卡、80／90级及次数后，点击卡片标题运行。程序自动进本，使用4C战斗轴战斗并吸收声骸。\n\n'
+                '每一步确认成功才继续，无法确认会停止并说明原因。此入口支持定序诸理之律、失坠困智之庭和虚妄诞生之神。',
+                parent=self.root)
+            return
         notice = RUN_NOTICES.get(notice_key)
         if notice is None:
             return
@@ -9475,6 +9545,62 @@ class App:
             return
         self._start_worker([task])
 
+    @staticmethod
+    def _load_boss_challenge_settings():
+        try:
+            saved = json.loads(APP_SETTINGS_CONFIG.read_text(encoding="utf-8"))
+            values = saved.get("boss_challenge", {}) if isinstance(saved,dict) else {}
+        except (OSError,ValueError):
+            values = {}
+        if not isinstance(values,dict):
+            values = {}
+        options = BossChallengeEntrance(values.get("target"),values.get("level"))
+        count = values.get("count",30)
+        return {"target":options.target,"level":options.level,
+                "count":count if type(count) is int and 1 <= count <= 9999 else 30}
+
+    def _save_boss_challenge_settings(self, _event=None):
+        try:
+            count = int(self.boss_challenge_count.get().strip())
+            target,level = self.boss_challenge_target.get(),self.boss_challenge_level.get()
+            if target not in BOSS_AVATARS or level not in BossChallengeEntrance.LEVELS or not 1 <= count <= 9999:
+                raise ValueError()
+        except ValueError:
+            self.status.set("战歌重奏：请选择关卡、等级，并填写1到9999次。")
+            return False
+        try:
+            try:
+                saved = json.loads(APP_SETTINGS_CONFIG.read_text(encoding="utf-8"))
+            except (OSError,ValueError):
+                saved = {}
+            if not isinstance(saved,dict):
+                saved = {}
+            saved["boss_challenge"] = {"target":target,"level":level,"count":count}
+            APP_SETTINGS_CONFIG.write_text(json.dumps(saved,ensure_ascii=False,indent=2),encoding="utf-8")
+        except OSError as exc:
+            self.status.set(f"战歌重奏设置保存失败：{exc}")
+            return False
+        self.status.set("战歌重奏关卡、等级和次数已保存。")
+        return True
+
+    def _start_boss_challenge(self):
+        if not self._save_boss_challenge_settings():
+            return
+        if self.target_mode.get() != "client":
+            messagebox.showerror("模式不支持", "战歌重奏自动刷取只支持PC客户端窗口。", parent=self.root)
+            return
+        base = next((task for task in self.tasks if task.name == "4C刷取"),None)
+        if base is None:
+            messagebox.showerror("任务不可用", "没有找到4C战斗配置。", parent=self.root)
+            return
+        self._boss_challenge_run = {"target":self.boss_challenge_target.get(),
+                                    "level":self.boss_challenge_level.get()}
+        task = replace(base,name="战歌重奏自动刷取",template_group="4c",enabled=True)
+        self.max_cycles = int(self.boss_challenge_count.get())
+        self.dry_run.set(False)
+        if self._ensure_admin_for_real_run():
+            self._start_worker([task])
+
     def _start_tower_challenge(self) -> None:
         if self.target_mode.get() != "client":
             messagebox.showerror("模式不支持", "深塔挑战目前只支持 PC 客户端窗口。", parent=self.root)
@@ -9680,6 +9806,8 @@ class App:
                     0,
                     lambda text=message: messagebox.showinfo("提示", text, parent=self.root),
                 ),
+                boss_challenge=(BossChallengeEntrance(**self._boss_challenge_run)
+                                if any(task.name == "战歌重奏自动刷取" for task in tasks) else None),
                 rotation_presets={mode: active_modules(rotation_snapshot, mode) for mode in COMBAT_MODES},
                 rotation_times={mode: next(p["slot_times"] for p in rotation_snapshot["presets"]
                                            if p["id"] == rotation_snapshot["modes"][mode])
