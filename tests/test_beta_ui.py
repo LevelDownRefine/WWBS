@@ -168,8 +168,9 @@ class BetaUiTests(unittest.TestCase):
                 self.assertIn('4C刷取（自定义次数）',start_texts)
                 self.assertIn('战歌重奏自动刷取',start_texts)
                 auto_card=instance._start_action_cards['boss_challenge']
-                inputs=[control for row in auto_card.winfo_children()
-                        for control in row.winfo_children() if isinstance(control,tk.Entry)]
+                inputs=[entry for row in auto_card.winfo_children()
+                        for control in row.winfo_children() for entry in control.winfo_children()
+                        if isinstance(entry,tk.Entry)]
                 self.assertEqual(len(inputs),1)
                 self.assertEqual(inputs[0].get(),'30')
                 self.assertEqual(instance._start_action_order[0], "weekly_rewards")
