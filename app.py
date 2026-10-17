@@ -40,7 +40,7 @@ from rain_overlay import DesktopRain
 from rain_music import RainMusic
 from boss_rain import BossRainWatcher
 from ui_controls import RoundedButton, ThinScrollbar, CenteredToplevel as Toplevel, ParentDialogs, show_ready_main_window
-from task_runner import (
+from tasks import (
     DAILY_ZONE_NAMES,
     DAILY_ZONE_TEMPLATES,
     DEFAULT_GROUP_NAME,

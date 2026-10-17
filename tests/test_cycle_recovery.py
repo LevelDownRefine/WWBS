@@ -153,7 +153,7 @@ class CycleRecoveryTests(unittest.TestCase):
 
     def test_weekly_delay_reduced_for_existing_configs_without_changing_other_tasks(self):
         del self.runner._sleep_click_interval
-        with patch('task_runner.random.uniform', return_value=.08) as jitter:
+        with patch('tasks.runner.random.uniform', return_value=.08) as jitter:
             self.runner._weekly_monitoring = True
             self.runner._sleep_click_interval(.15)
             low, high = jitter.call_args.args
@@ -166,4 +166,3 @@ class CycleRecoveryTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
