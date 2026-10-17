@@ -8,7 +8,7 @@ from PIL import Image
 
 import app
 from image_matcher import MatchResult
-from task_runner import DAILY_ZONE_BUTTON_Y_OFFSETS
+from tasks.other import DAILY_ZONE_BUTTON_Y_OFFSETS
 
 
 class NewTacetZoneTests(unittest.TestCase):

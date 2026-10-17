@@ -9,7 +9,7 @@ from PIL import Image
 import app
 from image_matcher import MatchResult, TemplateMatcher
 from weekly_clicks import WeeklyTarget, weekly_template_crop
-from task_runner import WEEKLY_STABLE_INTERVAL
+from tasks.runner import WEEKLY_STABLE_INTERVAL
 
 
 class WeeklyStabilityTests(unittest.TestCase):
@@ -30,7 +30,7 @@ class WeeklyStabilityTests(unittest.TestCase):
         self.page.paste(Image.fromarray(pattern), (60, 60))
         self.capture = Mock(side_effect=self.write_page)
         self.runner._capture_for_matching = self.capture
-        self.frame_patch = patch('task_runner.APP_DIR', self.root)
+        self.frame_patch = patch('tasks.runner.APP_DIR', self.root)
         self.clock_patch = patch.object(app.time, 'monotonic', side_effect=lambda: self.now)
         self.wall_patch = patch.object(app.time, 'time', side_effect=lambda: self.now)
         self.frame_patch.start()
@@ -236,7 +236,7 @@ class WeeklyWholeChainTests(unittest.TestCase):
                 runner.controller.tap.side_effect = tap
                 runner._capture_for_matching = capture
                 runner._sleep_interruptible = lambda seconds: state.__setitem__('now', state['now']+seconds)
-                with patch('task_runner.APP_DIR', Path(directory)), \
+                with patch('tasks.runner.APP_DIR', Path(directory)), \
                         patch.object(app.time, 'monotonic', side_effect=lambda: state['now']), \
                         patch.object(app.time, 'time', side_effect=lambda: state['now']):
                     runner._run_step(app.Step(action='tap_image', template='menu1.png', offset_x=80, timeout=8))

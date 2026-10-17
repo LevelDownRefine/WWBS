@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 import app
-from task_runner import WEEKLY_STABLE_INTERVAL
+from tasks.runner import WEEKLY_STABLE_INTERVAL
 import image_matcher
 from image_matcher import MatchResult, TemplateMatcher
 
@@ -31,7 +31,7 @@ class WeeklyThresholdTests(unittest.TestCase):
             frame = Image.new('RGB', (400, 300), 'gray')
             frame.paste(caption, (80, 180))
             frame.save(screen)
-            with patch('task_runner.APP_DIR', Path(directory)):
+            with patch('tasks.runner.APP_DIR', Path(directory)):
                 result = runner._probe_cycle_template(old_step, "本次")
         self.assertEqual(result, (100, 200, .6))
         self.assertEqual(runner.matcher.find.call_count, 2)
