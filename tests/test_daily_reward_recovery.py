@@ -148,7 +148,7 @@ class RewardRecoveryFlowTests(unittest.TestCase):
         runner = self.runner()
         runner._yellow_claim_rows = Mock(side_effect=[[], [221], [], []])
         runner._daily_activity_score_full = Mock(return_value=False)
-        with patch.object(app, 'APP_DIR', FIXTURES), \
+        with patch('task_runner.APP_DIR', FIXTURES), \
                 patch.object(app.Image, 'open', return_value=Image.new('RGB', (1600, 900))):
             runner._collect_daily_activity_rewards()
         runner.controller.tap.assert_called_once_with(1408, 221)

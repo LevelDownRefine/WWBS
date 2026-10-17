@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 
 import app
+from task_runner import WEEKLY_STABLE_INTERVAL
 import image_matcher
 from image_matcher import MatchResult, TemplateMatcher
 
@@ -30,7 +31,7 @@ class WeeklyThresholdTests(unittest.TestCase):
             frame = Image.new('RGB', (400, 300), 'gray')
             frame.paste(caption, (80, 180))
             frame.save(screen)
-            with patch.object(app, 'APP_DIR', Path(directory)):
+            with patch('task_runner.APP_DIR', Path(directory)):
                 result = runner._probe_cycle_template(old_step, "本次")
         self.assertEqual(result, (100, 200, .6))
         self.assertEqual(runner.matcher.find.call_count, 2)
@@ -39,7 +40,7 @@ class WeeklyThresholdTests(unittest.TestCase):
             self.assertTrue(call.kwargs['first_match'])
             self.assertIn('template_crop', call.kwargs)
         self.assertEqual(runner._capture_for_matching.call_count, 2)
-        runner._sleep_interruptible.assert_called_once_with(app.WEEKLY_STABLE_INTERVAL)
+        runner._sleep_interruptible.assert_called_once_with(WEEKLY_STABLE_INTERVAL)
 
     def test_unmatched_first_scale_continues_and_stops_at_next_success(self):
         rng = np.random.default_rng(42)
