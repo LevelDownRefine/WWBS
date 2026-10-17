@@ -11,7 +11,7 @@ from PIL import ImageGrab
 from windows_client import ClientWindowController
 
 
-def boss_bar_present(top_strip, game_size=None):
+def boss_bar_present(top_strip, game_size=None, *, require_secondary=True):
     width, height = game_size or top_strip.size
     region = np.asarray(top_strip.convert('RGB'))
     region = region[round(height*.032):min(region.shape[0], round(height*.095)),
@@ -60,6 +60,8 @@ def boss_bar_present(top_strip, game_size=None):
             continue
         if not max(2, round(height*.001)) <= bottom-top+1 <= height*.015:
             continue
+        if not require_secondary:
+            return True  # Keep an already confirmed Boss session while its main bar remains.
         main_left, main_right, _ = np.median(main['rows'], axis=0)
         for lower in bands:
             gap = lower['top']-main['bottom']
@@ -79,7 +81,7 @@ def boss_bar_present(top_strip, game_size=None):
 
 
 class BossRainGate:
-    def __init__(self, grace=5.0):
+    def __init__(self, grace=8.0):
         self.grace, self.active, self.last_seen = grace, False, float('-inf')
 
     def update(self, present, now):
@@ -92,7 +94,7 @@ class BossRainGate:
         return self.active
 
 
-def passive_boss_sample(controller):
+def passive_boss_sample(controller, *, require_secondary=True):
     controller.connect()
     user = ctypes.windll.user32
     user.GetForegroundWindow.restype = wintypes.HWND
@@ -104,7 +106,7 @@ def passive_boss_sample(controller):
     # Only the game's top strip is read, in memory, with no screenshot files.
     strip = ImageGrab.grab(bbox=(left, top, right, top+round(size[1]*.11)),
                            include_layered_windows=False)
-    return boss_bar_present(strip, size)
+    return boss_bar_present(strip, size, require_secondary=require_secondary)
 
 
 class BossRainWatcher:
@@ -123,7 +125,7 @@ class BossRainWatcher:
             try:
                 if controller is None or controller.title_keyword != self.title:
                     controller = ClientWindowController(self.title)
-                present = passive_boss_sample(controller)
+                present = passive_boss_sample(controller, require_secondary=not gate.active)
             except Exception:
                 present = None
             active = gate.update(present, time.monotonic())
