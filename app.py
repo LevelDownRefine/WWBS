@@ -102,7 +102,7 @@ DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
 APP_VERSION = "1.5.5 beta1"
-APP_BUILD = 5
+APP_BUILD = 6
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -201,6 +201,7 @@ UPDATE_HISTORY = [
 切人确认期间持续普攻，边识别边攻击；确认成功、战斗结束或停止时切回正常模块。
 软件内下载更新增加居中进度条、百分比与下载大小，校验和安装准备显示实际阶段，可取消下载。
 修复下载与校验失败：刷新包信息，连接中断支持重试和断点续传，SHA256不符重新下载。
+修复150及更高活跃度识别，分离黄色装饰线；确认达到100后直接领取奖励，不再重复刷无音区。
 新增独立快捷任务「战歌重奏自动刷取」，支持三个Boss、80／90级和次数设置。
 进本每个页面连续确认后再继续，失败有限重试；正常游戏HUD与Boss长血条共同确认开战。原有4C入口保留。
 以后软件内更新仅检查正式版，自动跳过beta、alpha、rc及GitHub预发布；测试包可从GitHub手动下载。
@@ -1756,6 +1757,16 @@ class TaskRunner:
         self.log("    日常战斗将按已分配的预设切换角色并执行模块。")
         try:
             if not self._open_daily_tacet_field(template_name):
+                if getattr(self,'_daily_activity_confirmed_full',False):
+                    self.log('    已确认当前活跃度达到100，跳过无音区战斗，直接领取任务与宝箱奖励。')
+                    self._collect_daily_activity_rewards(already_open=True)
+                    if self.stop_event.is_set():
+                        return
+                    self._collect_daily_battlepass_rewards()
+                    if self.stop_event.is_set():
+                        return
+                    self._continue_daily_into_weekly_travel()
+                    return
                 completed_message = "今日日常已经完成，不再挑战无音区。"
                 self.log(f"    【提示】检测到索拉指南已自动跳过活跃度页面，{completed_message}")
                 self.notice(completed_message)
@@ -2101,22 +2112,26 @@ class TaskRunner:
             return False
 
     def _daily_activity_still_pending(self, timeout: float = 6.0) -> bool:
-        """Return false when Sola Guide skips activity because today's score is full."""
+        """Confirm the activity page and a counter at or above the daily target."""
         screenshot = APP_DIR / "_runtime_screenshot.png"
         deadline = time.monotonic() + timeout
         confirmations = 0
-        last_state: bool | None = None
+        last_state: tuple[bool,bool] | None = None
+        self._daily_activity_confirmed_full = False
         while time.monotonic() < deadline and not self.stop_event.is_set():
             self._capture_for_matching(screenshot)
             if not self._sola_guide_page_ready(screenshot):
                 confirmations = 0
                 self._sleep_interruptible(0.15)
                 continue
-            state = self._daily_activity_page_present(screenshot)
+            page = self._daily_activity_page_present(screenshot)
+            full = page and self._daily_activity_score_full(screenshot)
+            state = (page,full)
             confirmations = confirmations + 1 if state == last_state else 1
             last_state = state
             if confirmations >= 2:
-                return state
+                self._daily_activity_confirmed_full = bool(full)
+                return page and not full
             self._sleep_interruptible(0.15)
         raise RuntimeError("进入索拉指南后未能确认当前页面，已停止以避免误打无音区。")
 
@@ -2125,6 +2140,9 @@ class TaskRunner:
         self._open_terminal_destination("索拉指南", 0.515, 0.671)
         if not self._daily_activity_still_pending():
             screenshot = APP_DIR / "_runtime_screenshot.png"
+            if getattr(self,'_daily_activity_confirmed_full',False):
+                self.log('    当前活跃度已达到100（包含150等更高分数），无需再刷无音区。')
+                return False
             if self._weekly_travel_page_present(screenshot):
                 self.log("    索拉指南自动进入周度游历，今日日常已完成。")
                 return False
@@ -2133,6 +2151,9 @@ class TaskRunner:
             self.log("    索拉指南未停留在活跃度页，尝试切回左侧活跃度入口。")
             self._tap_ratio(0.04, 0.18, 0.45)
             if not self._daily_activity_still_pending():
+                if getattr(self,'_daily_activity_confirmed_full',False):
+                    self.log('    已确认活跃度达到100，转入奖励领取。')
+                    return False
                 if self._weekly_travel_page_present(screenshot):
                     self.log("    活跃度入口已自动跳转周度游历，今日日常已完成。")
                     return False
@@ -2920,12 +2941,15 @@ class TaskRunner:
         # allow a blank-area click. Bottom-left is outside every item card.
         self._tap_ratio(0.13, 0.86, 0.18)
 
-    def _collect_daily_activity_rewards(self) -> None:
-        self.log("    返回大世界后，经终端进入索拉指南领取活跃度奖励；只点击黄色“领取”，不点击“前往”。")
-        self._open_terminal_destination("索拉指南", 0.515, 0.671, require_transition=True)
+    def _collect_daily_activity_rewards(self, *, already_open: bool = False) -> None:
+        self.log('    直接领取当前活跃行迹页面的奖励。' if already_open else
+                 "    返回大世界后，经终端进入索拉指南领取活跃度奖励；只点击黄色“领取”，不点击“前往”。")
+        if not already_open:
+            self._open_terminal_destination("索拉指南", 0.515, 0.671, require_transition=True)
         # The guide can remember a different category. Select activity explicitly
         # and wait for its title rather than treating an unpainted frame as empty.
-        self._tap_ratio(.039, .174, .15)
+        if not already_open:
+            self._tap_ratio(.039, .174, .15)
         self._wait_daily_reward_page("activity_title.png", "活跃行迹")
         self.log("    已确认活跃行迹页面，先领取上方任务奖励。")
         screenshot = APP_DIR / "_runtime_screenshot.png"
@@ -8459,6 +8483,12 @@ class App:
                             findings.append(("error", f"日常与衔接周常模板不完整：{', '.join(missing)}。"))
                         else:
                             findings.append(("ok", "日常与衔接周常模板齐全；日常从大世界开始，运行中无需匹配周常起始界面。"))
+                        if TaskRunner._daily_activity_page_present(preview):
+                            from daily_activity import activity_counter_full
+                            if activity_counter_full(preview,TEMPLATES_DIR/'daily'/'activity_full.png'):
+                                findings.append(('ok','当前活跃度已达到100（包含150等更高分数）；直接领取剩余奖励，无需再刷无音区。'))
+                            else:
+                                findings.append(('info','当前活跃度数字尚未确认；正常日常流程的奖励领取不会被数字识别结果阻止。'))
                     elif navigation_task is not None:
                         navigation_step = next(
                             step for step in navigation_task.steps if step.action == "move_to_visual_target"
@@ -8531,7 +8561,7 @@ class App:
                     findings.append(("error", f"游戏窗口检查失败：{error_text}"))
 
             self._log(f"=== {self.pet_name}运行诊断 ===")
-            icons = {"ok": "[正常]", "warning": "[注意]", "error": "[问题]"}
+            icons = {"ok": "[正常]", "warning": "[注意]", "error": "[问题]", "info": "[提示]"}
             for level, message in findings:
                 self._log(f"{icons[level]} {message}")
             self._log("=== 诊断结束 ===")
