@@ -6,7 +6,7 @@ import time
 import numpy as np
 from PIL import Image
 
-from .weekly_clicks import WeeklyTarget, weekly_target_clickable, weekly_template_crop
+from tasks.weekly_clicks import WeeklyTarget, weekly_target_clickable, weekly_template_crop
 
 
 FAMILIES = {

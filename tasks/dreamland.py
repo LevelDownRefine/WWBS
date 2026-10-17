@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .weekly_rewards import WeeklyLimitReached, WeeklyRewardsVision
-from .models import Step
+from tasks.models import Step
+from tasks.weekly_rewards import WeeklyLimitReached, WeeklyRewardsVision
 
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -143,7 +143,7 @@ class DreamlandTask:
         self._run_weekly_dynamic(start_step, cycle_step)
 
     def _run_weekly_dynamic(self, start_step: Step, cycle_step: Step) -> None:
-        from .weekly_flow import run_weekly_flow
+        from tasks.weekly_flow import run_weekly_flow
         run_weekly_flow(self, start_step, cycle_step, attempts=CYCLE_PROBE_ATTEMPTS,
                         nearby_attempts=CYCLE_NEIGHBOR_PROBE_ATTEMPTS)
 
