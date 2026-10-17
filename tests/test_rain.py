@@ -88,16 +88,35 @@ class RainTests(unittest.TestCase):
                             pixels[lower:lower+thickness,round(width*.43):round(width*.57)] = 215
                         self.assertFalse(boss_bar_present(Image.fromarray(pixels),(width,height)))
 
-    def test_boss_rain_stops_after_five_seconds_and_reappearance_resets_timer(self):
+    def test_boss_rain_stops_after_eight_seconds_and_reappearance_resets_timer(self):
         gate = BossRainGate()
         self.assertTrue(gate.update(True,10))
-        self.assertTrue(gate.update(False,14.99))
-        self.assertFalse(gate.update(False,15))
+        self.assertTrue(gate.update(False,17.99))
+        self.assertFalse(gate.update(False,18))
         self.assertTrue(gate.update(True,20))
-        self.assertTrue(gate.update(False,24))
-        self.assertTrue(gate.update(True,24.5))
-        self.assertTrue(gate.update(False,29.49))
-        self.assertFalse(gate.update(False,29.5))
+        self.assertTrue(gate.update(False,27))
+        self.assertTrue(gate.update(True,27.5))
+        self.assertTrue(gate.update(False,35.49))
+        self.assertFalse(gate.update(False,35.5))
+
+    def test_confirmed_boss_main_bar_keeps_rain_when_secondary_bar_is_hidden(self):
+        with Image.open(Path(__file__).parent/'fixtures'/'boss-rain-top-bar.png') as source:
+            strip=source.copy()
+        width,height=2560,1440
+        strip.paste((40,75,80),(round(width*.34),round(height*.065),
+                                round(width*.67),round(height*.080)))
+        self.assertFalse(boss_bar_present(strip,(width,height)))
+        self.assertTrue(boss_bar_present(strip,(width,height),require_secondary=False))
+        gate=BossRainGate()
+        gate.update(True,0)
+        for now in (5,10,20,40,80):
+            seen=boss_bar_present(strip,(width,height),require_secondary=not gate.active)
+            self.assertTrue(gate.update(seen,now))
+        strip.paste((40,75,80),(round(width*.34),round(height*.047),
+                                round(width*.67),round(height*.065)))
+        self.assertFalse(boss_bar_present(strip,(width,height),require_secondary=False))
+        self.assertTrue(gate.update(False,87.99))
+        self.assertFalse(gate.update(False,88))
 
     def test_auto_gate_preserves_rain_during_ultimate_and_unknown_background(self):
         gate = BossRainGate()
