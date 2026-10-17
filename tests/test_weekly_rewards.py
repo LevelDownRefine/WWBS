@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 from PIL import Image, ImageDraw
 import app
-from weekly_rewards import WeeklyRewardsVision, WeeklyLimitReached
+from tasks.weekly_rewards import WeeklyRewardsVision, WeeklyLimitReached
 
 
 class WeeklyRewardsTests(unittest.TestCase):

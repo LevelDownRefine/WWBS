@@ -23,7 +23,7 @@ from tkinter import font as tkfont
 from PIL import Image, ImageTk
 
 from image_matcher import TemplateMatcher
-from combat_4c_entrance import BOSS_AVATARS, BossChallengeEntrance
+from tasks.combat_4c_entrance import BOSS_AVATARS, BossChallengeEntrance
 from windows_client import ClientWindowController
 from desktop_pet import DesktopPet
 from chat_history import ChatHistory

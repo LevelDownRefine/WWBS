@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from weekly_rewards import WeeklyLimitReached, WeeklyRewardsVision
+from .weekly_rewards import WeeklyLimitReached, WeeklyRewardsVision
 from .models import Step
 
 
