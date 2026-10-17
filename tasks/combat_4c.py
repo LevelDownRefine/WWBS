@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 
 from combat_rotation import BattleMonitor, IdleAttackWorker, RotationClock, SLOT_NAMES
-from .models import Step
+from tasks.models import Step
 
 
 APP_DIR = Path(__file__).resolve().parent.parent

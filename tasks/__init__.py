@@ -1,9 +1,9 @@
 """WWBS 自动任务。"""
 
-from .dreamland import DEFAULT_GROUP_NAME
-from .models import AdbClient, ConfigStore, Step, WeeklyTask
-from .other import DAILY_ZONE_NAMES, DAILY_ZONE_TEMPLATES
-from .runner import TaskRunner
+from tasks.dreamland import DEFAULT_GROUP_NAME
+from tasks.models import AdbClient, ConfigStore, Step, WeeklyTask
+from tasks.other import DAILY_ZONE_NAMES, DAILY_ZONE_TEMPLATES
+from tasks.runner import TaskRunner
 
 __all__ = [
     "DAILY_ZONE_NAMES",

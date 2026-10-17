@@ -7,15 +7,15 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from .combat_4c_entrance import BossChallengeEntrance
+from tasks.combat_4c import Combat4CTask
+from tasks.combat_4c_entrance import BossChallengeEntrance
+from tasks.dreamland import (DEFAULT_GROUP_NAME, WEEKLY_CLICK_INTERVAL,
+                             WEEKLY_TEMPLATE_THRESHOLD, DreamlandTask)
+from tasks.models import Step, WeeklyTask
+from tasks.other import OtherTask
+from tasks.weekly_rewards import WeeklyLimitReached
 from combat_rotation import active_modules, default_store
 from image_matcher import TemplateMatcher
-from .weekly_rewards import WeeklyLimitReached
-from .combat_4c import Combat4CTask
-from .dreamland import (DEFAULT_GROUP_NAME, WEEKLY_CLICK_INTERVAL,
-                        WEEKLY_TEMPLATE_THRESHOLD, DreamlandTask)
-from .models import Step, WeeklyTask
-from .other import OtherTask
 
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -251,7 +251,7 @@ class TaskRunner(Combat4CTask, DreamlandTask, OtherTask):
             try:
                 scales = self._fast_scales()
                 if self._weekly_monitoring:
-                    from .weekly_clicks import WeeklyTarget, weekly_template_crop
+                    from tasks.weekly_clicks import WeeklyTarget, weekly_template_crop
                     crop = weekly_template_crop(step.template, self.matcher.templates_dir)
                     options = {'template_crop': crop} if crop is not None else {}
                     match = self.matcher.find(screenshot, step.template, WEEKLY_TEMPLATE_THRESHOLD,

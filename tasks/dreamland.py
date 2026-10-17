@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .weekly_rewards import WeeklyLimitReached, WeeklyRewardsVision
-from .models import Step
+from tasks.models import Step
+from tasks.weekly_rewards import WeeklyLimitReached, WeeklyRewardsVision
 
 
 APP_DIR = Path(__file__).resolve().parent.parent

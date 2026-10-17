@@ -5253,7 +5253,7 @@ class App:
                         else:
                             findings.append(("ok", "日常与衔接周常模板齐全；日常从大世界开始，运行中无需匹配周常起始界面。"))
                         if TaskRunner._daily_activity_page_present(preview):
-                            from daily_activity import activity_counter_full
+                            from tasks.daily_activity import activity_counter_full
                             if activity_counter_full(preview,TEMPLATES_DIR/'daily'/'activity_full.png'):
                                 findings.append(('ok','当前活跃度已达到100（包含150等更高分数）；直接领取剩余奖励，无需再刷无音区。'))
                             else:
