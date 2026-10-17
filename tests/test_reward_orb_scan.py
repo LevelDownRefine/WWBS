@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 import app
-from reward_orb_scan import ORB_SCAN_STEP, OrbDirectionSweep
+from tasks.reward_orb_scan import ORB_SCAN_STEP, OrbDirectionSweep
 
 
 class OrbDirectionTests(unittest.TestCase):

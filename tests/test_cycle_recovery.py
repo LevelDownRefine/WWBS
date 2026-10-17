@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import app
-from weekly_rewards import WeeklyLimitReached
+from tasks.weekly_rewards import WeeklyLimitReached
 
 
 class CycleRecoveryTests(unittest.TestCase):

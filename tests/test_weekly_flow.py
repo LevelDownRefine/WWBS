@@ -7,8 +7,8 @@ from PIL import Image, ImageDraw
 
 import app
 from image_matcher import MatchResult, TemplateMatcher
-from weekly_clicks import WeeklyTarget, weekly_template_crop
-from weekly_flow import CardDecision, FAMILIES, Page, WeeklyFlowVision, family, run_weekly_flow
+from tasks.weekly_clicks import WeeklyTarget, weekly_template_crop
+from tasks.weekly_flow import CardDecision, FAMILIES, Page, WeeklyFlowVision, family, run_weekly_flow
 
 
 class WeeklyFlowVisionTests(unittest.TestCase):
@@ -106,8 +106,8 @@ class WeeklyFlowRunTests(unittest.TestCase):
         vision = Mock()
         vision.detect.side_effect = lambda *_args, **_options: self.pages[self.index]
         factory = WeeklyFlowVision if real_vision else Mock(return_value=vision)
-        with patch('weekly_flow.WeeklyFlowVision', side_effect=factory), \
-                patch('weekly_flow.time.monotonic', side_effect=lambda: self.now):
+        with patch('tasks.weekly_flow.WeeklyFlowVision', side_effect=factory), \
+                patch('tasks.weekly_flow.time.monotonic', side_effect=lambda: self.now):
             run_weekly_flow(self.runner, app.Step(action='tap_image', template='menu1.png'),
                             app.Step(action='tap_image_cycle', templates=['menu4.png', 'menu95.png', 'menu99.png']))
         return vision

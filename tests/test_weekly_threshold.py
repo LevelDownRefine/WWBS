@@ -25,7 +25,7 @@ class WeeklyThresholdTests(unittest.TestCase):
         old_step = app.Step(action="tap_image", template="menu3.png", threshold=.82)
         with tempfile.TemporaryDirectory() as directory:
             screen = Path(directory)/'_runtime_screenshot.png'
-            from weekly_clicks import weekly_template_crop
+            from tasks.weekly_clicks import weekly_template_crop
             with Image.open(app.TEMPLATES_DIR/'menu3.png') as source:
                 caption = source.crop(weekly_template_crop('menu3.png', app.TEMPLATES_DIR)).resize((40, 40))
             frame = Image.new('RGB', (400, 300), 'gray')

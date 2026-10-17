@@ -23,7 +23,7 @@ from tkinter import font as tkfont
 from PIL import Image, ImageTk
 
 from image_matcher import TemplateMatcher
-from combat_4c_entrance import BOSS_AVATARS, BossChallengeEntrance
+from tasks.combat_4c_entrance import BOSS_AVATARS, BossChallengeEntrance
 from windows_client import ClientWindowController
 from desktop_pet import DesktopPet
 from chat_history import ChatHistory
@@ -5290,7 +5290,7 @@ class App:
                         else:
                             findings.append(("ok", "日常与衔接周常模板齐全；日常从大世界开始，运行中无需匹配周常起始界面。"))
                         if TaskRunner._daily_activity_page_present(preview):
-                            from daily_activity import activity_counter_full
+                            from tasks.daily_activity import activity_counter_full
                             if activity_counter_full(preview,TEMPLATES_DIR/'daily'/'activity_full.png'):
                                 findings.append(('ok','当前活跃度已达到100（包含150等更高分数）；直接领取剩余奖励，无需再刷无音区。'))
                             else:
@@ -5328,7 +5328,7 @@ class App:
                                 else:
                                     findings.append(("error", "当前画面没有定位到蓝色守岸人，请让角色和守岸人同时出现在画面中。"))
                     else:
-                        from weekly_flow import LABELS, WeeklyFlowVision
+                        from tasks.weekly_flow import LABELS, WeeklyFlowVision
                         names = [path.name for path in template_dir.glob('menu*.png')
                                  if re.fullmatch(r'menu\d+\.png', path.name)]
                         vision = WeeklyFlowVision(TemplateMatcher(template_dir), names, controller.template_scales())

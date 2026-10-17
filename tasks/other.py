@@ -9,8 +9,8 @@ from PIL import Image
 
 from combat_rotation import BattleMonitor, IdleAttackWorker, RotationClock, SLOT_NAMES
 from image_matcher import TemplateMatcher
-from reward_orb_scan import ORB_DIRECT_CONFIDENCE, ORB_SCAN_STEP, OrbDirectionSweep
-from weekly_rewards import WeeklyRewardsVision
+from .reward_orb_scan import ORB_DIRECT_CONFIDENCE, ORB_SCAN_STEP, OrbDirectionSweep
+from .weekly_rewards import WeeklyRewardsVision
 from .models import Step
 
 
@@ -342,7 +342,7 @@ class OtherTask:
     ):
         target = screenshot or (APP_DIR / "_runtime_screenshot.png")
         if self._weekly_monitoring and template_crop is None:
-            from weekly_clicks import weekly_template_crop
+            from .weekly_clicks import weekly_template_crop
             template_crop = weekly_template_crop(template_name, self.matcher.templates_dir)
         if screenshot is None:
             self._capture_for_matching(target)
@@ -1357,7 +1357,7 @@ class OtherTask:
                 if group[-1]-group[0]+1 >= max(12, round(height*.018))]
 
     def _daily_activity_score_full(self, screenshot: Path) -> bool:
-        from daily_activity import activity_counter_full
+        from .daily_activity import activity_counter_full
         return activity_counter_full(screenshot, TEMPLATES_DIR/'daily'/'activity_full.png')
 
     def _wait_daily_reward_page(self, template: str, label: str, *, dismiss_overlay: bool = False) -> None:

@@ -8,7 +8,7 @@ from PIL import Image
 
 import app
 from image_matcher import MatchResult, TemplateMatcher
-from weekly_clicks import WeeklyTarget, weekly_template_crop
+from tasks.weekly_clicks import WeeklyTarget, weekly_template_crop
 from tasks.runner import WEEKLY_STABLE_INTERVAL
 
 
