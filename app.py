@@ -102,7 +102,7 @@ DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
 APP_VERSION = "1.5.5 beta1"
-APP_BUILD = 7
+APP_BUILD = 8
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -3909,14 +3909,18 @@ class TaskRunner:
             try:
                 scales = self._fast_scales()
                 if self._weekly_monitoring:
-                    from weekly_clicks import WeeklyTarget, weekly_template_crop
+                    from weekly_clicks import WeeklyTarget, weekly_template_crop, weekly_target_clickable
                     crop = weekly_template_crop(step.template, self.matcher.templates_dir)
                     options = {'template_crop': crop} if crop is not None else {}
+                    def clickable(candidate):
+                        observed = WeeklyTarget.read(screenshot, step.template, candidate, self.matcher.templates_dir, crop)
+                        return weekly_target_clickable(observed, candidate.score)
                     match = self.matcher.find(screenshot, step.template, WEEKLY_TEMPLATE_THRESHOLD,
-                                              scales, first_match=True, **options)
+                                              scales, first_match=True, max_width=1280,
+                                              candidate_validator=clickable, **options)
                     target = WeeklyTarget.read(screenshot, step.template, match, self.matcher.templates_dir, crop)
-                    if target.colour_error > 45:
-                        raise RuntimeError(f'{step.template} 颜色与模板明显不同，等待过渡或遮罩结束。')
+                    if not weekly_target_clickable(target, match.score):
+                        raise RuntimeError(f'{step.template} 颜色或按钮文字不符，等待可点击按钮。')
                     stable = previous_target is not None and previous_target.stable_with(target)
                     if not stable:
                         previous_target = target
@@ -6818,15 +6822,21 @@ class App:
                 complete(result)
         def run():
             try:
-                result = work()
-                self.root.after(0, lambda: finish(result))
+                results.put((work(), ''))
             except Exception as exc:
-                error = str(exc)
-                try:
-                    self.root.after(0, lambda: finish(error=error))
-                except (TclError, RuntimeError):
-                    pass
+                results.put((None, str(exc)))
+        results = queue.Queue()
+        def poll():
+            if not dialog.winfo_exists():
+                return
+            try:
+                result, error = results.get_nowait()
+            except queue.Empty:
+                dialog.after(50, poll)
+                return
+            finish(result, error)
         threading.Thread(target=run, daemon=True, name='wwbs-seed-library').start()
+        dialog.after(50, poll)
 
     def _rotation_online_seed_library(self):
         dialog, body, text = self._rotation_seed_window(
@@ -6834,7 +6844,7 @@ class App:
         text.configure(state='disabled')
         state = {'items': [], 'selected': None}
         name = StringVar(value='')
-        status = StringVar(value='输入名称搜索；留空可浏览种子。')
+        status = StringVar(value='正在加载最新上传的种子…')
         row = Frame(body, bg=COLORS['panel'])
         row.pack(fill=X, pady=(10, 0))
         Label(row, text='种子名称', bg=COLORS['panel']).pack(side=LEFT)
@@ -6858,9 +6868,9 @@ class App:
             text.configure(state='disabled')
             if items:
                 select(0)
-                status.set(f'找到{len(items)}个种子，点击条目后下载。'+('结果较多，请缩小搜索范围。' if truncated else ''))
+                status.set(f'按上传时间从新到旧显示{len(items)}个种子，点击条目后下载。'+('结果较多，可按名称搜索。' if truncated else ''))
             else:
-                status.set('没有找到这个名称。')
+                status.set('没有找到这个名称。' if name.get().strip() else '暂时还没有公开种子，可稍后点击搜索刷新。')
         def search():
             query = name.get()
             self._seed_library_job(dialog, status, lambda: search_seeds(query), display)
@@ -6899,6 +6909,7 @@ class App:
         self._ui_button(footer, text='关闭', command=dialog.destroy).pack(side=RIGHT)
         self._ui_button(footer, text='下载并导入', width=16, style='Primary.TButton',
                         command=download).pack(side=RIGHT, padx=8)
+        dialog.after_idle(search)
         return dialog
 
     def _rotation_import_seed(self):

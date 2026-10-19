@@ -76,3 +76,25 @@ test('A storage failure returns a useful error instead of a partial response',as
   assert.equal(result.status,503);
   assert.match((await result.json()).error,/稍后/);
 });
+
+test('Browse and name search return the latest 50 across all pages before truncation',async()=>{
+  const store=new Store();
+  for(let i=0;i<75;i++) {
+    const id=i.toString(16).padStart(24,'0');
+    const record={id,name:'测试'+i,modules:18,created:new Date(1700000000000+i*1000).toISOString()};
+    await store.setJSON('records/'+id,record);
+    await store.setJSON('index/'+Buffer.from('测').toString('hex')+'/'+Buffer.from(record.name).toString('hex')+'/'+id,record);
+  }
+  const list=store.list.bind(store);
+  store.list=async function* (options) {
+    for await(const page of list(options))
+      for(let i=0;i<page.blobs.length;i+=9)yield {blobs:page.blobs.slice(i,i+9)};
+  };
+  for(const query of ['', '?name='+encodeURIComponent('测试')]) {
+    const result=await (await handle(request('GET',query),store)).json();
+    assert.equal(result.items.length,50);
+    assert.equal(result.truncated,true);
+    assert.deepEqual(result.items.map(item=>item.name),Array.from({length:50},(_,i)=>'测试'+(74-i)));
+    assert.ok(result.items.every(item=>item.seed===undefined));
+  }
+});

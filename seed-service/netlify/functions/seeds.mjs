@@ -39,23 +39,31 @@ export async function handle(request, store) {
     const records=[], seen=new Set();
     let scanned=0, truncated=false;
     for await (const page of store.list({prefix,paginate:true})) {
+      const keys=[];
       for(const entry of page.blobs) {
         if(++scanned>5000) {truncated=true;break;}
         if(query) {
           const storedName=Buffer.from(entry.key.split('/')[2],'hex').toString('utf8');
           if(!storedName.includes(query))continue;
         }
-        const item=await store.get(entry.key,{type:'json'});
-        if(item&&!seen.has(item.id)) {
-          seen.add(item.id);
-          const {seed,...summary}=item;
-          records.push(summary);
-        }
-        if(records.length>=50) {truncated=true;break;}
+        keys.push(entry.key);
       }
-      if(truncated)break;
+      // Read bounded batches, then select by upload time rather than blob-key
+      // order. Old records remain visible without an index migration.
+      for(let offset=0;offset<keys.length;offset+=20) {
+        const batch=await Promise.all(keys.slice(offset,offset+20).map(key=>store.get(key,{type:'json'})));
+        for(const item of batch) {
+          if(item&&!seen.has(item.id)) {
+            seen.add(item.id);
+            const {seed,...summary}=item;
+            records.push(summary);
+          }
+        }
+        records.sort((a,b)=>b.created.localeCompare(a.created)||a.id.localeCompare(b.id));
+        if(records.length>50) {records.length=50;truncated=true;}
+      }
+      if(scanned>5000)break;
     }
-    records.sort((a,b)=>a.name.localeCompare(b.name,'zh-CN')||b.created.localeCompare(a.created));
     return response({items:records,truncated});
   } catch(error) {
     if(error instanceof SyntaxError||/种子|模块|角色|驻场|名称|参数|格式/.test(error.message))return response({error:error.message},400);
