@@ -101,8 +101,8 @@ DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.5.5 beta1"
-APP_BUILD = 8
+APP_VERSION = "1.5.5 beta2"
+APP_BUILD = 1
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -196,6 +196,11 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    ('v1.5.5 beta2', '''v1.5.5 beta2
+启动时先显示完整主窗口，再在程序中央显示首次更新公告，不再关掉公告才能看到程序。
+在线种子库改为独立圆角卡片，显示名称、模块数和上传时间；每张卡片可直接下载并导入，支持滚动浏览和名称搜索。
+保留最新上传自动加载、导入新增预设和历史种子兼容。
+今后测试版改动递增beta序号，软件内更新仍只检查正式版。'''),
     ("v1.5.5 beta1", """v1.5.5 beta1 · Boss战自动播放雨爱
 本次修复：种子支持【名字】WWBS4.…，继续兼容【名字】4.…及前三代；加入用户反馈种子的完整导入验证。
 切人确认期间持续普攻，边识别边攻击；确认成功、战斗结束或停止时切回正常模块。
@@ -4300,17 +4305,24 @@ class App:
         self._load_config(silent=True)
         self._refresh_templates()
         self._drain_logs()
-        self.root.after(200, self._report_settings_import)
         self.root.protocol("WM_DELETE_WINDOW", self._close_app)
         self._start_stop_hotkey()
         self.root.after(120, self._start_desktop_pet)
         self.root.after(800, self._scan_local_models)
         if "--admin-restarted" in sys.argv and is_running_as_admin():
             self._log("检测到未开启管理员模式，已通过管理员模式打开")
-        else:
-            self.root.after(300, self._show_startup_notice_once)
         if getattr(sys, 'frozen', False) and not os.environ.get('WWBS_UPDATE_READY'):
             self.root.after(1200, self._startup_detect_local_settings)
+
+    def _on_main_window_ready(self) -> None:
+        """Schedule modal startup UI only after the opaque main frame is visible."""
+        if getattr(self, '_startup_ui_scheduled', False):
+            return
+        self._startup_ui_scheduled = True
+        signal_update_ready()
+        self.root.after(200, self._report_settings_import)
+        if not ('--admin-restarted' in sys.argv and is_running_as_admin()):
+            self.root.after(300, self._show_startup_notice_once)
 
     @staticmethod
     def _theme_pack_valid(theme_id: str, path: Path | None = None) -> bool:
@@ -6679,7 +6691,7 @@ class App:
         self._rotation_editing_id = preset["id"]
         self._rotation_rebuild_cards()
 
-    def _rotation_seed_window(self, title: str, prompt: str):
+    def _rotation_seed_window(self, title: str, prompt: str, *, cards: bool = False):
         self._close_rounded_picker()
         dialog = Toplevel(self.root)
         dialog._centered_by_app = True
@@ -6698,17 +6710,25 @@ class App:
         hint.bind("<Configure>", lambda e: hint.configure(wraplength=max(160, e.width-4)))
         text_shell, text_body = self._rounded_panel(body, padding=10)
         text_shell.grid(row=1, column=0, sticky="nsew")
-        scrollbar = self._thin_scrollbar(text_body, orient="vertical")
-        text = Text(text_body, height=4, width=52, wrap="char", font=(MONO_FONT, 10),
-                    bg=COLORS["panel_alt"], fg=COLORS["text"], insertbackground=COLORS["text"],
-                    relief="flat", bd=0, highlightthickness=0, yscrollcommand=scrollbar.set)
-        scrollbar.configure(command=text.yview)
-        scrollbar.pack(side=RIGHT, fill="y")
-        text.pack(side=LEFT, fill=BOTH, expand=True, padx=4, pady=4)
-        def select_all(_event):
-            text.tag_add("sel", "1.0", "end-1c")
-            return "break"
-        text.bind("<Control-a>", select_all)
+        if cards:
+            text, card_canvas = self._create_scrollable_tab(text_body, padding=0, modern=False)
+            text.configure(bg=COLORS['panel_alt'])
+            card_canvas.configure(bg=COLORS['panel_alt'])
+            text._seed_canvas = card_canvas
+            focus_target = card_canvas
+        else:
+            scrollbar = self._thin_scrollbar(text_body, orient="vertical")
+            text = Text(text_body, height=4, width=52, wrap="char", font=(MONO_FONT, 10),
+                        bg=COLORS["panel_alt"], fg=COLORS["text"], insertbackground=COLORS["text"],
+                        relief="flat", bd=0, highlightthickness=0, yscrollcommand=scrollbar.set)
+            scrollbar.configure(command=text.yview)
+            scrollbar.pack(side=RIGHT, fill="y")
+            text.pack(side=LEFT, fill=BOTH, expand=True, padx=4, pady=4)
+            def select_all(_event):
+                text.tag_add("sel", "1.0", "end-1c")
+                return "break"
+            text.bind("<Control-a>", select_all)
+            focus_target = text
         def close(_event=None):
             self._close_rounded_picker()
             dialog.destroy()
@@ -6734,7 +6754,7 @@ class App:
             dialog.geometry(f"{width}x{height}{x:+d}{y:+d}")
             dialog.deiconify()
             dialog.lift()
-            text.focus_set()
+            focus_target.focus_set()
         dialog.after_idle(show_centered)
         return dialog, controls, text
 
@@ -6839,38 +6859,51 @@ class App:
         self.root.after(50, poll)
 
     def _rotation_online_seed_library(self):
-        dialog, body, text = self._rotation_seed_window(
-            '在线种子库', '按名称搜索公开种子。下载会新增带“（导入）”的预设，已有预设和模式分配保留。')
-        text.configure(state='disabled')
-        state = {'items': [], 'selected': None}
+        dialog, body, cards = self._rotation_seed_window(
+            '在线种子库', '最新公开种子按上传时间排列。点击卡片上的按钮下载，新增带“（导入）”的预设。', cards=True)
         name = StringVar(value='')
         status = StringVar(value='正在加载最新上传的种子…')
+        Label(cards, textvariable=status, bg=COLORS['panel_alt'], fg=COLORS['muted'],
+              wraplength=380, pady=30).pack(fill=X)
         row = Frame(body, bg=COLORS['panel'])
         row.pack(fill=X, pady=(10, 0))
         Label(row, text='种子名称', bg=COLORS['panel']).pack(side=LEFT)
         entry = self._rounded_entry(row, textvariable=name)
         entry.pack(side=LEFT, fill=X, expand=True, padx=8)
         entry.configure(validate='key', validatecommand=(dialog.register(lambda value: len(value) <= 10), '%P'))
-        def select(index):
-            state['selected'] = index
-            text.tag_remove('selected', '1.0', END)
-            text.tag_add('selected', f'{index+1}.0', f'{index+1}.end')
-            text.tag_configure('selected', background=COLORS['panel_alt'])
-            status.set(f'已选择【{state["items"][index]["name"]}】')
         def display(result):
             items, truncated = result
-            state.update(items=items, selected=None)
-            text.configure(state='normal')
-            text.delete('1.0', END)
-            for index, item in enumerate(items):
-                text.insert(END, f'{item["name"]}　·　{item.get("modules", "?")}个模块\n', f'item{index}')
-                text.tag_bind(f'item{index}', '<ButtonRelease-1>', lambda _event, i=index: select(i))
-            text.configure(state='disabled')
+            for child in cards.winfo_children():
+                child.destroy()
+            for item in items:
+                shell, content = self._rounded_panel(cards, padding=14, color=COLORS['panel'],
+                                                      outer_color=COLORS['panel_alt'])
+                shell.pack(fill=X, pady=(0, 10))
+                self._ui_button(content, text='下载并导入', width=13, style='Primary.TButton',
+                                command=lambda record=item: download(record)).pack(side=RIGHT, padx=(12, 0))
+                info = Frame(content, bg=COLORS['panel'])
+                info.pack(side=LEFT, fill=X, expand=True)
+                title = Label(info, text=item['name'], font=(FONT_FAMILY, 12, 'bold'),
+                              anchor='w', justify=LEFT, bg=COLORS['panel'], fg=COLORS['text'])
+                title.pack(fill=X)
+                title.bind('<Configure>', lambda event, label=title: label.configure(wraplength=max(80, event.width-4)))
+                try:
+                    uploaded = datetime.fromisoformat(item.get('created', '').replace('Z', '+00:00'))
+                    uploaded = uploaded.astimezone().strftime('%Y-%m-%d %H:%M')
+                except (ValueError, TypeError, AttributeError):
+                    uploaded = '时间未知'
+                details = Label(info, text=f'{item.get("modules", "?")} 个模块  ·  上传于 {uploaded}',
+                                bg=COLORS['panel'], fg=COLORS['muted'], anchor='w', justify=LEFT)
+                details.pack(fill=X, pady=(6, 0))
+                details.bind('<Configure>', lambda event, label=details: label.configure(wraplength=max(80, event.width-4)))
+                self._bind_mousewheel_tree(shell, cards._seed_canvas)
+            cards._seed_canvas.yview_moveto(0)
             if items:
-                select(0)
-                status.set(f'按上传时间从新到旧显示{len(items)}个种子，点击条目后下载。'+('结果较多，可按名称搜索。' if truncated else ''))
+                status.set(f'最新上传 · {len(items)}个种子'+('；可按名称搜索更多。' if truncated else ''))
             else:
                 status.set('没有找到这个名称。' if name.get().strip() else '暂时还没有公开种子，可稍后点击搜索刷新。')
+                Label(cards, textvariable=status, bg=COLORS['panel_alt'], fg=COLORS['muted'],
+                      wraplength=380, pady=30).pack(fill=X)
         def search():
             query = name.get()
             self._seed_library_job(dialog, status, lambda: search_seeds(query), display)
@@ -6897,18 +6930,14 @@ class App:
             self._rotation_refresh_picker()
             self._rotation_rebuild_cards()
             status.set(f'已下载并新增：{preset["name"]}')
-        def download():
-            index = state['selected']
-            if index is None:
-                status.set('请先搜索并选择一条种子。')
+        def download(item):
+            if getattr(dialog, '_seed_job_running', False):
                 return
-            identity = state['items'][index]['id']
+            identity = item['id']
             self._seed_library_job(dialog, status, lambda: download_seed(identity), import_downloaded)
         footer = Frame(body, bg=COLORS['panel'])
         footer.pack(fill=X)
         self._ui_button(footer, text='关闭', command=dialog.destroy).pack(side=RIGHT)
-        self._ui_button(footer, text='下载并导入', width=16, style='Primary.TButton',
-                        command=download).pack(side=RIGHT, padx=8)
         self.root.after_idle(lambda: search() if dialog.winfo_exists() else None)
         return dialog
 
@@ -10405,8 +10434,8 @@ def main() -> None:
         pass
     root = Tk()
     root.withdraw()
-    App(root)
-    show_ready_main_window(root, signal_update_ready)
+    ui = App(root)
+    show_ready_main_window(root, ui._on_main_window_ready)
     root.mainloop()
 
 
