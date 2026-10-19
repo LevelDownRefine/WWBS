@@ -63,8 +63,8 @@ def _legacy_default_store() -> dict:
     ]}
 
 
-def default_store() -> dict:
-    """The user's saved ordering/times, with the requested 5-second skill gap."""
+def _previous_default_store() -> dict:
+    """Frozen factory profile used only to recognize unedited older settings."""
     store = _legacy_default_store()
     store["version"] = 5
     preset = store["presets"][0]
@@ -76,6 +76,22 @@ def default_store() -> dict:
     for item in modules:
         if item["kind"] == "skill":
             item["interval"] = 5
+    return store
+
+
+def default_store() -> dict:
+    """Factory axis supplied as 默认战斗轴 / WWBS4 on 2026-10-19."""
+    store = _previous_default_store()
+    preset = store['presets'][0]
+    preset['slot_times'] = {'1': 30, '2': 15, '3': 4}
+    first = []
+    for kind, value in (('idle_attack', 40), ('attack_count', 15), ('heavy_count', 1),
+                        ('skill', 1), ('attack_count', 15), ('ultimate', 1),
+                        ('echo', 1), ('approach', .09)):
+        module = new_module(kind, 1)
+        module['value'] = value
+        first.append(module)
+    preset['modules'] = first + [m for m in preset['modules'] if m['slot'] == 3]
     return store
 
 
@@ -194,10 +210,11 @@ def load_store(path: Path) -> dict:
                 preset["modules"].append(deepcopy(defaults["modules"][-1]))
         # Upgrade only an untouched built-in profile. Edited user profiles keep
         # their times, order, intervals and mode assignments.
+        untouched = any(preset['slot_times'] == prior['slot_times']
+                        and signature(preset['modules']) == signature(prior['modules'])
+                        for prior in (defaults, _previous_default_store()['presets'][0]))
         if (preset["id"] == "default" and preset["name"] == "默认战斗轴"
-                and preset["slot_times"] == defaults["slot_times"]
-                and preset["slot_order"] == [1, 2, 3]
-                and signature(preset["modules"]) == signature(defaults["modules"])):
+                and preset["slot_order"] == [1, 2, 3] and untouched):
             replacement = default_store()["presets"][0]
             old_ids = {}
             for item in preset["modules"]:

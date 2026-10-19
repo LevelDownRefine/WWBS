@@ -188,8 +188,10 @@ class Combat4CTests(unittest.TestCase):
         self.assertTrue(enabled.is_set())
 
     def test_4c_battle_casts_ultimate_on_timer_without_indicator(self):
+        from combat_rotation import new_module
         controller = Mock()
-        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
+        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False,
+                                rotation_modules=[new_module('ultimate')])
         runner._sleep_interruptible = Mock()
         runner._inspect_4c_boss_header = Mock(return_value=True)
         runner._perform_4c_heal_rotation = Mock(return_value=True)
@@ -205,8 +207,10 @@ class Combat4CTests(unittest.TestCase):
         runner._ultimate_indicator_ready.assert_not_called()
 
     def test_daily_battle_casts_ultimate_on_timer_without_indicator(self):
+        from combat_rotation import new_module
         controller = Mock()
-        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False)
+        runner = app.TaskRunner(controller, lambda _message: None, dry_run=False,
+                                rotation_modules=[new_module('ultimate')])
         runner._sleep_interruptible = Mock()
         runner._select_daily_slot_one_after_loading = Mock()
         runner._daily_reward_stage_present = Mock(return_value=False)

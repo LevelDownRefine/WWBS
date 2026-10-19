@@ -47,8 +47,34 @@ class ReportedRewardVisionTests(unittest.TestCase):
             target.save(path)
             self.assertTrue(self.runner()._daily_activity_score_full(path))
 
+    def test_reported_150_crop_and_full_screens_with_yellow_decoration_are_accepted(self):
+        path=FIXTURES/'daily-activity-150.png'
+        self.assertTrue(self.runner()._daily_activity_score_full(path))
+        with tempfile.TemporaryDirectory() as directory, Image.open(path) as counter, \
+                Image.open(FIXTURES/'daily-activity-zero.png') as source:
+            for width in (1280,1600,1920,2560):
+                with self.subTest(width=width):
+                    screen=source.resize((width,round(width*9/16)),Image.Resampling.BILINEAR)
+                    screen.paste((90,113,125),(round(width*.15),round(screen.height*.77),
+                                             round(width*.29),round(screen.height*.94)))
+                    scale=width/1920
+                    patch_image=counter.resize((round(counter.width*scale),round(counter.height*scale)),
+                                               Image.Resampling.BILINEAR)
+                    screen.paste(patch_image,(round(width*.185),round(screen.height*.78)))
+                    target=Path(directory)/'150.png'
+                    screen.save(target)
+                    self.assertTrue(self.runner(width)._daily_activity_score_full(target))
+
+    def test_two_digit_50_is_not_full(self):
+        with tempfile.TemporaryDirectory() as directory, Image.open(FIXTURES/'daily-activity-150.png') as source:
+            image=source.copy()
+            image.paste((90,113,125),(0,0,60,85))
+            path=Path(directory)/'50.png'
+            image.save(path)
+            self.assertFalse(self.runner()._daily_activity_score_full(path))
+
     def test_full_digits_survive_background_changes_resize_and_reposition(self):
-        from daily_activity import _yellow_digits
+        from tasks.daily_activity import _yellow_digits
         with tempfile.TemporaryDirectory() as directory, \
                 Image.open(FIXTURES/'daily-activity-zero.png') as source, \
                 Image.open(app.TEMPLATES_DIR/'daily'/'activity_full.png') as counter:
@@ -71,7 +97,7 @@ class ReportedRewardVisionTests(unittest.TestCase):
                         self.assertTrue(self.runner(width)._daily_activity_score_full(path))
 
     def test_two_zeroes_and_three_zeroes_do_not_count_as_one_hundred(self):
-        from daily_activity import _yellow_digits
+        from tasks.daily_activity import _yellow_digits
         with tempfile.TemporaryDirectory() as directory, \
                 Image.open(FIXTURES/'daily-activity-zero.png') as source, \
                 Image.open(app.TEMPLATES_DIR/'daily'/'activity_full.png') as counter:
@@ -122,7 +148,7 @@ class RewardRecoveryFlowTests(unittest.TestCase):
         runner = self.runner()
         runner._yellow_claim_rows = Mock(side_effect=[[], [221], [], []])
         runner._daily_activity_score_full = Mock(return_value=False)
-        with patch.object(app, 'APP_DIR', FIXTURES), \
+        with patch('tasks.other.APP_DIR', FIXTURES), \
                 patch.object(app.Image, 'open', return_value=Image.new('RGB', (1600, 900))):
             runner._collect_daily_activity_rewards()
         runner.controller.tap.assert_called_once_with(1408, 221)
@@ -145,6 +171,44 @@ class RewardRecoveryFlowTests(unittest.TestCase):
         runner._collect_daily_activity_rewards()
         self.assertEqual(sum(call.args[:2] == (.945, .868) for call in runner._tap_ratio.call_args_list), 1)
         runner._daily_activity_score_full.assert_not_called()
+
+    def test_already_open_activity_page_claims_without_reopening_or_score_gate(self):
+        runner=self.runner()
+        runner._yellow_claim_rows=Mock(return_value=[])
+        runner._daily_activity_score_full=Mock(side_effect=AssertionError('No score gate'))
+        runner._collect_daily_activity_rewards(already_open=True)
+        runner._open_terminal_destination.assert_not_called()
+        self.assertEqual([call.args[:2] for call in runner._tap_ratio.call_args_list],
+                         [(.945,.868),(.957,.058)])
+
+    def test_150_confirmed_twice_skips_combat_but_still_claims_all_rewards(self):
+        runner=self.runner()
+        runner.daily_zone_name=app.DAILY_ZONE_NAMES[0]
+        runner._daily_activity_confirmed_full=True
+        runner._open_daily_tacet_field=Mock(return_value=False)
+        runner._collect_daily_activity_rewards=Mock()
+        runner._collect_daily_battlepass_rewards=Mock()
+        runner._continue_daily_into_weekly_travel=Mock()
+        runner._run_daily_battle=Mock()
+        runner._run_daily_routine(app.Step(action='daily_routine'))
+        runner._run_daily_battle.assert_not_called()
+        runner._collect_daily_activity_rewards.assert_called_once_with(already_open=True)
+        runner._collect_daily_battlepass_rewards.assert_called_once()
+        runner._continue_daily_into_weekly_travel.assert_called_once()
+
+    def test_pending_page_requires_two_consistent_full_counter_frames(self):
+        runner=self.runner()
+        runner._sola_guide_page_ready=Mock(return_value=True)
+        runner._daily_activity_page_present=Mock(return_value=True)
+        runner._daily_activity_score_full=Mock(side_effect=[True,False,True,True])
+        self.assertFalse(runner._daily_activity_still_pending())
+        self.assertTrue(runner._daily_activity_confirmed_full)
+        self.assertEqual(runner._daily_activity_score_full.call_count,4)
+        runner._open_terminal_destination=Mock()
+        runner._daily_activity_still_pending=Mock(return_value=False)
+        runner._click_daily_template=Mock()
+        self.assertFalse(runner._open_daily_tacet_field('zone.png'))
+        runner._click_daily_template.assert_not_called()
 
     def test_tasks_are_claimed_before_chest_and_page_exit(self):
         runner = self.runner()

@@ -18,11 +18,11 @@ class RotationTests(unittest.TestCase):
 
     def test_default_keeps_intervals_and_heavy_frequency(self):
         modules = [m for m in active_modules(default_store()) if m['slot'] == 1]
-        self.assertEqual([m['kind'] for m in modules], ['idle_attack', 'skill', 'ultimate', 'echo', 'approach'])
-        self.assertEqual(modules[0]['value'], 20)
-        self.assertEqual(modules[2]['interval'], 15)
-        self.assertEqual(modules[1]['interval'], 5)
-        self.assertEqual(default_store()['presets'][0]['slot_times'], {'1': 25, '2': 15, '3': 5})
+        self.assertEqual([m['kind'] for m in modules], ['idle_attack', 'attack_count', 'heavy_count', 'skill', 'attack_count', 'ultimate', 'echo', 'approach'])
+        self.assertEqual(modules[0]['value'], 40)
+        self.assertEqual(modules[5]['interval'], 15)
+        self.assertEqual(modules[3]['interval'], 5)
+        self.assertEqual(default_store()['presets'][0]['slot_times'], {'1': 30, '2': 15, '3': 4})
 
     def test_default_healing_sequence_runs_q_before_return_in_both_modes(self):
         for mode in ('daily', 'combat_4c'):
@@ -49,7 +49,7 @@ class RotationTests(unittest.TestCase):
                 clock = RotationClock(modules, 0, slot_times=store['presets'][0]['slot_times'],
                                       background_idle=True)
                 with patch.object(app.time, 'monotonic', side_effect=lambda: tick[0]):
-                    while tick[0] < 31:
+                    while tick[0] < 35:
                         action = clock.next_action(tick[0])
                         runner._run_rotation_action(action, clock, 'E', 'R', threading.Event(),
                                                     threading.Lock(), daily=mode == 'daily')
@@ -60,7 +60,9 @@ class RotationTests(unittest.TestCase):
                 self.assertEqual([key for _, key in healing],
                                  ['E', 'SPACE', 'click', 'click', 'click',
                                   'SPACE', 'click', 'click', 'click', 'Q'])
-                self.assertGreaterEqual(inputs[returned][0] - healing[-1][0], .8)
+                # The supplied axis limits this visit to four seconds; it may
+                # leave during the final 0.8-second wait after Q.
+                self.assertGreaterEqual(inputs[returned][0] - healing[-1][0], .6)
 
     def test_loading_old_default_adds_healing_but_preserves_customizations(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -71,7 +73,7 @@ class RotationTests(unittest.TestCase):
             preset['slot_times']['3'] = 5
             save_store(path, old)
             upgraded = load_store(path)
-            self.assertEqual(upgraded['presets'][0]['slot_times'], {'1': 25, '2': 15, '3': 5})
+            self.assertEqual(upgraded['presets'][0]['slot_times'], {'1': 30, '2': 15, '3': 4})
             self.assertTrue(any(m['slot'] == 3 and m['kind'] == 'echo'
                                 for m in active_modules(upgraded)))
             save_store(path, upgraded)
@@ -876,7 +878,7 @@ class RotationTests(unittest.TestCase):
             upgraded = load_store(path)
             result = upgraded['presets'][0]['modules']
             self.assertEqual({m['id'] for m in result} & set(ids), set(ids))
-            self.assertEqual(result[5]['value'], .35)
+            self.assertEqual(next(m for m in result if m['slot'] == 3)['value'], .35)
             self.assertEqual((result[-1]['kind'], result[-1]['slot']), ('idle_attack', 3))
             modules[5]['value'] = 3
             save_store(path, old)

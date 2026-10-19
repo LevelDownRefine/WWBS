@@ -141,11 +141,12 @@ class CombatSeedTests(unittest.TestCase):
     def test_compact_default_and_second_generation_seed_compatibility(self):
         original = default_store()['presets'][0]
         seed = export_seed(original)
-        self.assertLessEqual(len(seed), 45)
+        self.assertLessEqual(len(seed), 90)
         self.assertEqual(content(decode_seed(seed)), content(original))
         body = b'\x00' + b'\x01'*16 + SHORT_DICT
         old = 'WWBS2.' + base64.urlsafe_b64encode(body+hashlib.sha256(body).digest()[:8]).decode().rstrip('=')
-        self.assertEqual(content(decode_seed(old)), content(original))
+        from combat_rotation import _previous_default_store
+        self.assertEqual(content(decode_seed(old)), content(_previous_default_store()['presets'][0]))
 
     def test_short_format_preserves_arbitrary_decimal_values(self):
         self.preset['slot_times'] = {'1': 12.345678901, '2': .23456789, '3': 9.87654321}
