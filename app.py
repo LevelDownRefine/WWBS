@@ -6832,11 +6832,11 @@ class App:
             try:
                 result, error = results.get_nowait()
             except queue.Empty:
-                dialog.after(50, poll)
+                self.root.after(50, poll)
                 return
             finish(result, error)
         threading.Thread(target=run, daemon=True, name='wwbs-seed-library').start()
-        dialog.after(50, poll)
+        self.root.after(50, poll)
 
     def _rotation_online_seed_library(self):
         dialog, body, text = self._rotation_seed_window(
@@ -6909,7 +6909,7 @@ class App:
         self._ui_button(footer, text='关闭', command=dialog.destroy).pack(side=RIGHT)
         self._ui_button(footer, text='下载并导入', width=16, style='Primary.TButton',
                         command=download).pack(side=RIGHT, padx=8)
-        dialog.after_idle(search)
+        self.root.after_idle(lambda: search() if dialog.winfo_exists() else None)
         return dialog
 
     def _rotation_import_seed(self):

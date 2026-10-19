@@ -2,7 +2,7 @@ import threading
 import time
 import tkinter as tk
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import app
 
@@ -54,3 +54,17 @@ class SeedLibraryUiTests(unittest.TestCase):
         values = [self.root.getvar(w.cget('textvariable')) for w in walk(dialog)
                   if isinstance(w, tk.Label) and w.cget('textvariable')]
         self.assertIn('连接失败，请检查网络', values)
+
+    def test_closing_during_request_does_not_deliver_results_to_destroyed_widgets(self):
+        dialog = tk.Toplevel(self.root)
+        status = tk.StringVar()
+        finish = Mock()
+        release = threading.Event()
+        self.ui._seed_library_job(dialog, status, lambda: release.wait(2), finish)
+        dialog.destroy()
+        release.set()
+        deadline = time.monotonic()+.15
+        while time.monotonic() < deadline:
+            self.root.update()
+            time.sleep(.01)
+        finish.assert_not_called()
