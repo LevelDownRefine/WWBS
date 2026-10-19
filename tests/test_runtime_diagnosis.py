@@ -128,6 +128,14 @@ class RuntimeDiagnosisTests(unittest.TestCase):
         app._show_task_error_feedback.assert_not_called()
         self.assertFalse(app._preflight_running)
 
+    def test_weekly_preflight_defers_page_position_to_runtime_observer(self):
+        app = self._preflight_app()
+        app.tasks = [SimpleNamespace(enabled=True, template_group='default', name=app_module.DEFAULT_GROUP_NAME, steps=[])]
+        with patch.object(app_module, 'ClientWindowController', side_effect=AssertionError('must not require menu1')):
+            app._preflight_enabled_run()
+        app._run_enabled.assert_called_once_with()
+        self.assertFalse(app._preflight_running)
+
     def test_fast_preflight_reports_failure_before_worker(self) -> None:
         app = self._preflight_app()
         controller = Mock()
