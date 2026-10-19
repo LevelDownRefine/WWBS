@@ -101,7 +101,7 @@ DEFAULT_GROUP_KEY = "default"
 DEFAULT_GROUP_NAME = "幻梦游园"
 WEEKLY_TEMPLATE_THRESHOLD = 0.5
 APP_ICON = APP_DIR / "wwbs.ico"
-APP_VERSION = "1.5.5 beta2"
+APP_VERSION = "1.5.5"
 APP_BUILD = 1
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
@@ -196,6 +196,14 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
+    ('v1.5.5', '''WWBS 1.5.5 正式版
+汇总1.5.5测试阶段的功能与修复。
+周常每一步重新判断当前页面，支持中途接续；结合剩余天数和卡片变化处理重复选卡。当前模板最多5次，附近模板各2次。
+在线种子库打开即显示最新上传，每条种子独立卡片，可直接下载并新增导入；旧种子继续兼容。
+采用指定18模块默认战斗轴，保留已编辑的轴与任务分配；切人确认期间持续普攻。
+新增Boss战自动播放雨爱、战歌重奏自动刷取，保留日常领取及150以上活跃度识别修复。
+先显示主窗口，再弹每版本首次更新公告；软件下载更新保留进度、重试、校验与设置继承。
+本版本为正式版，可通过软件内检查更新获取。完整说明见release-notes-v1.5.5.md。'''),
     ('v1.5.5 beta2', '''v1.5.5 beta2
 启动时先显示完整主窗口，再在程序中央显示首次更新公告，不再关掉公告才能看到程序。
 在线种子库改为独立圆角卡片，显示名称、模块数和上传时间；每张卡片可直接下载并导入，支持滚动浏览和名称搜索。
