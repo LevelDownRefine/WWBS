@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,8 @@ class TemplateMatcher:
         *,
         first_match: bool = False,
         template_crop: tuple[int, int, int, int] | None = None,
+        candidate_validator=None,
+        max_width: int | None = None,
     ) -> MatchResult:
         template_path = self.templates_dir / template_name
         if not template_path.exists():
@@ -42,9 +45,15 @@ class TemplateMatcher:
         template_image = Image.open(template_path).convert("L")
         if template_crop is not None:
             template_image = template_image.crop(template_crop)
+        reduction = min(1., max_width/screenshot_image.width) if max_width else 1.
+        if reduction < 1:
+            screenshot_image = screenshot_image.resize(
+                (round(screenshot_image.width*reduction), round(screenshot_image.height*reduction)),
+                Image.Resampling.LANCZOS)
         scales = scales or [1.0, 0.95, 1.05, 0.9, 1.1]
 
         best: MatchResult | None = None
+        rejected = False
         tested_sizes: set[tuple[int, int]] = set()
         screenshot_cache: dict[float, np.ndarray] = {}
         for scale in scales:
@@ -52,7 +61,7 @@ class TemplateMatcher:
             if blur_radius not in screenshot_cache:
                 screenshot_cache[blur_radius] = _gray_array(screenshot_image, blur_radius)
             screenshot = screenshot_cache[blur_radius]
-            template = _scaled_template_gray(template_image, scale, blur_radius)
+            template = _scaled_template_gray(template_image, scale*reduction, blur_radius)
             template_size = (template.shape[1], template.shape[0])
             if template_size in tested_sizes:
                 continue
@@ -60,11 +69,19 @@ class TemplateMatcher:
             if template.shape[0] >= screenshot.shape[0] or template.shape[1] >= screenshot.shape[1]:
                 continue
             result = _match_single_scale_gray(screenshot, template)
+            if reduction < 1:
+                result = MatchResult(round(result.x/reduction), round(result.y/reduction),
+                                     round(result.width/reduction), round(result.height/reduction), result.score)
+            if result.score >= threshold and candidate_validator is not None and not candidate_validator(result):
+                rejected = True
+                continue
             if first_match and result.score >= threshold:
                 return result
             if best is None or result.score > best.score:
                 best = result
 
+        if rejected and (best is None or best.score < threshold):
+            raise RuntimeError(f'{template_name} 候选颜色或可点击状态不符，已检查其余缩放，不点击。')
         if best is None:
             raise RuntimeError("没有可用的模板匹配结果。")
         if best.score < threshold:
@@ -227,6 +244,20 @@ def _window_sum(image: np.ndarray, height: int, width: int) -> np.ndarray:
     )
 
 
+@lru_cache(maxsize=128)
+def _fast_fft_length(length: int) -> int:
+    """Pad prime-sized captures to a nearby 2/3/5-smooth FFT length."""
+    candidate = length
+    while True:
+        remainder = candidate
+        for factor in (2, 3, 5):
+            while remainder % factor == 0:
+                remainder //= factor
+        if remainder == 1:
+            return candidate
+        candidate += 1
+
+
 def _fft_convolve_valid(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
     """NumPy-only equivalent of scipy.signal.fftconvolve(..., mode='valid')."""
     image_height, image_width = image.shape
@@ -235,8 +266,8 @@ def _fft_convolve_valid(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
         raise ValueError("卷积模板不能大于截图。")
 
     full_shape = (
-        image_height + kernel_height - 1,
-        image_width + kernel_width - 1,
+        _fast_fft_length(image_height + kernel_height - 1),
+        _fast_fft_length(image_width + kernel_width - 1),
     )
     image_fft = np.fft.rfft2(image, full_shape)
     kernel_fft = np.fft.rfft2(kernel, full_shape)

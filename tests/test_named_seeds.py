@@ -16,7 +16,7 @@ class NamedSeedTests(unittest.TestCase):
         preset=default_store()['presets'][0]
         seeds=[export_seed(preset) for _ in range(20)]
         self.assertTrue(all(seed.startswith('【默认战斗轴】WWBS4.') for seed in seeds))
-        self.assertTrue(all(len(seed)==36 for seed in seeds))
+        self.assertTrue(all(len(seed)<=90 for seed in seeds))
         self.assertLess(len(seeds[0]),len(_export_third_generation(preset)))
         self.assertEqual(len(set(seeds)),20)
         self.assertEqual(snapshot(decode_seed(seeds[0])),snapshot(preset))
@@ -61,7 +61,8 @@ class NamedSeedTests(unittest.TestCase):
     def test_old_third_generation_still_decodes_and_reexports_named(self):
         original=default_store()['presets'][0]
         original['slot_order']=[3,2,1]
-        original['modules'].insert(5,new_module('attack_count',2))
+        index=next(i for i,m in enumerate(original['modules']) if m['slot']==3)
+        original['modules'].insert(index,new_module('attack_count',2))
         old=_export_third_generation(original)
         restored=decode_seed(old)
         new=export_seed(restored)

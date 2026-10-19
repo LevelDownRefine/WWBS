@@ -6,11 +6,19 @@ import numpy as np
 from PIL import Image
 from image_matcher import _match_single_scale_gray
 
+SKIP_TEMPLATES = frozenset({'menu4.png', 'menu6.png', 'menu8.png', 'menu91.png'})
+
+
+def weekly_target_clickable(target, score):
+    # Short pale captions otherwise correlate with the adjacent 刷新 button.
+    return target.colour_error <= 45 and (Path(target.template).name not in SKIP_TEMPLATES or score >= .8)
+
 
 def weekly_template_crop(template: str, templates_dir: Path):
     name = Path(template).name
     ratios = ((.37, .40, .86, .83) if name == 'menu1.png' else
-              (.35, .40, .94, .79) if name in {'menu3.png', 'menu5.png', 'menu7.png', 'menu9.png', 'menu92.png'} else None)
+              (.35, .40, .94, .79) if name in {'menu3.png', 'menu5.png', 'menu7.png', 'menu9.png', 'menu92.png'} else
+              (.35, .34, .70, .75) if name in SKIP_TEMPLATES else None)
     if ratios is None:
         return None
     with Image.open(templates_dir/template) as source:
