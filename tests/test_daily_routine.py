@@ -330,25 +330,27 @@ class DailyRoutineTests(unittest.TestCase):
             self.assertFalse(TaskRunner._weekly_skill_slot_empty(screenshot))
             self.assertTrue(TaskRunner._weekly_skill_equipped(screenshot))
 
-    def test_standalone_weekly_run_checks_skill_before_clicking_start(self):
+    def test_standalone_weekly_run_does_not_force_start_page_before_dynamic_flow(self):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)
         runner._check_weekly_cap = Mock()
         runner._wait_for_daily_template = Mock()
         runner._ensure_weekly_skill_selected = Mock()
         runner._run_step = Mock()
+        runner._run_weekly_dynamic = Mock()
         task = app.WeeklyTask(
             name=app.DEFAULT_GROUP_NAME,
             enabled=True,
             weekday="any",
             description="",
             template_group="default",
-            steps=[app.Step(action="wait")],
+            steps=[app.Step(action="tap_image_cycle", templates=['menu2.png', 'menu99.png'])],
         )
 
         runner.run_task(task)
 
-        runner._wait_for_daily_template.assert_called_once_with("menu1.png", timeout=8.0, threshold=0.5)
-        runner._ensure_weekly_skill_selected.assert_called_once_with()
+        runner._wait_for_daily_template.assert_not_called()
+        runner._ensure_weekly_skill_selected.assert_not_called()
+        runner._run_weekly_dynamic.assert_called_once()
 
     def test_daily_skips_tacet_field_when_activity_page_was_auto_skipped(self):
         runner = TaskRunner(Mock(), lambda _message: None, dry_run=False)

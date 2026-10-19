@@ -199,6 +199,7 @@ UPDATE_HISTORY = [
     ('v1.5.5 beta2', '''v1.5.5 beta2
 启动时先显示完整主窗口，再在程序中央显示首次更新公告，不再关掉公告才能看到程序。
 在线种子库改为独立圆角卡片，显示名称、模块数和上传时间；每张卡片可直接下载并导入，支持滚动浏览和名称搜索。
+周常每一步按当前页面重新定位，可中途接续；结合剩余天数和卡片内容处理重复选卡，不强制从小漂泊者开始。当前模板识别5次，附近模板各2次。
 保留最新上传自动加载、导入新增预设和历史种子兼容。
 今后测试版改动递增beta序号，软件内更新仍只检查正式版。'''),
     ("v1.5.5 beta1", """v1.5.5 beta1 · Boss战自动播放雨爱
@@ -594,7 +595,8 @@ WM_QUIT = 0x0012
 CLICK_EDGE_MARGIN_RATIO = 0.10
 CLICK_JITTER_RATIO = 0.25
 CLICK_DELAY_JITTER_SECONDS = 0.20
-CYCLE_PROBE_ATTEMPTS = 2
+CYCLE_PROBE_ATTEMPTS = 5
+CYCLE_NEIGHBOR_PROBE_ATTEMPTS = 2
 CYCLE_PROBE_INTERVAL = 0.15
 WEEKLY_CLICK_INTERVAL = 0.30
 WEEKLY_CLICK_JITTER = 0.02
@@ -1104,10 +1106,15 @@ class TaskRunner:
         self.log(f"使用模板组: {task.template_group}")
         self.log(f"开始任务: {task.name}")
         if self._weekly_monitoring:
-            self.log(f"周常阈值：{WEEKLY_TEMPLATE_THRESHOLD:.2f}，连续截图稳定后点击；每步先确认上一点击响应。")
-        if task.template_group == "default" and task.name == DEFAULT_GROUP_NAME and not self.dry_run:
-            self._wait_for_daily_template("menu1.png", timeout=8.0, threshold=WEEKLY_TEMPLATE_THRESHOLD)
-            self._ensure_weekly_skill_selected()
+            self.log(f"周常局部匹配阈值：{WEEKLY_TEMPLATE_THRESHOLD:.2f}；全局页面定位需要较强文字匹配，连续截图稳定后点击。")
+        if self._weekly_monitoring and not self.dry_run:
+            cycle = next((step for step in task.steps if step.action == 'tap_image_cycle'), None)
+            if cycle is not None:
+                start = next((step for step in task.steps if step.action == 'tap_image' and step.template == 'menu1.png'),
+                             Step(action='tap_image', template='menu1.png'))
+                self._run_weekly_dynamic(start, cycle)
+                self.log(f"完成任务: {task.name}")
+                return
         for index, step in enumerate(task.steps, start=1):
             if self.stop_event.is_set():
                 self.log("收到停止信号，任务已中断。")
@@ -3154,17 +3161,19 @@ class TaskRunner:
             timeout=1.0,
             seconds=WEEKLY_CLICK_INTERVAL,
         )
-        self._run_step(start_step)
-        self._run_image_cycle(cycle_step)
+        self._run_weekly_dynamic(start_step, cycle_step)
+
+    def _run_weekly_dynamic(self, start_step: Step, cycle_step: Step) -> None:
+        from weekly_flow import run_weekly_flow
+        run_weekly_flow(self, start_step, cycle_step, attempts=CYCLE_PROBE_ATTEMPTS,
+                        nearby_attempts=CYCLE_NEIGHBOR_PROBE_ATTEMPTS)
 
     def _start_weekly_travel_from_selected_page(self) -> None:
         """Enter Dream Park from an already selected unfinished weekly page."""
         self._tap_ratio(0.247, 0.505, 0.8)
         self.template_root = TEMPLATES_DIR
         self.matcher.templates_dir = TEMPLATES_DIR
-        self._wait_for_daily_template("menu1.png", timeout=12.0, threshold=WEEKLY_TEMPLATE_THRESHOLD)
-        self._ensure_weekly_skill_selected()
-        self.log("    小漂泊者界面准备完成，接续周常拿满奖励（15轮）。")
+        self.log("    已进入周常，按当前页面接续周常拿满奖励（15轮）。")
         self._run_default_weekly_from_daily()
 
     def _continue_daily_from_open_guide_page(self) -> None:
@@ -3725,7 +3734,7 @@ class TaskRunner:
         if found is not None:
             return step, *found
         if previous_step is not None:
-            found = self._probe_cycle_template(previous_step, "上一张")
+            found = self._probe_cycle_template(previous_step, "上一张", attempts=CYCLE_NEIGHBOR_PROBE_ATTEMPTS)
             if found is not None:
                 if self.dry_run:
                     self.log("    干运行：上一张匹配成功，不点击。")
@@ -3737,7 +3746,7 @@ class TaskRunner:
                 if found is not None:
                     return step, *found
         if next_step is not None:
-            found = self._probe_cycle_template(next_step, "下一张")
+            found = self._probe_cycle_template(next_step, "下一张", attempts=CYCLE_NEIGHBOR_PROBE_ATTEMPTS)
             if found is not None:
                 self.log(f"    已显示下一张 {next_step.template}，跳过本次 {step.template}，从下一张接续。")
                 return next_step, *found
@@ -3747,14 +3756,15 @@ class TaskRunner:
         previous_name = previous_step.template if previous_step else "无上一张"
         next_name = next_step.template if next_step else "无下一张"
         message = (f"周常模板流程无法继续：本次 {step.template}、上一张 {previous_name}、"
-                   f"下一张 {next_name} 已按每组2次识别并最终复核本次，仍未匹配。已停止，请检查当前游戏页面。")
+                   f"下一张 {next_name} 已按当前模板{CYCLE_PROBE_ATTEMPTS}次、附近模板各{CYCLE_NEIGHBOR_PROBE_ATTEMPTS}次"
+                   f"识别并最终复核本次，仍未匹配。已停止，请检查当前游戏页面。")
         self.stop_event.set()
         self.log(message)
         self.notice(message)
         raise RuntimeError(message)
 
-    def _probe_cycle_template(self, step: Step, stage: str) -> tuple[int, int, float] | None:
-        for attempt in range(CYCLE_PROBE_ATTEMPTS):
+    def _probe_cycle_template(self, step: Step, stage: str, *, attempts: int = CYCLE_PROBE_ATTEMPTS) -> tuple[int, int, float] | None:
+        for attempt in range(attempts):
             if self.stop_event.is_set():
                 raise RuntimeError("循环任务已停止。")
             try:
@@ -3769,8 +3779,8 @@ class TaskRunner:
             except Exception as exc:
                 if self.stop_event.is_set():
                     raise RuntimeError("循环任务已停止。") from exc
-                self.log(f"    {stage}识别 {step.template}（{attempt+1}/{CYCLE_PROBE_ATTEMPTS}）未匹配: {exc}")
-                if attempt + 1 < CYCLE_PROBE_ATTEMPTS:
+                self.log(f"    {stage}识别 {step.template}（{attempt+1}/{attempts}）未匹配: {exc}")
+                if attempt + 1 < attempts:
                     self._sleep_interruptible(CYCLE_PROBE_INTERVAL)
         return None
 
@@ -8562,34 +8572,16 @@ class App:
                                 else:
                                     findings.append(("error", "当前画面没有定位到蓝色守岸人，请让角色和守岸人同时出现在画面中。"))
                     else:
-                        start_template = template_dir / DIAGNOSTIC_START_TEMPLATE
-                        if not start_template.exists():
-                            findings.append(("error", f"缺少起始界面模板：{DIAGNOSTIC_START_TEMPLATE}。"))
+                        from weekly_flow import LABELS, WeeklyFlowVision
+                        names = [path.name for path in template_dir.glob('menu*.png')
+                                 if re.fullmatch(r'menu\d+\.png', path.name)]
+                        vision = WeeklyFlowVision(TemplateMatcher(template_dir), names, controller.template_scales())
+                        page = vision.detect(preview, recovery=True, wide=True)
+                        if page is None:
+                            findings.append(('error', '当前没有识别到可操作的周常按钮，可能正在过渡；请画面稳定后重试，无需返回开始界面。'))
                         else:
-                            try:
-                                start_match = TemplateMatcher(template_dir).find_fast(
-                                    preview,
-                                    DIAGNOSTIC_START_TEMPLATE,
-                                    threshold=0.82,
-                                    scale=controller.scale,
-                                )
-                                findings.append(
-                                    (
-                                        "ok",
-                                        f"已确认位于无存档的小漂泊者初始界面，相似度 {start_match.score:.3f}。",
-                                    )
-                                )
-                            except Exception as exc:
-                                if "未找到模板" in str(exc):
-                                    findings.append(
-                                        (
-                                            "error",
-                                            "当前不是小漂泊者的初始界面，或界面已经存在存档。"
-                                            "请返回带“开始游戏”按钮的小漂泊者页面，并确保没有存档。",
-                                        )
-                                    )
-                                else:
-                                    findings.append(("error", f"起始界面识别失败：{exc}"))
+                            day = f'，剩余{page.day}天' if page.day is not None else ''
+                            findings.append(('ok', f'已定位周常页面：{LABELS.get(page.kind, page.kind)}{day}；可从当前页面接续。'))
                     self.root.after(0, lambda: self._show_preview(preview, "诊断截图"))
             except Exception as exc:
                 error_text = str(exc)
@@ -9747,6 +9739,12 @@ class App:
             self._run_enabled()
             return
 
+        if all(getattr(task, 'template_group', '') == 'default' and getattr(task, 'name', '') == DEFAULT_GROUP_NAME
+               for task in enabled_tasks):
+            self._log('周常将在运行时判断当前页面并接续，不要求开始游戏界面。')
+            self._run_enabled()
+            return
+
         self._preflight_running = True
         self._pet_feedback("review", self._event_line("check_start"), 2600)
         window_title = self.window_title.get()
@@ -10320,7 +10318,7 @@ class App:
                 [path for path in TEMPLATES_DIR.glob("menu*.png") if re.fullmatch(r"menu\d+\.png", path.name)]
             )
             loop_text = "循环执行，直到达到已选择的轮数或手动停止" if step.loop else "执行一轮"
-            return f"{label}按顺序识别 {count} 个模板，每步间隔 {step.seconds} 秒，{loop_text}"
+            return f"{label}根据当前画面识别 {count} 个模板，支持重复选卡和中途接续，{loop_text}"
         if step.action == "move_to_visual_target":
             return f"{label}固定视角下用 W/A/S/D 靠近目标，出现 {step.template} 后按 F"
         if step.action == "combat_4c":
