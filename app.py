@@ -107,7 +107,7 @@ TEMPLATES_DIR = APP_DIR / "templates"
 DEFAULT_GROUP_KEY = "default"
 APP_ICON = APP_DIR / "wwbs.ico"
 APP_VERSION = "1.5.5"
-APP_BUILD = 2
+APP_BUILD = 3
 COMBAT_PRESETS_CONFIG = (Path(sys.executable).resolve().parent
                          if getattr(sys, "frozen", False) else APP_DIR) / "combat-presets.json"
 RUN_NOTICE_DIR = APP_DIR / "assets" / "run-notice"
@@ -201,7 +201,11 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 2. 请将游戏窗口调整为 1920*1080p 或等比例缩放。
 3. 请先完成周本的新手教程，并将速度调整至 MAX。"""
 UPDATE_HISTORY = [
-    ('v1.5.5', '''WWBS 1.5.5 正式版（构建2）
+    ('v1.5.5', '''WWBS 1.5.5 正式版（构建3）
+修复周常把MAX／×5.0倍速误识别成“关闭”：核对按钮文字及原生截图字形，保留缩放兼容。
+点击无响应时排除原模板并重新识别其他页面，再确认是否继续；一次点击只发送一套鼠标事件。
+周常开始后发现倍速非MAX时，日志和桌宠提醒手动改为MAX，不自动切换倍速。
+右上角检查更新可从现有1.5.5构建1／2更新至本次构建3。
 合入#26：战歌OCR先读取内存并释放截图文件后返回；等级选中避开左侧图标。
 合入#25：拆分任务执行层；保留HDR诊断和周常逐步定位、过渡恢复修复。
 汇总1.5.5测试阶段的功能与修复。
@@ -6637,6 +6641,9 @@ class App:
                 notice=lambda message: self.root.after(
                     0,
                     lambda text=message: messagebox.showinfo("提示", text, parent=self.root),
+                ),
+                warning=lambda message: self.root.after(
+                    0, lambda text=message: self._pet_feedback('waiting', text, 12000),
                 ),
                 boss_challenge=(BossChallengeEntrance(**self._boss_challenge_run)
                                 if any(task.name == "战歌重奏自动刷取" for task in tasks) else None),

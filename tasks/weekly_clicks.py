@@ -7,17 +7,22 @@ from PIL import Image
 from image_matcher import _match_single_scale_gray
 
 SKIP_TEMPLATES = frozenset({'menu4.png', 'menu6.png', 'menu8.png', 'menu91.png'})
+CAPTION_TEMPLATES = frozenset({'menu93.png', 'menu95.png'})
 
 
 def weekly_target_clickable(target, score):
     # Short pale captions otherwise correlate with the adjacent 刷新 button.
-    return target.colour_error <= 45 and (Path(target.template).name not in SKIP_TEMPLATES or score >= .8)
+    name = Path(target.template).name
+    return (target.colour_error <= 45 and (name not in SKIP_TEMPLATES or score >= .8)
+            and (name not in CAPTION_TEMPLATES or target.caption_score >= .87))
 
 
 def weekly_template_crop(template: str, templates_dir: Path):
     name = Path(template).name
     ratios = ((.37, .40, .86, .83) if name == 'menu1.png' else
               (.35, .40, .94, .79) if name in {'menu3.png', 'menu5.png', 'menu7.png', 'menu9.png', 'menu92.png'} else
+              (.31, .34, .69, .66) if name == 'menu93.png' else
+              (.15, .29, .59, .82) if name == 'menu95.png' else
               (.35, .34, .70, .75) if name in SKIP_TEMPLATES else None)
     if ratios is None:
         return None
@@ -38,6 +43,7 @@ class WeeklyTarget:
     context_mask: np.ndarray
     template_crop: tuple[int, int, int, int] | None = None
     colour_error: float = 0.
+    caption_score: float = 1.
 
     @classmethod
     def read(cls, screenshot: Path, template: str, match, templates_dir: Path, template_crop=None):
@@ -45,6 +51,8 @@ class WeeklyTarget:
             template_width, template_height = source.size
             reference = np.asarray(source.crop(template_crop or (0, 0, template_width, template_height))
                                    .convert('RGB').resize((64, 32)), dtype=np.int16)
+            caption = source.crop(template_crop or (0, 0, template_width, template_height)).convert('L')
+            reference_gray = np.asarray(caption.resize((64, 32)), dtype=np.float64)
         crop_left, crop_top, crop_right, crop_bottom = template_crop or (0, 0, template_width, template_height)
         scale = match.width/(crop_right-crop_left)
         box = (match.x, match.y, match.x+match.width, match.y+match.height)
@@ -66,7 +74,28 @@ class WeeklyTarget:
         y1 = min(64, int(np.ceil((visual_box[3]+6-top)*64/max(1, bottom-top))))
         mask[y0:y1, x0:x1] = False
         colour_error = float(np.abs(colour-reference).mean())
-        return cls(template, box, size, scale, pixels, context_box, context, mask, template_crop, colour_error)
+        # Recheck glyphs at native screenshot resolution. The global downscaled
+        # orange button outline can match MAX / x5.0 while its text is different.
+        observed = pixels.astype(np.float64)-pixels.mean()
+        expected = reference_gray-reference_gray.mean()
+        denominator = float(np.linalg.norm(observed)*np.linalg.norm(expected))
+        caption_score = float(np.sum(observed*expected)/denominator) if denominator > 1e-6 else 0.
+        if Path(template).name in CAPTION_TEMPLATES and caption_score < .87:
+            # Reducing a 1920px frame to 960px quantizes caption edges by 1-2px.
+            # Search a tiny native patch instead of rejecting a genuine label
+            # because a rounded coarse box is one pixel wide/tall or shifted.
+            with Image.open(screenshot) as source:
+                left, top = max(0, box[0]-4), max(0, box[1]-4)
+                search = np.asarray(source.crop((left, top, min(size[0], box[2]+4), min(size[1], box[3]+4)))
+                                    .convert('L'), dtype=np.float64)/255.
+            for delta_x in (-1, 0, 1):
+                for delta_y in (-1, 0, 1):
+                    width, height = match.width+delta_x, match.height+delta_y
+                    if min(width, height) < 8 or width > search.shape[1] or height > search.shape[0]:
+                        continue
+                    reference_native = np.asarray(caption.resize((width, height), Image.Resampling.LANCZOS), dtype=np.float64)/255.
+                    caption_score = max(caption_score, _match_single_scale_gray(search, reference_native).score)
+        return cls(template, box, size, scale, pixels, context_box, context, mask, template_crop, colour_error, caption_score)
 
     def stable_with(self, newer):
         tolerance = max(3, min(self.box[2]-self.box[0], self.box[3]-self.box[1])*.03)

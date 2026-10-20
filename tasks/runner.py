@@ -77,6 +77,7 @@ class TaskRunner(Combat4CTask, DreamlandTask, OtherTask):
         rotation_times: dict[str, dict] | None = None,
         rotation_orders: dict[str, list[int]] | None = None,
         boss_challenge: BossChallengeEntrance | None = None,
+        warning=None,
     ):
         self.controller = controller
         self.log = log
@@ -89,6 +90,7 @@ class TaskRunner(Combat4CTask, DreamlandTask, OtherTask):
         self.daily_heal_enabled = bool(daily_heal_enabled)
         self.boss_challenge = boss_challenge
         self.notice = notice or (lambda _message: None)
+        self.warning = warning or (lambda _message: None)
         self.rotation_modules = rotation_modules if rotation_modules is not None else active_modules(default_store())
         self.rotation_presets = rotation_presets or {}
         self.rotation_times = rotation_times or {}
