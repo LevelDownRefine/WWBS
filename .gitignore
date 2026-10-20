@@ -7,6 +7,7 @@ update-notice.json
 _target_preview.png
 _template_source.png
 *.log
+logs/
 .env
 .venv/
 venv/

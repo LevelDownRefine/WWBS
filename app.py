@@ -22,6 +22,7 @@ from tkinter import font as tkfont
 
 from PIL import Image, ImageTk
 
+from app_logging import configure_app_logging
 from image_matcher import TemplateMatcher
 from tasks.combat_4c_entrance import BOSS_AVATARS, BossChallengeEntrance
 from windows_client import ClientWindowController
@@ -178,6 +179,7 @@ DAILY_CONFIG = USER_SETTINGS_DIR / "daily-settings.json"
 UI_CONFIG = USER_SETTINGS_DIR / "ui-settings.json"
 APP_SETTINGS_CONFIG = USER_SETTINGS_DIR / "app-settings.json"
 CONNECTION_CONFIG = USER_SETTINGS_DIR / "connection-settings.json"
+LOG_FILE = USER_SETTINGS_DIR / "logs" / "wwbs.log"
 RAIN_CONFIG = USER_SETTINGS_DIR / 'rain-settings.json'
 RAIN_MUSIC_ASSET = APP_DIR / 'assets' / 'rain' / '雨爱.mp3'
 UPDATE_NOTICE_CONFIG = COMBAT_PRESETS_CONFIG.with_name('update-notice.json')
@@ -1049,11 +1051,16 @@ class App:
         self.prob_pulls.trace_add("write", self._sync_astrite_from_pulls)
         self.template_group = StringVar(value=DEFAULT_GROUP_NAME)
         self.log_queue: queue.Queue[str] = queue.Queue()
+        self.app_logger, log_error = configure_app_logging(self.log_queue, LOG_FILE)
+        if log_error:
+            self.app_logger.warning(f"本地日志文件无法写入，仅在程序中显示：{log_error}")
+        else:
+            self.app_logger.info(f"日志文件：{LOG_FILE}")
         try:
             self.rotation_store = load_store(COMBAT_PRESETS_CONFIG)
         except (OSError, ValueError, TypeError) as exc:
             self.rotation_store = default_store()
-            self.log_queue.put(f"战斗排轴配置读取失败，已使用默认轴：{exc}")
+            self._log(f"战斗排轴配置读取失败，已使用默认轴：{exc}")
         self.tasks: list[WeeklyTask] = []
         self.stop_event = threading.Event()
         self._manual_stop_requested = False
@@ -2948,7 +2955,7 @@ class App:
             with Image.open(io.BytesIO(image_bytes)) as source:
                 self.theme_banner_source = source.convert("RGB")
         except (OSError, KeyError, zipfile.BadZipFile) as exc:
-            self.log_queue.put(f"{definition['name']}背景读取失败：{exc}")
+            self._log(f"{definition['name']}背景读取失败：{exc}")
             return
 
         self.theme_banner = Canvas(
@@ -5090,7 +5097,7 @@ class App:
                 speak_on_interact=self.pet_id == "jingran",
                 chatter_delay_range=(12000, 24000) if self.pet_id == "jingran" else None,
             )
-            self.log_queue.put(f"{self.pet_name}已启动：拖动移动，双击互动，右键执行功能或运行诊断。")
+            self._log(f"{self.pet_name}已启动：拖动移动，双击互动，右键执行功能或运行诊断。")
             welcome_factory = self.pet_definition.get("welcome_dialogue")
             if callable(welcome_factory) and not self.cartethyia_agent_enabled.get():
                 welcome = welcome_factory()
@@ -5103,7 +5110,7 @@ class App:
                     ),
                 )
         except Exception as exc:
-            self.log_queue.put(f"{self.pet_name}启动失败：{exc}")
+            self._log(f"{self.pet_name}启动失败：{exc}")
 
     def _toggle_desktop_pet(self) -> None:
         if self.desktop_pet is None:
@@ -7109,8 +7116,7 @@ class App:
         return labels.get(weekday.lower(), weekday)
 
     def _log(self, message: str) -> None:
-        stamp = datetime.now().strftime("%H:%M:%S")
-        self.log_queue.put(f"[{stamp}] {message}")
+        self.app_logger.info(message)
 
     def _notify_mouse_move_failure(self) -> None:
         now = time.monotonic()
