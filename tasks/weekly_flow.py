@@ -209,6 +209,9 @@ def run_weekly_flow(runner, start, cycle, *, attempts=5, nearby_attempts=2):
                                         excluded_templates=(pending.template,), best_match=True)
             if alternative is not None:
                 page = alternative
+        if page is not None and speed_reminder.observe(screenshot, vision, runner):
+            previous = None
+            continue
         stable = page is not None and page.stable_with(previous)
         if pending is not None:
             responded = pending.target.click_responded(screenshot, runner.matcher)
@@ -251,7 +254,6 @@ def run_weekly_flow(runner, start, cycle, *, attempts=5, nearby_attempts=2):
             previous = page
             runner._sleep_interruptible(.15)
             continue
-        speed_reminder.observe(screenshot, vision, runner)
         if page.kind == 'start' and not checked_skill:
             runner._ensure_weekly_skill_selected()
             checked_skill = True

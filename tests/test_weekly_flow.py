@@ -202,6 +202,19 @@ class WeeklyFlowRunTests(unittest.TestCase):
                             app.Step(action='tap_image_cycle',templates=['menu95.png','menu5.png','menu99.png']))
         self.assertEqual(state,{'advanced':True,'close_clicks':1,'next_clicks':1})
 
+    def test_speed_ocr_requires_fresh_page_before_input(self):
+        self.index=2
+        reminder=Mock()
+        def observe(*_args):
+            if self.index==2:
+                self.index=3  # A page transition occurs while optional OCR runs.
+                return True
+            return False
+        reminder.observe.side_effect=observe
+        with patch('tasks.weekly_flow.WeeklySpeedReminder',return_value=reminder):
+            self.run_flow()
+        self.assertEqual(self.taps,[])
+
 
 if __name__ == '__main__':
     unittest.main()

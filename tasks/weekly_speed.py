@@ -67,17 +67,18 @@ class WeeklySpeedReminder:
             speed = speed_text(lines, region)
         except InterruptedError:
             return
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError):
             speed = None
         finally:
             if worker is not None:
                 worker.close()
         self.finished = True
         if runner.stop_event.is_set() or speed == 'MAX':
-            return
+            return True
         if speed:
             message = f'周常当前倍速为{speed}，尚未设为MAX，请手动把右上角倍速改成MAX。'
         else:
             message = '暂时无法确认周常倍速，请手动检查右上角是否为MAX；程序不会替你切换倍速。'
         runner.log('    倍速提醒：'+message)
         runner.warning(message)
+        return True  # OCR may have outlasted a transition: refresh before input.
