@@ -140,6 +140,33 @@ class WeeklyFlowRunTests(unittest.TestCase):
         current = CardDecision.read(path, self.pages[0].target)
         self.assertFalse(current.changed_from(self.pages[0].cards))
 
+    def test_fade_lasting_more_than_five_probes_relocates_without_blind_clicks(self):
+        vision = Mock()
+        # Both initial loading and post-click loading can exceed five fast probes.
+        calls = {}
+        def detect(*_args, **_options):
+            calls[self.index] = calls.get(self.index, 0)+1
+            return None if calls[self.index] < 40 else self.pages[self.index]
+        vision.detect.side_effect = detect
+        with patch('weekly_flow.WeeklyFlowVision', return_value=vision), \
+                patch('weekly_flow.time.monotonic', side_effect=lambda: self.now):
+            run_weekly_flow(self.runner, app.Step(action='tap_image', template='menu1.png'),
+                            app.Step(action='tap_image_cycle', templates=['menu4.png', 'menu95.png', 'menu99.png']))
+        self.assertEqual([index for index, _ in self.taps], [0, 1, 2])
+        self.assertGreater(self.taps[0][1], 4)
+        self.assertGreater(self.taps[1][1]-self.taps[0][1], 4)
+
+    def test_unknown_page_stops_after_bounded_relocation_without_clicking(self):
+        vision = Mock()
+        vision.detect.return_value = None
+        with patch('weekly_flow.WeeklyFlowVision', return_value=vision), \
+                patch('weekly_flow.time.monotonic', side_effect=lambda: self.now):
+            with self.assertRaisesRegex(RuntimeError, '20秒'):
+                run_weekly_flow(self.runner, app.Step(action='tap_image', template='menu1.png'),
+                                app.Step(action='tap_image_cycle', templates=['menu4.png']))
+        self.assertEqual(self.taps, [])
+        self.assertLess(self.now, 21)
+
 
 if __name__ == '__main__':
     unittest.main()
