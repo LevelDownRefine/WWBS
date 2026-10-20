@@ -462,11 +462,9 @@ class ClientWindowController:
         self._send_mouse_button(MOUSEEVENTF_LEFTDOWN)
         time.sleep(0.08)
         self._send_mouse_button(MOUSEEVENTF_LEFTUP)
-        time.sleep(0.03)
-        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        time.sleep(0.05)
-        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        self._post_client_click(x, y)
+        # The input API already reports send failures. Unconditionally following
+        # a successful click with mouse_event and PostMessage clicks can toggle
+        # speed repeatedly or also hit the newly opened page.
         after_click = self.cursor_position()
         return {
             "target": (screen_x, screen_y),

@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 
 from tasks.weekly_clicks import WeeklyTarget, weekly_target_clickable, weekly_template_crop
+from tasks.weekly_speed import WeeklySpeedReminder
 
 
 FAMILIES = {
@@ -129,10 +130,11 @@ class WeeklyFlowVision:
                 return count
         return None
 
-    def detect(self, screenshot, preferred=None, *, recovery=True, wide=False):
+    def detect(self, screenshot, preferred=None, *, recovery=True, wide=False,
+               excluded_templates=(), best_match=False):
         groups = {}
         for name in self.templates:
-            if (self.matcher.templates_dir/name).exists():
+            if name not in excluded_templates and (self.matcher.templates_dir/name).exists():
                 groups.setdefault(family(name), []).append(name)
         order = [preferred] if preferred in groups else []
         if recovery:
@@ -144,6 +146,7 @@ class WeeklyFlowVision:
             first = self.last_template if self.last_template in names else names[0]
             choices.append(first)
         choices += [name for key in order for name in groups[key] if name not in choices]
+        best = None
         for name in choices:
             known_scale = self._template_scales.get(name, self.scales[0])
             scales = list(dict.fromkeys([known_scale, *self.scales])) if wide else [known_scale]
@@ -160,11 +163,17 @@ class WeeklyFlowVision:
                 continue
             target = WeeklyTarget.read(screenshot, name, match, self.matcher.templates_dir, crop)
             self._template_scales[name] = target.scale
-            kind = family(name)
-            self.last_template = name
-            return Page(name, kind, match, target, self.remaining_days(screenshot),
-                        CardDecision.read(screenshot, target) if kind == 'skip' else None)
-        return None
+            if best is None or match.score > best[1].score:
+                best = name, match, target
+            if not best_match:
+                break
+        if best is None:
+            return None
+        name, match, target = best
+        kind = family(name)
+        self.last_template = name
+        return Page(name, kind, match, target, self.remaining_days(screenshot),
+                    CardDecision.read(screenshot, target) if kind == 'skip' else None)
 
 
 def run_weekly_flow(runner, start, cycle, *, attempts=5, nearby_attempts=2):
@@ -180,6 +189,7 @@ def run_weekly_flow(runner, start, cycle, *, attempts=5, nearby_attempts=2):
     clicked_at = 0.
     last_action_at = time.monotonic()
     checked_skill = False
+    speed_reminder = WeeklySpeedReminder()
     limit = runner.max_cycles if runner.max_cycles is not None else (None if cycle.loop else 1)
     runner.log('周常按当前画面接续：重复按钮按页面类型处理，每次点击后重新确认；当前5次、附近各2次。')
     while not runner.stop_event.is_set():
@@ -191,6 +201,17 @@ def run_weekly_flow(runner, start, cycle, *, attempts=5, nearby_attempts=2):
             return
         page = vision.detect(screenshot, preferred, recovery=pending is not None or misses < nearby_attempts,
                              wide=misses in (1, attempts-1))
+        if pending is not None and time.monotonic()-clicked_at >= 4:
+            # Before repeating or failing an unresponsive click, look beyond the
+            # same preferred template. A toolbar false positive must not hide a
+            # stable next-day button elsewhere on the current page.
+            alternative = vision.detect(screenshot, recovery=True, wide=True,
+                                        excluded_templates=(pending.template,), best_match=True)
+            if alternative is not None:
+                page = alternative
+        if page is not None and speed_reminder.observe(screenshot, vision, runner):
+            previous = None
+            continue
         stable = page is not None and page.stable_with(previous)
         if pending is not None:
             responded = pending.target.click_responded(screenshot, runner.matcher)

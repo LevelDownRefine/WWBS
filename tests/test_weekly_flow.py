@@ -167,6 +167,54 @@ class WeeklyFlowRunTests(unittest.TestCase):
         self.assertEqual(self.taps, [])
         self.assertLess(self.now, 21)
 
+    def test_stalled_preferred_close_cannot_hide_next_day_until_stop(self):
+        from copy import copy
+        wrong=self.pages[2]
+        wrong.target.click_responded=Mock(return_value=False)
+        next_target=copy(wrong.target)
+        next_target.template='menu5.png'
+        next_target.box=tuple(value+200 if index%2==0 else value for index,value in enumerate(wrong.target.box))
+        next_target.click_responded=Mock(return_value=False)
+        next_match=MatchResult(wrong.match.x+200,wrong.match.y,wrong.match.width,wrong.match.height,.99)
+        next_page=Page('menu5.png','next_day',next_match,next_target)
+        state={'advanced':False,'close_clicks':0,'next_clicks':0}
+        def tap(x,y):
+            if x < 800:
+                state['close_clicks']+=1
+            else:
+                state['next_clicks']+=1
+                state['advanced']=True
+        def detect(*_args,**options):
+            if state['advanced']:
+                return self.pages[-1]
+            if options.get('excluded_templates'):
+                self.assertIn('menu95.png',options['excluded_templates'])
+                self.assertTrue(options['best_match'])
+                return next_page
+            return wrong
+        self.index=2
+        self.runner.controller.tap.side_effect=tap
+        vision=Mock()
+        vision.detect.side_effect=detect
+        with patch('tasks.weekly_flow.WeeklyFlowVision',return_value=vision), \
+                patch('tasks.weekly_flow.time.monotonic',side_effect=lambda:self.now):
+            run_weekly_flow(self.runner,app.Step(action='tap_image',template='menu1.png'),
+                            app.Step(action='tap_image_cycle',templates=['menu95.png','menu5.png','menu99.png']))
+        self.assertEqual(state,{'advanced':True,'close_clicks':1,'next_clicks':1})
+
+    def test_speed_ocr_requires_fresh_page_before_input(self):
+        self.index=2
+        reminder=Mock()
+        def observe(*_args):
+            if self.index==2:
+                self.index=3  # A page transition occurs while optional OCR runs.
+                return True
+            return False
+        reminder.observe.side_effect=observe
+        with patch('tasks.weekly_flow.WeeklySpeedReminder',return_value=reminder):
+            self.run_flow()
+        self.assertEqual(self.taps,[])
+
 
 if __name__ == '__main__':
     unittest.main()
