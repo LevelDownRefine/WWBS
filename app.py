@@ -27,6 +27,7 @@ import numpy as np
 from image_matcher import TemplateMatcher
 from combat_4c_entrance import BOSS_AVATARS, BossChallengeEntrance
 from windows_client import ClientWindowController
+from display_environment import FILTER_GUIDANCE, display_findings, read_game_display
 from desktop_pet import DesktopPet
 from chat_history import ChatHistory
 from update_manager import (create_update_work, download_asset, refresh_release_asset, prepare_update, install_script,
@@ -198,6 +199,8 @@ UPDATE_NOTICE = """v1.3.5 更新内容
 UPDATE_HISTORY = [
     ('v1.5.5', '''WWBS 1.5.5 正式版
 汇总1.5.5测试阶段的功能与修复。
+新增游戏所在屏幕HDR诊断、游戏滤镜排查提示，移除操作目标、窗口标题及模板基准修改入口。
+修复周常过渡页面连续未匹配时过早停止：有时限重新定位，每次仍确认页面与点击响应。
 周常每一步重新判断当前页面，支持中途接续；结合剩余天数和卡片变化处理重复选卡。当前模板最多5次，附近模板各2次。
 在线种子库打开即显示最新上传，每条种子独立卡片，可直接下载并新增导入；旧种子继续兼容。
 采用指定18模块默认战斗轴，保留已编辑的轴与任务分配；切人确认期间持续普攻。
@@ -4204,9 +4207,9 @@ class App:
         except (OSError, ValueError):
             saved_connection = {}
         if isinstance(saved_connection, dict):
-            for key in ('target_mode', 'window_title', 'expected_resolution', 'adb_path', 'device_id'):
+            for key in ('adb_path', 'device_id'):
                 value = saved_connection.get(key)
-                if isinstance(value, str) and (key != 'target_mode' or value in {'client','adb'}):
+                if isinstance(value, str):
                     getattr(self,key).set(value)
         self.combat_skill_key = StringVar(value=self._load_combat_skill_key())
         self.combat_ultimate_key = StringVar(value=self._load_combat_ultimate_key())
@@ -7958,27 +7961,15 @@ class App:
             justify=LEFT,
         ).pack(anchor="w", pady=(5, 0))
 
-        mode_row = Frame(self.settings_tab)
-        mode_row.pack(fill=X, pady=5)
-        Label(mode_row, text="操作目标", width=12, anchor="w").pack(side=LEFT)
-        ttk.Radiobutton(mode_row, text="PC 客户端窗口", variable=self.target_mode, value="client", command=self._update_mode_label).pack(side=LEFT, padx=6)
-        ttk.Radiobutton(mode_row, text="模拟器 / ADB", variable=self.target_mode, value="adb", command=self._update_mode_label).pack(side=LEFT, padx=6)
-
-        client_row = Frame(self.settings_tab)
-        client_row.pack(fill=X, pady=5)
-        Label(client_row, text="窗口标题", width=12, anchor="w").pack(side=LEFT)
-        self._rounded_entry(client_row, textvariable=self.window_title, width=24).pack(side=LEFT, padx=6)
-        Label(self.settings_tab, text="“自动”同时识别国服与国际服 Steam 端；标题包含这些字就会被识别。",
-              fg=COLORS["muted"], bg=COLORS["panel"], justify=LEFT,
-              wraplength=520).pack(anchor="w", fill=X)
-
-        size_row = Frame(self.settings_tab)
-        size_row.pack(fill=X, pady=5)
-        Label(size_row, text="模板基准", width=12, anchor="w").pack(side=LEFT)
-        self._rounded_entry(size_row, textvariable=self.expected_resolution, width=24).pack(side=LEFT, padx=6)
-        Label(self.settings_tab, text="模板按这个分辨率制作，窗口可等比例缩小，例如 1536x864",
-              fg=COLORS["muted"], bg=COLORS["panel"], justify=LEFT,
-              wraplength=520).pack(anchor="w", fill=X)
+        display_box = self._card_body(self.settings_tab)
+        display_box.pack(fill=X, pady=(0, 14))
+        Label(display_box, text="识别环境检查", font=(FONT_FAMILY, 11, "bold"),
+              bg=COLORS["panel_alt"]).pack(anchor="w")
+        Label(display_box, text="HDR、自动 HDR 和游戏滤镜会改变截图颜色，导致按钮识别失败。"
+              "诊断可读取游戏所在屏幕的系统 HDR 状态；第三方滤镜需手动检查。",
+              wraplength=720, justify=LEFT, fg=COLORS["muted"],
+              bg=COLORS["panel_alt"]).pack(anchor="w", fill=X, pady=(6, 10))
+        self._ui_button(display_box, text="检查 HDR 与识别环境", command=self._diagnose_runtime).pack(anchor="w")
 
         self._update_mode_label()
         self._bind_mousewheel_tree(self.settings_tab, self.settings_scroll_canvas)
@@ -8102,8 +8093,8 @@ class App:
         self.rain_status.set('雨幕未开启：'+error)
 
     def _save_connection_settings(self, *_arguments) -> None:
-        data = {key:getattr(self,key).get() for key in
-                ('target_mode','window_title','expected_resolution','adb_path','device_id')}
+        data = {'target_mode': 'client', 'window_title': '自动', 'expected_resolution': '1920x1080',
+                'adb_path': self.adb_path.get(), 'device_id': self.device_id.get()}
         try:
             temporary = CONNECTION_CONFIG.with_suffix('.tmp')
             temporary.write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
@@ -8111,7 +8102,7 @@ class App:
         except OSError:
             self.status.set('连接设置未保存，请检查目录写入权限')
         if getattr(self, '_boss_rain_watcher', None) is not None:
-            self._boss_rain_watcher.title = self.window_title.get()
+            self._boss_rain_watcher.title = '自动'
 
     def _select_theme(self, theme_id: str) -> None:
         if theme_id in THEME_DEFINITIONS and not self._theme_pack_valid(theme_id):
@@ -8387,8 +8378,8 @@ class App:
 
     @staticmethod
     def _friendly_runtime_error(error_text: str) -> str:
-        if "未找到模板" in error_text or "识别超时" in error_text:
-            return f"当前画面没有匹配到任务需要的按钮或界面。{error_text}"
+        if any(text in error_text for text in ("未找到模板", "识别超时", "无法确认", "周常模板流程无法继续")):
+            return f"当前画面没有匹配到任务需要的按钮或界面。{error_text} 请运行识别环境诊断，并检查 HDR／自动 HDR 和游戏滤镜。"
         if "模板不存在" in error_text or "模板组不存在" in error_text:
             return f"任务需要的模板文件不完整。{error_text}"
         if "等比例缩放" in error_text:
@@ -8398,9 +8389,9 @@ class App:
     def _diagnose_runtime(self, announce: bool = True) -> None:
         if announce:
             self._pet_feedback("review", self._event_line("diagnose_start"), 3000)
-        mode = self.target_mode.get()
-        window_title = self.window_title.get()
-        expected_resolution = self.expected_resolution.get()
+        mode = "client"
+        window_title = "自动"
+        expected_resolution = "1920x1080"
         adb_path = self.adb_path.get()
         device_id = self.device_id.get()
         config_path = Path(self.config_path.get())
@@ -8490,6 +8481,7 @@ class App:
                     controller = ClientWindowController(window_title, base_size)
                     connection_message = controller.connect()
                     findings.append(("ok", connection_message + "。"))
+                    findings.extend(display_findings(read_game_display(controller.hwnd)))
                     preview = APP_DIR / "_diagnostic_preview.png"
                     recent_runtime_preview = APP_DIR / "_runtime_screenshot.png"
                     can_reuse_runtime_preview = (
@@ -8600,7 +8592,9 @@ class App:
                 else:
                     findings.append(("error", f"游戏窗口检查失败：{error_text}"))
 
-            self._log(f"=== {self.pet_name}运行诊断 ===")
+            if not any(FILTER_GUIDANCE in message for _, message in findings):
+                findings.append(("warning", FILTER_GUIDANCE))
+            self._log(f"=== {self.pet_name}运行诊断（{APP_VERSION}） ===")
             icons = {"ok": "[正常]", "warning": "[注意]", "error": "[问题]", "info": "[提示]"}
             for level, message in findings:
                 self._log(f"{icons[level]} {message}")
@@ -9861,12 +9855,16 @@ class App:
         self.worker.start()
 
     def _run_tasks(self, tasks: list[WeeklyTask]) -> None:
+        self._log(f"WWBS {APP_VERSION} 开始执行；周常使用实时页面定位。")
         target = "PC 客户端窗口" if self.target_mode.get() == "client" else "模拟器 / ADB"
         self._log("预演模式：会识别模板，但不会点击。" if self.dry_run.get() else f"真实执行模式：将操作 {target}。")
         try:
             controller = self._make_controller()
             if hasattr(controller, "connect"):
                 self._log(controller.connect())
+            for level, message in display_findings(read_game_display(getattr(controller, 'hwnd', None))):
+                if level != 'ok':
+                    self._log(f"识别环境提醒：{message}")
             rotation_snapshot = getattr(self, "_rotation_run_store", self.rotation_store)
             runner = TaskRunner(
                 controller,
@@ -9972,19 +9970,10 @@ class App:
         )
 
     def _make_controller(self):
-        if self.target_mode.get() == "adb":
-            return AdbClient(self.adb_path.get(), self.device_id.get())
-        return ClientWindowController(self.window_title.get(), self._parse_resolution())
+        return ClientWindowController("自动", (1920, 1080))
 
-    def _parse_resolution(self) -> tuple[int, int] | None:
-        text = self.expected_resolution.get().strip().lower().replace("×", "x")
-        if not text:
-            return None
-        try:
-            width, height = text.split("x", 1)
-            return int(width), int(height)
-        except Exception:
-            raise RuntimeError("模板基准格式应为 1920x1080。")
+    def _parse_resolution(self) -> tuple[int, int]:
+        return (1920, 1080)
 
     def _check_target(self) -> None:
         self._pet_feedback("review", self._event_line("check_start"), 2600)

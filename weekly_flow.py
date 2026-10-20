@@ -209,7 +209,11 @@ def run_weekly_flow(runner, start, cycle, *, attempts=5, nearby_attempts=2):
                 runner._sleep_interruptible(.12)
                 continue
             elif not stable or page.kind != pending.kind:
-                raise RuntimeError('周常点击后未确认新页面，已停止，不猜测后续步骤。')
+                # Loading/fades can outlast the retry delay. Do not click through
+                # them or abort after only a handful of fast screenshots.
+                previous = page
+                runner._sleep_interruptible(.12)
+                continue
             elif retries >= 2:
                 raise RuntimeError('周常同一按钮重新识别点击2次后仍无响应，已停止。')
             else:
@@ -218,7 +222,8 @@ def run_weekly_flow(runner, start, cycle, *, attempts=5, nearby_attempts=2):
         if page is None:
             misses += 1
             if misses >= attempts:
-                raise RuntimeError(f'周常当前模板已识别{attempts}次，附近模板各{nearby_attempts}次，无法确认页面，已停止。')
+                runner.log(f'    当前页面暂未定位（当前{attempts}次、附近各{nearby_attempts}次）；重新定位，过渡期间不点击。')
+                misses = 0
             previous = None
             runner._sleep_interruptible(.12)
             continue

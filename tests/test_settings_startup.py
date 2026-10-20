@@ -83,6 +83,8 @@ class SettingsStartupTests(unittest.TestCase):
                       'combat-presets.json': axis, 'pet-settings.json': {'pet': 'cartethyia'},
                       'pet-display-settings.json': {'percent': 85, 'visible': False}}
             values['rain-settings.json'] = {'mode': '持续下雨', 'level': '大雨', 'strength': '明显', 'volume': 50}
+            values['connection-settings.json'] = {'target_mode': 'adb', 'window_title': '失效旧窗口',
+                                                  'expected_resolution': 'bad', 'adb_path': 'adb'}
             for name, value in values.items():
                 (source/'_internal'/name).write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
             plan = prepare_import(Installation(source, '1.5.4 beta3', settings_files(source)), target)
@@ -104,6 +106,22 @@ class SettingsStartupTests(unittest.TestCase):
             try:
                 ui = app.App(root)
                 self.assertFalse(root.winfo_ismapped())
+                self.assertEqual(ui.target_mode.get(), 'client')
+                self.assertEqual(ui.window_title.get(), '自动')
+                self.assertEqual(ui._parse_resolution(), (1920, 1080))
+                with patch.object(app, 'ClientWindowController') as controller:
+                    ui._make_controller()
+                    controller.assert_called_once_with('自动', (1920, 1080))
+                def labels(widget):
+                    try:
+                        yield str(widget.cget('text'))
+                    except tk.TclError:
+                        pass
+                    for child in widget.winfo_children():
+                        yield from labels(child)
+                texts = set(labels(ui.settings_tab))
+                self.assertFalse(texts & {'操作目标', '窗口标题', '模板基准', '模拟器 / ADB'})
+                self.assertIn('检查 HDR 与识别环境', texts)
                 self.assertEqual(ui.theme_id, 'cartethyia')
                 self.assertEqual(ui.combat_skill_key.get(), app.App._combat_binding_display('XBUTTON2'))
                 self.assertEqual(ui.combat_ultimate_key.get(), app.App._combat_binding_display('XBUTTON1'))
