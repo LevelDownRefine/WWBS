@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from PIL import Image, ImageDraw
 
 import app
-from combat_4c_entrance import BOSS_AVATARS, BossChallengeEntrance, EntranceFrame
+from tasks.combat_4c_entrance import BOSS_AVATARS, BossChallengeEntrance, EntranceFrame
 from windows_client import ClientWindowController
 from windows_ocr import WindowsOcr
 
@@ -83,7 +83,7 @@ class EntranceTests(unittest.TestCase):
         runner._swipe_ratio.side_effect=lambda *_args:state.__setitem__('phase','target')
         ocr=Mock()
         entry=BossChallengeEntrance(target,'90',ocr_factory=lambda:ocr)
-        with patch('combat_4c_entrance.time.monotonic',side_effect=lambda:state['now']), \
+        with patch('tasks.combat_4c_entrance.time.monotonic',side_effect=lambda:state['now']), \
                 patch.object(entry,'_capture',side_effect=capture):
             self.assertTrue(entry.enter(runner))
         self.assertEqual(inputs,['guide','category','target','target','level80','level90','team'])
@@ -97,7 +97,7 @@ class EntranceTests(unittest.TestCase):
         runner=Mock(stop_event=threading.Event())
         runner._sleep_interruptible.side_effect=lambda delay:now.__setitem__(0,now[0]+delay)
         click=Mock()
-        with patch('combat_4c_entrance.time.monotonic',side_effect=lambda:now[0]), \
+        with patch('tasks.combat_4c_entrance.time.monotonic',side_effect=lambda:now[0]), \
                 patch.object(entry,'_capture',return_value=source):
             with self.assertRaisesRegex(RuntimeError,'未能确认'):
                 entry._transition(runner,'队伍页面',entry._single,click,entry._start,timeout=9)
@@ -139,6 +139,14 @@ class EntranceTests(unittest.TestCase):
         frame=make_frame(('推荐等级90',100,600),('单人挑战',1400,965),selected='推荐等级90')
         self.assertTrue(entry._selected_level(frame))
 
+    def test_selected_difficulty_with_dark_left_icon_is_confirmed(self):
+        entry=BossChallengeEntrance(level='90')
+        frame=make_frame(('推荐等级90',100,600),('单人挑战',1400,965),selected='推荐等级90')
+        # The left icon interrupts the pale selection plate; its right side
+        # remains a reliable background sample on the reported game screen.
+        ImageDraw.Draw(frame.image).rectangle((45,592,88,634),fill=(35,45,50))
+        self.assertTrue(entry._selected_level(frame))
+
     def test_f2_support_and_independent_settings_preserve_existing_four_c(self):
         self.assertEqual(ClientWindowController._virtual_key('F2'),0x71)
         instance=app.App.__new__(app.App)
@@ -169,6 +177,26 @@ class EntranceTests(unittest.TestCase):
         runner._run_4c_battle.assert_not_called()
         runner._collect_4c_reward.assert_not_called()
         runner.controller.release_keys.assert_called_once()
+
+    @unittest.skipUnless(os.name=='nt','Windows local OCR integration')
+    def test_ocr_reply_releases_screenshot_before_immediate_rewrite(self):
+        worker=WindowsOcr()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                path=Path(directory)/'连续截图.png'
+                source=(Path(__file__).parent/'fixtures'/'daily-activity-zero.png').read_bytes()
+                for _ in range(3):
+                    path.write_bytes(source)
+                    try:
+                        lines=worker.recognize(path)
+                    except RuntimeError as exc:
+                        self.assertIn('Chinese OCR language pack is missing',str(exc))
+                        self.skipTest('Windows Chinese OCR language pack is missing')
+                    self.assertTrue(lines)
+                    # No sleep: this write failed immediately with the old worker.
+                    path.write_bytes(source)
+        finally:
+            worker.close()
 
     @unittest.skipUnless(os.name=='nt','Windows local OCR integration')
     def test_real_local_ocr_recognizes_existing_fixture_or_reports_missing_language(self):

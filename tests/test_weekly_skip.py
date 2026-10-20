@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 from image_matcher import TemplateMatcher, _fft_convolve_valid
-from weekly_clicks import SKIP_TEMPLATES, WeeklyTarget, weekly_target_clickable, weekly_template_crop
+from tasks.weekly_clicks import SKIP_TEMPLATES, WeeklyTarget, weekly_target_clickable, weekly_template_crop
 
 
 class WeeklySkipTests(unittest.TestCase):
